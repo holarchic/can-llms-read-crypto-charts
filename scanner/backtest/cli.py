@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--fee", type=float, default=0.00035, help="Taker fee per side (default: 0.035%%)")
     parser.add_argument("--strategy", type=str, default=None, help="Filter signals by strategy version")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print per-signal details")
+    parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -156,9 +157,21 @@ def main():
     overall = compute_metrics(outcomes, "Overall")
     sliced = slice_metrics(outcomes)
 
+    report_text = format_full_report(overall, sliced, args.mode)
+    footer = f"\n  Coins: {len(coins_seen)} | Signals: {len(setups)} | Resolved: {len(outcomes)}"
+
     print()
-    print(format_full_report(overall, sliced, args.mode))
-    print(f"\n  Coins: {len(coins_seen)} | Signals: {len(setups)} | Resolved: {len(outcomes)}")
+    print(report_text)
+    print(footer)
+
+    if args.discord:
+        from ..alerts import send_text_alert
+        full_text = report_text + footer
+        ok = send_text_alert(full_text, title="Daily Backtest Report")
+        if ok:
+            print("\n  Sent to Discord.")
+        else:
+            print("\n  Discord send failed (no webhook configured?).")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,9 @@ def resolve_signal(
     if risk == 0:
         return TradeOutcome(result="EXPIRED", setup=setup)
 
+    if candles.empty or not isinstance(candles.index, pd.DatetimeIndex):
+        return TradeOutcome(result="EXPIRED", setup=setup)
+
     reward = abs(setup.target - setup.entry)
     is_long = setup.direction == "LONG"
 

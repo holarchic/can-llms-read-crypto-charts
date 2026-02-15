@@ -215,21 +215,21 @@ def cmd_report(args):
     # Default: run all loops unless specific ones requested
     run_all = not (args.signal_quality or args.llm_filter or args.regime or args.suggest_disable)
 
+    sections: list[str] = []
+
     if run_all or args.signal_quality:
         overall, sliced = signal_quality_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
         )
-        print(format_signal_quality(overall, sliced))
-        print()
+        sections.append(format_signal_quality(overall, sliced))
 
     if run_all or args.llm_filter:
         result = llm_filter_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
         )
-        print(format_llm_filter(result))
-        print()
+        sections.append(format_llm_filter(result))
 
     if run_all or args.regime:
         windows = regime_decay_report(
@@ -237,8 +237,7 @@ def cmd_report(args):
             window_weeks=args.window_weeks,
             coins=coins, verbose=args.verbose,
         )
-        print(format_regime_decay(windows))
-        print()
+        sections.append(format_regime_decay(windows))
 
     if run_all or args.suggest_disable:
         # Need signal quality data for suggestions
@@ -249,7 +248,18 @@ def cmd_report(args):
             )
         setup_type_reports = sliced.get("setup_type", [])
         suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
-        print(format_disable_suggestion(suggestions))
+        sections.append(format_disable_suggestion(suggestions))
+
+    report_text = "\n\n".join(sections)
+    print(report_text)
+
+    if args.discord:
+        from ..alerts import send_text_alert
+        ok = send_text_alert(report_text, title=f"Strategy Report: {strategy.strategy_id}")
+        if ok:
+            print("\n  Sent to Discord.")
+        else:
+            print("\n  Discord send failed (no webhook configured?).")
 
     conn.close()
 
@@ -384,6 +394,7 @@ def main():
     p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for regime decay (default: 2)")
     p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
     p_report.add_argument("-v", "--verbose", action="store_true")
+    p_report.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     p_report.set_defaults(func=cmd_report)
 
     # disable

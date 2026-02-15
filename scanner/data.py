@@ -17,7 +17,7 @@ def get_exchange() -> ccxt.hyperliquid:
     """Get or create the shared exchange instance."""
     global _exchange
     if _exchange is None:
-        _exchange = ccxt.hyperliquid()
+        _exchange = ccxt.hyperliquid({"timeout": 30000})
         _exchange.load_markets()
     return _exchange
 
