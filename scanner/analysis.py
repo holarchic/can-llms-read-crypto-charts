@@ -87,7 +87,7 @@ def analyze_for_scanner(
     response = client.messages.create(
         model=cfg.model,
         max_tokens=6144,
-        thinking={"type": "enabled", "budget_tokens": cfg.thinking_budget},
+        thinking={"type": "adaptive", "budget_tokens": cfg.thinking_budget},
         system=[{
             "type": "text",
             "text": system_text,
