@@ -1,0 +1,249 @@
+"""Technical indicators: swing detection, S/R, market structure, MSBs, fibs."""
+
+import numpy as np
+import pandas as pd
+
+from .models import (
+    Direction,
+    FibLevels,
+    MSB,
+    MarketContext,
+    SRLevel,
+    Structure,
+    SwingPoint,
+)
+
+
+def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Compute Average True Range. Returns the latest ATR value."""
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+    prev_close = close.shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    atr_series = tr.rolling(window=period).mean()
+    return float(atr_series.iloc[-1])
+
+
+def find_swing_points(df: pd.DataFrame, lookback: int = 5) -> list[SwingPoint]:
+    """Find swing highs and lows using rolling window on body prices (preferred per ruleset).
+
+    A swing high: body high is the max of ±lookback bars' body highs.
+    A swing low: body low is the min of ±lookback bars' body lows.
+    """
+    # Body prices: max/min of open and close
+    body_high = pd.concat([df["Open"], df["Close"]], axis=1).max(axis=1)
+    body_low = pd.concat([df["Open"], df["Close"]], axis=1).min(axis=1)
+
+    swings = []
+    timestamps = df.index
+
+    for i in range(lookback, len(df) - lookback):
+        window_high = body_high.iloc[i - lookback: i + lookback + 1]
+        if body_high.iloc[i] == window_high.max() and (window_high == body_high.iloc[i]).sum() == 1:
+            swings.append(SwingPoint(
+                index=i,
+                timestamp=timestamps[i],
+                price=float(df["High"].iloc[i]),
+                type="high",
+                body_price=float(body_high.iloc[i]),
+            ))
+
+        window_low = body_low.iloc[i - lookback: i + lookback + 1]
+        if body_low.iloc[i] == window_low.min() and (window_low == body_low.iloc[i]).sum() == 1:
+            swings.append(SwingPoint(
+                index=i,
+                timestamp=timestamps[i],
+                price=float(df["Low"].iloc[i]),
+                type="low",
+                body_price=float(body_low.iloc[i]),
+            ))
+
+    swings.sort(key=lambda s: s.index)
+    return swings
+
+
+def cluster_sr_levels(
+    swings: list[SwingPoint],
+    pct: float = 0.015,
+) -> list[SRLevel]:
+    """Group swing points within pct% of each other into S/R levels.
+
+    Each cluster becomes an SRLevel with strength = touch count.
+    Levels with 3+ same-direction tests are marked degraded.
+    """
+    if not swings:
+        return []
+
+    prices = sorted([(s.body_price, s) for s in swings], key=lambda x: x[0])
+    clusters: list[list[SwingPoint]] = []
+    current_cluster = [prices[0][1]]
+    current_anchor = prices[0][0]
+
+    for price, swing in prices[1:]:
+        if abs(price - current_anchor) / current_anchor <= pct:
+            current_cluster.append(swing)
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [swing]
+            current_anchor = price
+
+    clusters.append(current_cluster)
+
+    levels = []
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
+
+        avg_price = sum(s.body_price for s in cluster) / len(cluster)
+        dir_tests = {"from_above": 0, "from_below": 0}
+        for s in cluster:
+            if s.type == "high":
+                dir_tests["from_below"] += 1
+            else:
+                dir_tests["from_above"] += 1
+
+        max_dir = max(dir_tests.values())
+        degraded = max_dir >= 3
+
+        timestamps = [s.timestamp for s in cluster]
+        levels.append(SRLevel(
+            price=round(avg_price, 6),
+            strength=len(cluster),
+            source="swing_cluster",
+            first_seen=min(timestamps),
+            last_tested=max(timestamps),
+            direction_tests=dir_tests,
+            degraded=degraded,
+        ))
+
+    levels.sort(key=lambda l: l.price)
+    return levels
+
+
+def classify_structure(swings: list[SwingPoint]) -> tuple[Structure, tuple[float, float] | None]:
+    """Classify market structure from swing sequence.
+
+    Returns (structure, range_bounds). range_bounds is (low, high) if RANGING, else None.
+    """
+    highs = [s for s in swings if s.type == "high"]
+    lows = [s for s in swings if s.type == "low"]
+
+    if len(highs) < 2 or len(lows) < 2:
+        return Structure.RANGING, None
+
+    # Use the most recent swings for classification
+    recent_highs = highs[-3:] if len(highs) >= 3 else highs[-2:]
+    recent_lows = lows[-3:] if len(lows) >= 3 else lows[-2:]
+
+    hh_count = sum(1 for i in range(1, len(recent_highs))
+                   if recent_highs[i].body_price > recent_highs[i - 1].body_price)
+    lh_count = sum(1 for i in range(1, len(recent_highs))
+                   if recent_highs[i].body_price < recent_highs[i - 1].body_price)
+    hl_count = sum(1 for i in range(1, len(recent_lows))
+                   if recent_lows[i].body_price > recent_lows[i - 1].body_price)
+    ll_count = sum(1 for i in range(1, len(recent_lows))
+                   if recent_lows[i].body_price < recent_lows[i - 1].body_price)
+
+    if hh_count > 0 and hl_count > 0 and lh_count == 0 and ll_count == 0:
+        return Structure.BULLISH, None
+    if lh_count > 0 and ll_count > 0 and hh_count == 0 and hl_count == 0:
+        return Structure.BEARISH, None
+
+    # RANGING — compute bounds from recent swings
+    all_recent = recent_highs + recent_lows
+    range_low = min(s.body_price for s in all_recent)
+    range_high = max(s.body_price for s in all_recent)
+    return Structure.RANGING, (range_low, range_high)
+
+
+def detect_msbs(swings: list[SwingPoint], df: pd.DataFrame) -> list[MSB]:
+    """Detect Market Structure Breaks — price closes above a lower high or below a higher low."""
+    msbs = []
+    highs = [s for s in swings if s.type == "high"]
+    lows = [s for s in swings if s.type == "low"]
+
+    # Bullish MSB: price closes above a prior lower high
+    for i in range(1, len(highs)):
+        if highs[i - 1].type == "high":
+            lh = highs[i - 1]
+            # Check if any candle after this swing closes above it
+            for j in range(lh.index + 1, min(lh.index + 30, len(df))):
+                if df["Close"].iloc[j] > lh.body_price:
+                    msbs.append(MSB(
+                        index=j,
+                        timestamp=df.index[j],
+                        type="bullish",
+                        level=lh.body_price,
+                        swing_broken=lh,
+                    ))
+                    break
+
+    # Bearish MSB: price closes below a prior higher low
+    for i in range(1, len(lows)):
+        if lows[i - 1].type == "low":
+            hl = lows[i - 1]
+            for j in range(hl.index + 1, min(hl.index + 30, len(df))):
+                if df["Close"].iloc[j] < hl.body_price:
+                    msbs.append(MSB(
+                        index=j,
+                        timestamp=df.index[j],
+                        type="bearish",
+                        level=hl.body_price,
+                        swing_broken=hl,
+                    ))
+                    break
+
+    msbs.sort(key=lambda m: m.index)
+    return msbs
+
+
+def calculate_fibs(swing_low: float, swing_high: float) -> FibLevels:
+    """Calculate Fibonacci retracement levels. OTE zone = 0.618-0.786 retracement."""
+    diff = swing_high - swing_low
+    fib_618 = swing_high - diff * 0.618
+    fib_786 = swing_high - diff * 0.786
+    return FibLevels(
+        swing_low=swing_low,
+        swing_high=swing_high,
+        fib_618=round(fib_618, 6),
+        fib_786=round(fib_786, 6),
+        ote_zone=(round(fib_618, 6), round(fib_786, 6)),
+    )
+
+
+def build_context(df: pd.DataFrame, lookback: int = 5, sr_pct: float = 0.015) -> MarketContext:
+    """Build full market context from a DataFrame of candles."""
+    swings = find_swing_points(df, lookback)
+    sr_levels = cluster_sr_levels(swings, sr_pct)
+    structure, range_bounds = classify_structure(swings)
+    msbs = detect_msbs(swings, df)
+    atr = compute_atr(df)
+    current_price = float(df["Close"].iloc[-1])
+
+    # Fib levels from the most recent significant swing
+    fib_levels = None
+    highs = [s for s in swings if s.type == "high"]
+    lows = [s for s in swings if s.type == "low"]
+    if highs and lows:
+        recent_high = max(highs[-3:], key=lambda s: s.body_price) if len(highs) >= 3 else highs[-1]
+        recent_low = min(lows[-3:], key=lambda s: s.body_price) if len(lows) >= 3 else lows[-1]
+        if recent_high.body_price > recent_low.body_price:
+            fib_levels = calculate_fibs(recent_low.body_price, recent_high.body_price)
+
+    return MarketContext(
+        structure=structure,
+        swings=swings,
+        sr_levels=sr_levels,
+        msbs=msbs,
+        range_bounds=range_bounds,
+        atr=atr,
+        current_price=current_price,
+        fib_levels=fib_levels,
+    )

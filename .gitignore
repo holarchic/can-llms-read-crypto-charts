@@ -25,4 +25,7 @@ Thumbs.db
 .pytest_cache/
 
 # Source transcripts (large, regeneratable)
-transcripts/
+reference/transcripts/
+
+# Scanner runtime data
+data/

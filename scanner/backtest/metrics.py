@@ -1,0 +1,131 @@
+"""Aggregation: win rate, expectancy, profit factor, slicing by dimension."""
+
+from dataclasses import dataclass
+
+from .resolver import TradeOutcome
+
+
+@dataclass
+class MetricsReport:
+    """Aggregated metrics for a set of trade outcomes."""
+
+    label: str
+    sample_size: int
+    wins: int
+    losses: int
+    expired: int
+    win_rate: float
+    avg_r: float
+    expectancy: float
+    profit_factor: float
+    total_r: float
+    avg_bars_to_exit: float
+    avg_mae: float
+    avg_mfe: float
+    avg_win_r: float
+    avg_loss_r: float
+
+
+def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> MetricsReport:
+    """Compute aggregate metrics from a list of trade outcomes."""
+    n = len(outcomes)
+    if n == 0:
+        return MetricsReport(
+            label=label, sample_size=0, wins=0, losses=0, expired=0,
+            win_rate=0.0, avg_r=0.0, expectancy=0.0, profit_factor=0.0,
+            total_r=0.0, avg_bars_to_exit=0.0, avg_mae=0.0, avg_mfe=0.0,
+            avg_win_r=0.0, avg_loss_r=0.0,
+        )
+
+    wins = [o for o in outcomes if o.result == "WIN"]
+    losses = [o for o in outcomes if o.result == "LOSS"]
+    expired = [o for o in outcomes if o.result == "EXPIRED"]
+
+    total_r = sum(o.r_achieved for o in outcomes)
+    avg_r = total_r / n
+
+    win_r_values = [o.r_achieved for o in wins]
+    loss_r_values = [o.r_achieved for o in losses]
+
+    avg_win_r = sum(win_r_values) / len(win_r_values) if win_r_values else 0.0
+    avg_loss_r = sum(loss_r_values) / len(loss_r_values) if loss_r_values else 0.0
+
+    win_rate = len(wins) / n if n > 0 else 0.0
+
+    # Expectancy: (win_rate * avg_win) + (loss_rate * avg_loss)
+    # avg_loss is already negative
+    loss_rate = len(losses) / n if n > 0 else 0.0
+    expectancy = (win_rate * avg_win_r) + (loss_rate * avg_loss_r)
+
+    # Profit factor: gross wins / gross losses (absolute)
+    gross_wins = sum(o.r_achieved for o in wins)
+    gross_losses = abs(sum(o.r_achieved for o in losses))
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0.0
+
+    avg_bars = sum(o.bars_to_exit for o in outcomes) / n
+    avg_mae = sum(o.mae for o in outcomes) / n
+    avg_mfe = sum(o.mfe for o in outcomes) / n
+
+    return MetricsReport(
+        label=label,
+        sample_size=n,
+        wins=len(wins),
+        losses=len(losses),
+        expired=len(expired),
+        win_rate=round(win_rate, 4),
+        avg_r=round(avg_r, 4),
+        expectancy=round(expectancy, 4),
+        profit_factor=round(profit_factor, 4),
+        total_r=round(total_r, 4),
+        avg_bars_to_exit=round(avg_bars, 1),
+        avg_mae=round(avg_mae, 4),
+        avg_mfe=round(avg_mfe, 4),
+        avg_win_r=round(avg_win_r, 4),
+        avg_loss_r=round(avg_loss_r, 4),
+    )
+
+
+# --- Slicers ---
+
+def _confidence_bucket(confidence: float) -> str:
+    if confidence >= 0.7:
+        return "high"
+    elif confidence >= 0.5:
+        return "med"
+    else:
+        return "low"
+
+
+DEFAULT_SLICERS = {
+    "setup_type": lambda o: o.setup.setup_type if o.setup else "unknown",
+    "direction": lambda o: o.setup.direction if o.setup else "unknown",
+    "structure": lambda o: o.setup.structure if o.setup else "unknown",
+    "confidence": lambda o: _confidence_bucket(o.setup.confidence) if o.setup else "unknown",
+    "sent_to_llm": lambda o: "yes" if (o.setup and o.setup.sent_to_llm) else "no",
+}
+
+
+def slice_metrics(
+    outcomes: list[TradeOutcome],
+    slicers: dict | None = None,
+) -> dict[str, list[MetricsReport]]:
+    """Slice outcomes by multiple dimensions, compute metrics for each slice.
+
+    Returns {dimension_name: [MetricsReport per slice value]}.
+    """
+    if slicers is None:
+        slicers = DEFAULT_SLICERS
+
+    result = {}
+    for dim_name, key_fn in slicers.items():
+        buckets: dict[str, list[TradeOutcome]] = {}
+        for o in outcomes:
+            key = str(key_fn(o))
+            buckets.setdefault(key, []).append(o)
+
+        reports = []
+        for key in sorted(buckets.keys()):
+            reports.append(compute_metrics(buckets[key], label=key))
+        result[dim_name] = reports
+
+    return result

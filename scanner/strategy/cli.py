@@ -1,0 +1,404 @@
+"""Strategy CLI — create, list, activate, replay, compare, sweep, backfill, report, disable."""
+
+import argparse
+import sys
+from datetime import datetime, timezone, timedelta
+
+from ..storage import get_connection
+from ..backtest.candles import cache_candles, fetch_and_cache
+from ..backtest.report import format_summary
+from .models import Strategy
+from .store import (
+    save_strategy,
+    get_strategy,
+    list_strategies,
+    activate_strategy,
+    ensure_baseline,
+)
+from .replay import replay
+from .compare import format_comparison
+from .sweep import sweep_resolution, sweep_screener, _parse_range
+from .report import (
+    signal_quality_report,
+    llm_filter_report,
+    regime_decay_report,
+    suggest_disabled_types,
+    format_signal_quality,
+    format_llm_filter,
+    format_regime_decay,
+    format_disable_suggestion,
+)
+
+
+def cmd_create(args):
+    conn = get_connection()
+    sid = args.id or f"v{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
+
+    strategy = Strategy(
+        strategy_id=sid,
+        label=args.label,
+        swing_lookback=args.swing_lookback,
+        sr_cluster_pct=args.sr_cluster_pct,
+        proximity_atr_mult=args.proximity_mult,
+        max_setups_per_coin=args.max_setups,
+        atr_stop_mult=args.atr_stop,
+        atr_target_mult=args.atr_target,
+        ruleset_version=args.ruleset_version or "",
+        notes=args.notes or "",
+    )
+    save_strategy(strategy, conn)
+    conn.close()
+    print(f"Created strategy: {sid} ({args.label})")
+
+
+def cmd_list(args):
+    conn = get_connection()
+    ensure_baseline(conn)
+    strategies = list_strategies(conn)
+    conn.close()
+
+    if not strategies:
+        print("No strategies found.")
+        return
+
+    print(f"{'ID':<20} {'Label':<16} {'Active':>6} {'Stop':>5} {'Target':>6} {'Prox':>5} {'Disabled':<8} {'Created':<20}")
+    print("-" * 100)
+    for s in strategies:
+        active = " *" if s.is_active else ""
+        created = s.created_at[:19] if s.created_at else ""
+        disabled = s.disabled_types or "-"
+        print(
+            f"{s.strategy_id:<20} {s.label:<16} {active:>6} "
+            f"{s.atr_stop_mult:>5.1f} {s.atr_target_mult:>6.1f} "
+            f"{s.proximity_atr_mult:>5.1f} {disabled:<8} {created:<20}"
+        )
+
+
+def cmd_activate(args):
+    conn = get_connection()
+    if not get_strategy(args.strategy_id, conn):
+        print(f"Strategy '{args.strategy_id}' not found.")
+        conn.close()
+        sys.exit(1)
+
+    activate_strategy(args.strategy_id, conn)
+    conn.close()
+    print(f"Activated strategy: {args.strategy_id}")
+
+
+def cmd_replay(args):
+    conn = get_connection()
+    strategy = get_strategy(args.strategy_id, conn)
+    if not strategy:
+        print(f"Strategy '{args.strategy_id}' not found.")
+        conn.close()
+        sys.exit(1)
+
+    coins = [c.upper() for c in args.coin] if args.coin else None
+
+    signals, metrics = replay(
+        strategy,
+        since=args.since,
+        until=args.until,
+        conn=conn,
+        coins=coins,
+        resolve=args.resolve,
+        verbose=args.verbose,
+    )
+
+    print(f"\nReplay results for strategy '{strategy.strategy_id}' ({strategy.label}):")
+    print(f"  Signals: {len(signals)}")
+
+    if metrics:
+        print(f"\n{format_summary(metrics)}")
+
+    conn.close()
+
+
+def cmd_compare(args):
+    conn = get_connection()
+    strat_a = get_strategy(args.id_a, conn)
+    strat_b = get_strategy(args.id_b, conn)
+
+    if not strat_a or not strat_b:
+        missing = args.id_a if not strat_a else args.id_b
+        print(f"Strategy '{missing}' not found.")
+        conn.close()
+        sys.exit(1)
+
+    coins = [c.upper() for c in args.coin] if args.coin else None
+
+    print(f"Replaying strategy A: {strat_a.strategy_id}...")
+    _, metrics_a = replay(
+        strat_a, args.since, args.until, conn,
+        coins=coins, resolve=True, verbose=args.verbose,
+    )
+
+    print(f"Replaying strategy B: {strat_b.strategy_id}...")
+    _, metrics_b = replay(
+        strat_b, args.since, args.until, conn,
+        coins=coins, resolve=True, verbose=args.verbose,
+    )
+
+    if not metrics_a or not metrics_b:
+        print("Could not resolve signals for one or both strategies.")
+        conn.close()
+        sys.exit(1)
+
+    print(f"\n{format_comparison(metrics_a, metrics_b)}")
+    conn.close()
+
+
+def cmd_sweep(args):
+    conn = get_connection()
+
+    stop_values = _parse_range(args.atr_stop)
+    target_values = _parse_range(args.atr_target)
+
+    # Load signals from a base strategy replay
+    base_id = args.base or "v0"
+    base = get_strategy(base_id, conn)
+    if not base:
+        ensure_baseline(conn)
+        base = get_strategy("v0", conn)
+
+    since = args.since or (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime("%Y-%m-%d")
+    until = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    print(f"Replaying base strategy '{base.strategy_id}' to get signals...")
+    replay(base, since, until, conn, verbose=False)
+
+    # Load the replayed signals
+    rows = conn.execute(
+        "SELECT * FROM signals WHERE strategy_id = ? ORDER BY timestamp",
+        (base.strategy_id,),
+    ).fetchall()
+    signal_rows = [dict(r) for r in rows]
+
+    if not signal_rows:
+        print("No signals found. Run backfill first.")
+        conn.close()
+        sys.exit(1)
+
+    print(f"Sweeping {len(stop_values)}x{len(target_values)} combos over {len(signal_rows)} signals...")
+    results = sweep_resolution(
+        signal_rows, stop_values, target_values, conn,
+        verbose=args.verbose,
+    )
+
+    # Print results sorted by expectancy
+    results.sort(key=lambda r: r[2].expectancy, reverse=True)
+
+    print(f"\n{'Stop':>6} {'Target':>7} {'N':>5} {'WR':>7} {'ExpR':>8} {'PF':>7} {'TotR':>8}")
+    print("-" * 55)
+    for stop, target, m in results:
+        pf = f"{m.profit_factor:.2f}" if m.profit_factor != float("inf") else "inf"
+        print(
+            f"{stop:>6.1f} {target:>7.1f} {m.sample_size:>5} "
+            f"{m.win_rate:>6.1%} {m.expectancy:>+7.3f}R "
+            f"{pf:>6} {m.total_r:>+7.2f}"
+        )
+
+    conn.close()
+
+
+def cmd_report(args):
+    conn = get_connection()
+    strategy = get_strategy(args.strategy_id, conn)
+    if not strategy:
+        print(f"Strategy '{args.strategy_id}' not found.")
+        conn.close()
+        sys.exit(1)
+
+    coins = [c.upper() for c in args.coin] if args.coin else None
+
+    # Default: run all loops unless specific ones requested
+    run_all = not (args.signal_quality or args.llm_filter or args.regime or args.suggest_disable)
+
+    if run_all or args.signal_quality:
+        overall, sliced = signal_quality_report(
+            strategy, args.since, args.until, conn,
+            coins=coins, verbose=args.verbose,
+        )
+        print(format_signal_quality(overall, sliced))
+        print()
+
+    if run_all or args.llm_filter:
+        result = llm_filter_report(
+            strategy, args.since, args.until, conn,
+            coins=coins, verbose=args.verbose,
+        )
+        print(format_llm_filter(result))
+        print()
+
+    if run_all or args.regime:
+        windows = regime_decay_report(
+            strategy, args.since, args.until, conn,
+            window_weeks=args.window_weeks,
+            coins=coins, verbose=args.verbose,
+        )
+        print(format_regime_decay(windows))
+        print()
+
+    if run_all or args.suggest_disable:
+        # Need signal quality data for suggestions
+        if not (run_all or args.signal_quality):
+            _, sliced = signal_quality_report(
+                strategy, args.since, args.until, conn,
+                coins=coins, verbose=args.verbose,
+            )
+        setup_type_reports = sliced.get("setup_type", [])
+        suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
+        print(format_disable_suggestion(suggestions))
+
+    conn.close()
+
+
+def cmd_disable(args):
+    conn = get_connection()
+    strategy = get_strategy(args.strategy_id, conn)
+    if not strategy:
+        print(f"Strategy '{args.strategy_id}' not found.")
+        conn.close()
+        sys.exit(1)
+
+    if args.types.lower() == "none":
+        strategy.disabled_types = ""
+        print(f"Cleared disabled types for strategy '{args.strategy_id}'")
+    else:
+        types = ",".join(t.strip().upper() for t in args.types.split(",") if t.strip())
+        strategy.disabled_types = types
+        print(f"Disabled types for strategy '{args.strategy_id}': {types}")
+
+    save_strategy(strategy, conn)
+    conn.close()
+
+
+def cmd_backfill(args):
+    from ..data import fetch_pairs_with_volume, get_exchange
+    from ..config import ScannerConfig
+    import time
+
+    conn = get_connection()
+    config = ScannerConfig()
+
+    if args.coin:
+        coins = [args.coin.upper()]
+    else:
+        pairs = fetch_pairs_with_volume(config)
+        coins = [p["coin"] for p in pairs]
+        print(f"Backfilling {len(coins)} coins")
+
+    exchange = get_exchange()
+    since = args.since
+    until = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    total_cached = 0
+    for i, coin in enumerate(coins):
+        try:
+            df = fetch_and_cache(coin, "4h", since, until, conn, config)
+            n = len(df) if df is not None else 0
+            total_cached += n
+            if args.verbose:
+                print(f"  [{i+1}/{len(coins)}] {coin}: {n} candles")
+        except Exception as e:
+            if args.verbose:
+                print(f"  [{i+1}/{len(coins)}] {coin}: error — {e}")
+        time.sleep(config.api_sleep_ms / 1000)
+
+    conn.close()
+    print(f"Backfill complete: {total_cached} candles cached for {len(coins)} coins")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="scanner.strategy",
+        description="Strategy versioning + replay system",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # create
+    p_create = sub.add_parser("create", help="Create a new strategy")
+    p_create.add_argument("--id", type=str, default=None, help="Strategy ID (auto-generated if omitted)")
+    p_create.add_argument("--label", type=str, required=True, help="Human-readable label")
+    p_create.add_argument("--swing-lookback", type=int, default=5)
+    p_create.add_argument("--sr-cluster-pct", type=float, default=0.015)
+    p_create.add_argument("--proximity-mult", type=float, default=1.5)
+    p_create.add_argument("--max-setups", type=int, default=3)
+    p_create.add_argument("--atr-stop", type=float, default=1.5)
+    p_create.add_argument("--atr-target", type=float, default=3.0)
+    p_create.add_argument("--ruleset-version", type=str, default=None, help="UNIFIED_TA_RULESET version (e.g. v1.2.0)")
+    p_create.add_argument("--notes", type=str, default=None)
+    p_create.set_defaults(func=cmd_create)
+
+    # list
+    p_list = sub.add_parser("list", help="List all strategies")
+    p_list.set_defaults(func=cmd_list)
+
+    # activate
+    p_activate = sub.add_parser("activate", help="Set active strategy")
+    p_activate.add_argument("strategy_id", help="Strategy ID to activate")
+    p_activate.set_defaults(func=cmd_activate)
+
+    # replay
+    p_replay = sub.add_parser("replay", help="Replay screener on cached candles")
+    p_replay.add_argument("strategy_id", help="Strategy ID to replay")
+    p_replay.add_argument("--since", required=True, help="Start date (YYYY-MM-DD)")
+    p_replay.add_argument("--until", required=True, help="End date (YYYY-MM-DD)")
+    p_replay.add_argument("--coin", nargs="*", help="Filter by coin(s)")
+    p_replay.add_argument("--resolve", action="store_true", help="Also resolve and compute metrics")
+    p_replay.add_argument("-v", "--verbose", action="store_true")
+    p_replay.set_defaults(func=cmd_replay)
+
+    # compare
+    p_compare = sub.add_parser("compare", help="A/B compare two strategies")
+    p_compare.add_argument("id_a", help="Strategy A")
+    p_compare.add_argument("id_b", help="Strategy B")
+    p_compare.add_argument("--since", required=True, help="Start date")
+    p_compare.add_argument("--until", required=True, help="End date")
+    p_compare.add_argument("--coin", nargs="*", help="Filter by coin(s)")
+    p_compare.add_argument("-v", "--verbose", action="store_true")
+    p_compare.set_defaults(func=cmd_compare)
+
+    # sweep
+    p_sweep = sub.add_parser("sweep", help="Grid search over resolution params")
+    p_sweep.add_argument("--atr-stop", type=str, default="1.0:0.5:3.0", help="Range: start:step:end")
+    p_sweep.add_argument("--atr-target", type=str, default="2.0:0.5:5.0", help="Range: start:step:end")
+    p_sweep.add_argument("--base", type=str, default=None, help="Base strategy ID for signals")
+    p_sweep.add_argument("--since", type=str, default=None, help="Start date")
+    p_sweep.add_argument("--until", type=str, default=None, help="End date")
+    p_sweep.add_argument("--days", type=int, default=30, help="Lookback days (if --since not set)")
+    p_sweep.add_argument("-v", "--verbose", action="store_true")
+    p_sweep.set_defaults(func=cmd_sweep)
+
+    # report
+    p_report = sub.add_parser("report", help="Validation reports (signal quality, LLM filter, regime decay)")
+    p_report.add_argument("strategy_id", help="Strategy ID to report on")
+    p_report.add_argument("--since", required=True, help="Start date (YYYY-MM-DD)")
+    p_report.add_argument("--until", required=True, help="End date (YYYY-MM-DD)")
+    p_report.add_argument("--coin", nargs="*", help="Filter by coin(s)")
+    p_report.add_argument("--signal-quality", action="store_true", help="Run signal quality report only")
+    p_report.add_argument("--llm-filter", action="store_true", help="Run LLM filter value report only")
+    p_report.add_argument("--regime", action="store_true", help="Run regime decay report only")
+    p_report.add_argument("--suggest-disable", action="store_true", help="Suggest setup types to disable")
+    p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for regime decay (default: 2)")
+    p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
+    p_report.add_argument("-v", "--verbose", action="store_true")
+    p_report.set_defaults(func=cmd_report)
+
+    # disable
+    p_disable = sub.add_parser("disable", help="Disable setup types for a strategy")
+    p_disable.add_argument("strategy_id", help="Strategy ID")
+    p_disable.add_argument("types", help="Comma-separated types to disable (e.g. 'A,E'), or 'none' to clear")
+    p_disable.set_defaults(func=cmd_disable)
+
+    # backfill
+    p_backfill = sub.add_parser("backfill", help="Fetch and cache 4H candles")
+    p_backfill.add_argument("--since", required=True, help="Start date (YYYY-MM-DD)")
+    p_backfill.add_argument("--until", type=str, default=None, help="End date")
+    p_backfill.add_argument("--coin", type=str, default=None, help="Single coin filter")
+    p_backfill.add_argument("-v", "--verbose", action="store_true")
+    p_backfill.set_defaults(func=cmd_backfill)
+
+    args = parser.parse_args()
+    args.func(args)
