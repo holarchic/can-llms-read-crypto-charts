@@ -58,6 +58,26 @@ Remove the human from trade entry. Bot places HyperLiquid perp trades automatica
 
 **Dependencies**: Phase 1 running with positive expectancy. Need enough backtest data to trust the system before letting it trade real capital.
 
+### Prerequisite: Secret Management
+
+Before adding trade execution credentials, migrate from `.env` to GCP Secret Manager.
+
+**Why**: HyperLiquid API keys can move real funds — different threat class from Anthropic/Discord keys. Secrets must not sit as plaintext on disk.
+
+**Steps**:
+1. Store all secrets in GCP Secret Manager (free tier: 6 secrets, 10K accesses/month)
+2. Update `config.py` to fetch from Secret Manager at runtime, fall back to `os.getenv()` for local dev
+3. Scope VM service account to `secretmanager.secretAccessor` only (read, no create/delete)
+4. Delete `.env` from VM disk
+5. Dependency: `google-cloud-secret-manager`
+
+**HyperLiquid-specific hardening**:
+- IP-whitelist API key to VM's external IP
+- Create key without withdrawal permission (trading only)
+- Trade from a sub-account with capped balance (limits blast radius)
+
+**Kill switch**: Secret Manager key or GCS object (`KILL_SWITCH`). Pipeline checks every scan cycle. Flippable from phone.
+
 ---
 
 ## Phase 3: Dynamic Position Management
