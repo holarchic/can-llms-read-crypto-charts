@@ -19,12 +19,23 @@ def _build_embed(result: ScanResult) -> dict:
     """Build a Discord embed dict from a scan result."""
     signal = result.setup_signal
     parsed = result.parsed_decision or {}
-    setup_name = SETUP_NAMES.get(signal.setup_type, signal.setup_type.value)
 
-    direction_str = signal.direction.value
-    color = COLOR_LONG if signal.direction == Direction.LONG else COLOR_SHORT
+    # Prefer LLM's classification over screener's (LLM analyzes blind and may reclassify)
+    llm_direction = parsed.get("direction", "").upper()
+    if llm_direction in ("LONG", "SHORT"):
+        direction_str = llm_direction
+    else:
+        direction_str = signal.direction.value
 
-    title = f"{direction_str} {result.coin} | Setup {signal.setup_type.value}: {setup_name}"
+    llm_setup = parsed.get("setup", "")
+    if llm_setup:
+        setup_display = llm_setup
+    else:
+        setup_display = f"Setup {signal.setup_type.value}: {SETUP_NAMES.get(signal.setup_type, signal.setup_type.value)}"
+
+    color = COLOR_LONG if direction_str == "LONG" else COLOR_SHORT
+
+    title = f"{direction_str} {result.coin} | {setup_display}"
 
     fields = []
 
@@ -107,11 +118,16 @@ def format_alert_text(result: ScanResult) -> str:
     """Format a scan result as plain text (for CLI output)."""
     signal = result.setup_signal
     parsed = result.parsed_decision or {}
-    setup_name = SETUP_NAMES.get(signal.setup_type, signal.setup_type.value)
+
+    # Prefer LLM's classification over screener's
+    llm_direction = parsed.get("direction", "").upper()
+    direction_str = llm_direction if llm_direction in ("LONG", "SHORT") else signal.direction.value
+    llm_setup = parsed.get("setup", "")
+    setup_display = llm_setup or f"Setup {signal.setup_type.value}: {SETUP_NAMES.get(signal.setup_type, signal.setup_type.value)}"
 
     lines = [
         f"\n{'=' * 60}",
-        f"  {signal.direction.value} {result.coin} | Setup {signal.setup_type.value}: {setup_name}",
+        f"  {direction_str} {result.coin} | {setup_display}",
         f"  Decision: {result.decision}",
     ]
 

@@ -86,7 +86,7 @@ def analyze_for_scanner(
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=cfg.model,
-        max_tokens=6144,
+        max_tokens=16000,
         thinking={"type": "adaptive"},
         system=[{
             "type": "text",
@@ -95,6 +95,10 @@ def analyze_for_scanner(
         }],
         messages=messages,
     )
+
+    # Warn if response was truncated
+    if response.stop_reason == "max_tokens":
+        print(f"  ⚠ {signal.coin}: Response truncated (max_tokens). Output may be incomplete.")
 
     # Extract text (skip thinking blocks)
     text_parts = []
