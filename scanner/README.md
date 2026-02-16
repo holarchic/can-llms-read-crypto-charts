@@ -52,7 +52,7 @@ Key parameters in `scanner/config.py`:
 | `max_llm_calls_per_scan` | 20 | Cost control |
 | `daily_cost_cap` | $15 | Hard stop on daily LLM spend |
 | `dedup_hours` | 12 | Don't re-alert same setup within window |
-| `thinking_budget` | 5000 | Reduced from chart_analyzer's 10K |
+
 
 ## Tests
 

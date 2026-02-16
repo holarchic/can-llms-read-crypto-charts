@@ -42,7 +42,6 @@ class ScannerConfig:
 
     # LLM
     model: str = "claude-opus-4-6"
-    thinking_budget: int = 5000
     max_llm_calls_per_scan: int = 20
     daily_cost_cap: float = 15.0
 
