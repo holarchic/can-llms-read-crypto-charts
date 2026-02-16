@@ -166,8 +166,12 @@ def stage2_analyze(
             result = future.result()
             if result:
                 if verbose:
+                    decision_str = result.decision or 'PARSE_FAIL'
                     print(f"  {result.coin:>8} {signal.setup_type.value} {signal.direction.value:>5} → "
-                          f"{result.decision or 'N/A':>7}  ${result.cost_usd:.4f}")
+                          f"{decision_str:>10}  ${result.cost_usd:.4f}")
+                    if not result.decision:
+                        preview = (result.analysis_text or '')[:200].replace('\n', ' ')
+                        print(f"    ⚠ Parse failed. Raw output: {preview}")
                 save_result(result, conn, strategy_id=strategy_id)
                 results.append(result)
 

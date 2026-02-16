@@ -133,6 +133,8 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "scans", "strategy_id", "TEXT", "'v0'")
     _ensure_column(conn, "strategies", "ruleset_version", "TEXT", "''")
     _ensure_column(conn, "strategies", "disabled_types", "TEXT", "''")
+    _ensure_column(conn, "scans", "analysis_text", "TEXT", "NULL")
+    _ensure_column(conn, "scans", "leverage", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -157,8 +159,8 @@ def save_result(
         (scan_id, coin, timestamp, setup_type, setup_name, direction,
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
-         strategy_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         strategy_id, analysis_text, leverage, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.scan_id,
             result.coin,
@@ -177,6 +179,8 @@ def save_result(
             result.cost_usd,
             1 if result.alerted else 0,
             strategy_id,
+            result.analysis_text,
+            parsed.get("leverage"),
             datetime.now(timezone.utc).isoformat(),
         ),
     )

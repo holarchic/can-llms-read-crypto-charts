@@ -114,3 +114,136 @@ WAIT signals are "not yet, but watch this" — revisit them sooner than the next
 - Re-check frequency (every 1H? every 2H?)
 - Cost budget for WAIT re-evaluation (could be significant if many WAITs accumulate)
 - Max WAIT lifetime before auto-expire
+
+---
+
+## Phase 5: Multi-Exchange Support
+
+Expand beyond HyperLiquid to scan additional exchanges for setups.
+
+**Why**: More pairs = more opportunities. Different exchanges list different tokens. Cross-exchange signals add confluence.
+
+### Exchange Assessment
+
+| Exchange | Candle Data | Trading API | ccxt Support | AU Access | Verdict |
+|----------|-------------|-------------|--------------|-----------|---------|
+| **HyperLiquid** | Working | Phase 2 | Good | Yes | **Live** |
+| **Bybit** | Easy | Easy | Tier 1 | Yes | **Best next** |
+| **Binance** | Easy | Easy | Tier 1 | **Futures blocked for AU since 2021** | Geo-risk |
+| **MEXC** | Institutional only | Institutional only | Good (but locked) | N/A | **Dead end** |
+
+### Bybit (recommended first)
+- 350+ perpetual pairs (vs HL's ~50), V5 unified API
+- Symbol format: `{coin}/USDT:USDT` (USDT not USDC)
+- Rate limits more generous than HL (10 req/s trading, 50 req/s data)
+- Demo trading with 50K USDT virtual funds, no KYC needed
+- Live trading: Level 1 KYC (gov ID)
+- No Australian restrictions
+
+### Binance (if AU access confirmed)
+- Most mature ccxt integration, largest liquidity
+- Same symbol format as Bybit: `{coin}/USDT:USDT`
+- **Blocker**: ASIC forced AU futures block in 2021. Existing accounts may be grandfathered — verify before building.
+- Level 2 KYC required (ID + proof of address)
+- Gotcha: `set_leverage()` must be called separately, not in `create_order()` params
+
+### MEXC (not viable)
+- Futures API locked to institutional users since July 2022 (KYB required)
+- No retail API access for perps — not even read-only market data
+
+### Implementation approach
+Current `data.py` is mostly exchange-agnostic (retry logic, batch parallelism, DataFrame shape). Exchange-specific parts: symbol format, pair filtering, quote currency. Start with a Bybit copy of `data.py`, refactor to shared interface if adding a third exchange.
+
+---
+
+## Future: Prediction Market Arbitrage
+
+Structurally identical to crypto perps thesis: fragmented, retail-dominated, API-accessible, too small/weird for institutional desks. **Window: 12-24 months** before institutions dominate (Jump Trading took stakes in Polymarket + Kalshi Feb 2026, Susquehanna already market-making on Kalshi).
+
+### Why prediction markets
+
+- **Proven alpha**: Arb bots extracted $40M from Polymarket in 12 months. One bot turned $313 → $414K in a month trading BTC/ETH 15-min markets. Academic research confirms persistent mispricing (Polymarket 67% accurate, Kalshi 78%).
+- **Fragmented**: Polymarket, Kalshi, Limitless, Opinion, PredictIt, DraftKings — each prices the same events differently.
+- **Low capital**: Start with $100-$1K on Polymarket (USDC on Polygon).
+- **Fee-free or low-fee**: Polymarket is mostly fee-free with maker rebates. Kalshi 0.7-3.5%.
+
+### Platforms & APIs
+
+| Platform | API | Protocol | Access |
+|----------|-----|----------|--------|
+| **Polymarket** | REST + WebSocket + CLOB | EIP712 signed orders on Polygon | Crypto wallet. US: invite-only + KYC since Dec 2025. AU: grey area, not explicitly blocked |
+| **Kalshi** | REST + FIX 4.4 | Traditional exchange | US-only, CFTC-regulated. Full KYC. $25K max/contract retail |
+| **Limitless** | API available | Onchain | Crypto wallet |
+| **Opinion** | API available | Onchain | Crypto wallet |
+
+### Tooling (open-source)
+
+- **dr-manhattan** (github.com/uncanny_guzus): ccxt-equivalent for prediction markets. Supports Polymarket, Kalshi, Limitless, Opinion. Arbitrage + market-making bots.
+- **jack_cs prediction market toolkit**: Polymarket + Kalshi clients, WebSocket reconnection, 15-min rollover edge case handling. Optimized for Claude Code dev.
+- **Polymarket official Python CLOB client**: github.com/Polymarket/py-clob-client
+- **Polymarket AI agents framework**: github.com/Polymarket/agents
+
+### Strategy hierarchy
+
+1. **Cross-platform rebalancing arb** (lowest risk): Buy YES + NO across platforms when combined < $1.00. Documented 4-6 cent spreads on identical events.
+2. **Temporal arbitrage** (medium risk): Polymarket prices lag confirmed spot momentum on Binance/Coinbase for crypto-linked markets. 98% win rate documented.
+3. **Market making** (medium risk): Provide liquidity on thin markets with wide spreads. One user reported $700-800/day at peak.
+4. **Overreaction fading** (higher risk): Negative serial correlation means price spikes tend to reverse next day. Systematic mean reversion.
+5. **AI probability models** (highest edge, highest complexity): Ensemble models on news/social data. One bot generated $2.2M in two months.
+
+### Key risks
+- Regulatory whiplash (state-level bans, country blocks expanding)
+- Event resolution disputes (Polymarket has had controversial resolutions)
+- Smart contract / bridge risk (Polygon)
+- Institutions compressing margins rapidly (Jump, Susquehanna)
+- AU access is regulatory grey area for Polymarket
+
+---
+
+## Future: Alternative Market Landscape
+
+Markets ranked by structural similarity to the crypto perps thesis (too small for institutions, fragmented, volatile, API-accessible).
+
+### Tier 1 — Strong structural match
+
+| Market | Inefficiency | API | Capital | Why it works |
+|--------|-------------|-----|---------|-------------|
+| **Prediction markets** | HIGH | Good | $100+ | See section above |
+| **Funding rate arb (multi-venue)** | HIGH | Existing infra | $5K+ | Delta-neutral, natural extension of current scanner. Long spot + short perp to collect funding. Cross-venue: HL vs Drift vs dYdX vs GMX |
+| **Esports betting** | MODERATE-HIGH | Betfair, PandaScore, Oddin.gg | $500+ | Bookmakers systematically under-model niche titles (Valorant T2-3, CS2 minor leagues). EUR 1.3M documented profit over 5 years on RebelBetting esports |
+| **Horse racing quant** | MODERATE-HIGH | Betfair Exchange API | $1K+ | Parimutuel markets are measurably inefficient. Massive structured data (jockey, trainer, surface, distance). Someone reportedly made a billion dollars doing this |
+
+### Tier 2 — Real but harder
+
+| Market | Inefficiency | API | Capital | Notes |
+|--------|-------------|-----|---------|-------|
+| **CS2/Steam skin arbitrage** | MODERATE | Steam API, Tradeit.gg, Buff163 | $500+ | Price inconsistencies across 60M+ trades. Zero institutional competition. $100-300/day documented |
+| **Meme coin sniping (Pump.fun)** | HIGH (but adversarial) | Solana RPC | $500+ | High variance, rug pull risk. 70-80% of individual trades lose. Survivors win big |
+| **DEX market making** | MODERATE | Hummingbot, DEX APIs | $5K+ | "Shitcoin market making" — big firms pass due to insufficient scale. Individuals can make "a few million/year" per Quant Arb |
+| **0DTE options** | MODERATE | IBKR TWS API | $5K+ | 51% of S&P 500 options volume. Systematic theta harvesting. Retail was first mover |
+| **Domain name sniping** | MODERATE | Registrar APIs | $1K+ | 50K domains expire daily. AI analysis of traffic/backlinks/brandability is the edge. No institutional competition |
+
+### Tier 3 — Emerging / watch list
+
+| Market | Status | When to revisit |
+|--------|--------|----------------|
+| **Tokenized RWAs** (real estate, royalties) | $30B+ tokenized but thin secondary markets | When secondary market liquidity materializes |
+| **Music royalties** (ANote, Royalty Exchange) | 117K transactions/year, 12% avg returns | When API trading is available (currently auction-based) |
+| **Weather derivatives** (Kalshi parametric contracts) | Thin liquidity, NOAA data is free, clean settlement | When volume grows enough to deploy capital |
+| **Carbon credits** (tokenized: Thallo, TakeCarbon) | $2.5B voluntary market, projected $100B+ by 2030 | When electronic orderbooks exist for retail |
+| **Electricity spot arb** (battery arbitrage) | 66% of US utility batteries used for arb in 2024 | Requires physical infrastructure or virtual power trading access |
+| **Freight futures** (Baltic Exchange FFAs) | Growing algo participation, still niche | When retail API access improves |
+
+### The meta-filter
+
+Markets where retail algo traders find alpha share these traits:
+
+| Filter | Why |
+|--------|-----|
+| Too small for institutional capital | Funds need $10M+ capacity; sub-$1M/day markets are ignored |
+| Fragmented venues | Multiple platforms with inconsistent pricing |
+| 24/7 or non-standard hours | Institutions staffed 9-5; overnight/weekend = less competition |
+| Regulatory grey zone | Compliance costs keep institutions out |
+| Domain expertise moat | Niche knowledge institutions lack (esports, weather, horse racing) |
+| API-accessible but unsophisticated participants | Markets where most participants trade manually/emotionally |
+| Young/growing market | Inefficiencies haven't been competed away yet |
