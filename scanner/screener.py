@@ -81,12 +81,42 @@ def score_signal(signal: SetupSignal, confluence_count: int, total_detectors: in
     return round(min(composite, 1.0), 4)
 
 
+def _level_recently_breached(df: pd.DataFrame, level_price: float, direction: Direction,
+                             atr: float, lookback: int = 10) -> bool:
+    """Check if recent candles closed decisively through a level, invalidating it.
+
+    For LONG (support buy): breached if a recent candle closed > 0.5 ATR below the level.
+    For SHORT (resistance sell): breached if a recent candle closed > 0.5 ATR above the level.
+    """
+    recent_closes = df["Close"].iloc[-lookback:]
+    threshold = atr * 0.5
+    if direction == Direction.LONG:
+        # Support is breached if price closed well below it
+        return bool((recent_closes < level_price - threshold).any())
+    else:
+        # Resistance is breached if price closed well above it
+        return bool((recent_closes > level_price + threshold).any())
+
+
 def detect_a_same_way_level(
     coin: str, df: pd.DataFrame, ctx: MarketContext, proximity_mult: float = 1.5,
 ) -> list[SetupSignal]:
-    """Setup A: RANGING + price at non-degraded S/R boundary."""
+    """Setup A: RANGING + price at non-degraded S/R boundary.
+
+    Filters: skip levels recently breached by a decisive close, and skip
+    signals that contradict recent MSBs (e.g. buying support when a bearish
+    MSB just fired).
+    """
     if ctx.structure != Structure.RANGING:
         return []
+
+    # Check for recent MSBs that indicate directional momentum
+    recent_msb_direction = None
+    if ctx.msbs:
+        recent = [m for m in ctx.msbs if m.index >= len(df) - 20]
+        if recent:
+            latest_msb = max(recent, key=lambda m: m.index)
+            recent_msb_direction = latest_msb.type  # "bullish" or "bearish"
 
     signals = []
     for level in ctx.sr_levels:
@@ -102,6 +132,18 @@ def detect_a_same_way_level(
         else:
             direction = Direction.SHORT
             desc = f"Price at resistance ${level.price:,.2f} in ranging market. Level tested {level.strength}x."
+
+        # Fix 2: Skip if level was recently breached by a decisive close
+        if _level_recently_breached(df, level.price, direction, ctx.atr):
+            continue
+
+        # Fix 3: Skip if recent MSB contradicts the trade direction
+        # Bearish MSB = don't buy support (it's likely to break)
+        # Bullish MSB = don't sell resistance (it's likely to break)
+        if recent_msb_direction == "bearish" and direction == Direction.LONG:
+            continue
+        if recent_msb_direction == "bullish" and direction == Direction.SHORT:
+            continue
 
         signals.append(SetupSignal(
             coin=coin,

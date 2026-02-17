@@ -130,6 +130,10 @@ def cluster_sr_levels(
 def classify_structure(swings: list[SwingPoint]) -> tuple[Structure, tuple[float, float] | None]:
     """Classify market structure from swing sequence.
 
+    Uses majority-vote: if highs are predominantly LH and lows predominantly LL,
+    that's BEARISH even with one counter-trend swing (e.g. a pullback bounce).
+    Requires both highs and lows to agree on direction.
+
     Returns (structure, range_bounds). range_bounds is (low, high) if RANGING, else None.
     """
     highs = [s for s in swings if s.type == "high"]
@@ -151,9 +155,15 @@ def classify_structure(swings: list[SwingPoint]) -> tuple[Structure, tuple[float
     ll_count = sum(1 for i in range(1, len(recent_lows))
                    if recent_lows[i].body_price < recent_lows[i - 1].body_price)
 
-    if hh_count > 0 and hl_count > 0 and lh_count == 0 and ll_count == 0:
+    # Majority vote: both highs and lows must lean the same way
+    highs_bullish = hh_count > lh_count
+    highs_bearish = lh_count > hh_count
+    lows_bullish = hl_count > ll_count
+    lows_bearish = ll_count > hl_count
+
+    if highs_bullish and lows_bullish:
         return Structure.BULLISH, None
-    if lh_count > 0 and ll_count > 0 and hh_count == 0 and hl_count == 0:
+    if highs_bearish and lows_bearish:
         return Structure.BEARISH, None
 
     # RANGING — compute bounds from recent swings
