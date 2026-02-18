@@ -135,6 +135,13 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "strategies", "disabled_types", "TEXT", "''")
     _ensure_column(conn, "scans", "analysis_text", "TEXT", "NULL")
     _ensure_column(conn, "scans", "leverage", "TEXT", "NULL")
+    # Scoring component columns for calibration experiments
+    _ensure_column(conn, "signals", "score_base", "REAL", "NULL")
+    _ensure_column(conn, "signals", "score_alignment", "REAL", "NULL")
+    _ensure_column(conn, "signals", "score_strength", "REAL", "NULL")
+    _ensure_column(conn, "signals", "score_proximity", "REAL", "NULL")
+    _ensure_column(conn, "signals", "score_confluence", "REAL", "NULL")
+    _ensure_column(conn, "signals", "btc_structure", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -289,6 +296,7 @@ def save_signals(
     sent_to_llm_count: int,
     conn: sqlite3.Connection | None = None,
     strategy_id: str = "v0",
+    btc_structure: str | None = None,
 ) -> None:
     """Batch insert all screener signals from a single run."""
     if not signals:
@@ -306,6 +314,7 @@ def save_signals(
         ctx = signal.context
         fib = ctx.fib_levels
         range_low, range_high = ctx.range_bounds if ctx.range_bounds else (None, None)
+        sc = signal.score_components
 
         rows.append((
             uuid4().hex[:8],
@@ -330,6 +339,12 @@ def save_signals(
             now,
             now,
             strategy_id,
+            sc.base if sc else None,
+            sc.alignment if sc else None,
+            sc.strength if sc else None,
+            sc.proximity if sc else None,
+            sc.confluence if sc else None,
+            btc_structure,
         ))
 
     conn.executemany(
@@ -338,8 +353,11 @@ def save_signals(
          confidence, key_level, description, current_price, atr, structure,
          range_low, range_high, fib_618, fib_786,
          sent_to_llm, rank_in_batch, total_in_batch, timestamp, created_at,
-         strategy_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         strategy_id,
+         score_base, score_alignment, score_strength, score_proximity,
+         score_confluence, btc_structure)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()

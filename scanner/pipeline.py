@@ -1,5 +1,6 @@
 """3-stage scan pipeline: screen → analyze → alert."""
 
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -92,15 +93,7 @@ def stage1_screen(
             if verbose:
                 print(f"  {coin} — error: {e}")
 
-    # Sort by confidence, cap at max LLM calls
-    all_signals.sort(key=lambda s: s.confidence, reverse=True)
-    capped = all_signals[:config.max_llm_calls_per_scan]
-
-    # Persist all signals for backtesting
-    batch_id = uuid4().hex[:8]
-    save_signals(all_signals, batch_id, len(capped), conn, strategy_id=strategy_id)
-
-    # Compute BTC 4H structure for market context (used in LLM prompts)
+    # Compute BTC 4H structure for market context (used in LLM prompts + stored per signal)
     btc_structure = None
     btc_df = candle_map.get("BTC")
     if btc_df is not None and len(btc_df) >= 50:
@@ -108,6 +101,15 @@ def stage1_screen(
         btc_structure = btc_ctx.structure.value
         if verbose:
             print(f"BTC 4H structure: {btc_structure}")
+
+    # Shuffle for unbiased LLM selection (confidence is anti-predictive — see calibration analysis)
+    random.shuffle(all_signals)
+    capped = all_signals[:config.max_llm_calls_per_scan]
+
+    # Persist all signals for backtesting (with scoring components + BTC structure)
+    batch_id = uuid4().hex[:8]
+    save_signals(all_signals, batch_id, len(capped), conn, strategy_id=strategy_id,
+                 btc_structure=btc_structure)
 
     conn.close()
 

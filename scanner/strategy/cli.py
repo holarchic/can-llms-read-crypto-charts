@@ -28,6 +28,7 @@ from .report import (
     format_regime_decay,
     format_disable_suggestion,
 )
+from .calibrate import run_calibration, format_calibration
 
 
 def cmd_create(args):
@@ -284,6 +285,23 @@ def cmd_disable(args):
     conn.close()
 
 
+def cmd_calibrate(args):
+    conn = get_connection()
+    result = run_calibration(conn, days=args.days, timeout_bars=args.timeout)
+    report_text = format_calibration(result)
+    print(report_text)
+
+    if args.discord:
+        from ..alerts import send_text_alert
+        ok = send_text_alert(report_text, title="Scoring Calibration Report")
+        if ok:
+            print("\n  Sent to Discord.")
+        else:
+            print("\n  Discord send failed (no webhook configured?).")
+
+    conn.close()
+
+
 def cmd_backfill(args):
     from ..data import fetch_pairs_with_volume, get_exchange
     from ..config import ScannerConfig
@@ -402,6 +420,13 @@ def main():
     p_disable.add_argument("strategy_id", help="Strategy ID")
     p_disable.add_argument("types", help="Comma-separated types to disable (e.g. 'A,E'), or 'none' to clear")
     p_disable.set_defaults(func=cmd_disable)
+
+    # calibrate
+    p_cal = sub.add_parser("calibrate", help="Scoring calibration analysis")
+    p_cal.add_argument("--days", type=int, default=30, help="Lookback days (default: 30)")
+    p_cal.add_argument("--timeout", type=int, default=168, help="Timeout bars (default: 168 = 7d)")
+    p_cal.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
+    p_cal.set_defaults(func=cmd_calibrate)
 
     # backfill
     p_backfill = sub.add_parser("backfill", help="Fetch and cache 4H candles")

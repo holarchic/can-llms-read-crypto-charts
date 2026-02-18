@@ -41,11 +41,15 @@ def _structure_alignment(direction: Direction, structure: Structure) -> float:
 def score_signal(signal: SetupSignal, confluence_count: int, total_detectors: int) -> float:
     """Compute composite confidence score from multiple quality factors.
 
+    Also stores individual components on the signal for calibration experiments.
+
     Args:
         signal: The setup signal with its base confidence and context.
         confluence_count: Number of detectors that fired the same direction for this coin.
         total_detectors: Total number of detector functions (for normalizing confluence).
     """
+    from .models import ScoreComponents
+
     ctx = signal.context
 
     # Base prior — the detector's intrinsic confidence
@@ -70,6 +74,15 @@ def score_signal(signal: SetupSignal, confluence_count: int, total_detectors: in
 
     # Confluence — fraction of detectors agreeing on this coin+direction
     confluence = min(confluence_count, total_detectors) / total_detectors
+
+    # Store components for calibration experiments
+    signal.score_components = ScoreComponents(
+        base=round(base, 4),
+        alignment=round(alignment, 4),
+        strength=round(strength, 4),
+        proximity=round(proximity, 4),
+        confluence=round(confluence, 4),
+    )
 
     composite = (
         W_BASE * base

@@ -88,6 +88,16 @@ class MarketContext:
 
 
 @dataclass
+class ScoreComponents:
+    """Individual scoring factors — stored for calibration experiments."""
+    base: float = 0.0
+    alignment: float = 0.0
+    strength: float = 0.0
+    proximity: float = 0.0
+    confluence: float = 0.0
+
+
+@dataclass
 class SetupSignal:
     coin: str
     setup_type: SetupType
@@ -97,6 +107,7 @@ class SetupSignal:
     context: MarketContext
     description: str  # human-readable, used for logging
     max_leverage: int | None = None  # exchange max leverage for this pair
+    score_components: ScoreComponents | None = None  # individual factors for calibration
 
 
 @dataclass
