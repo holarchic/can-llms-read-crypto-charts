@@ -1,8 +1,56 @@
 """Aggregation: win rate, expectancy, profit factor, slicing by dimension."""
 
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, field
 
 from .resolver import TradeOutcome
+
+
+@dataclass
+class BootstrapCI:
+    """Bootstrap confidence interval on expectancy."""
+
+    ci_low: float
+    ci_high: float
+    confidence: float
+    excludes_zero: bool
+
+
+def bootstrap_expectancy(
+    outcomes: list[TradeOutcome],
+    n_bootstrap: int = 10_000,
+    confidence: float = 0.95,
+    seed: int | None = None,
+) -> BootstrapCI | None:
+    """Bootstrap CI on expectancy (mean R-multiple).
+
+    Returns None if fewer than 5 outcomes (bootstrap meaningless).
+    """
+    if len(outcomes) < 5:
+        return None
+
+    r_values = [o.r_achieved for o in outcomes]
+    n = len(r_values)
+    rng = random.Random(seed)
+
+    boot_means = []
+    for _ in range(n_bootstrap):
+        sample = [rng.choice(r_values) for _ in range(n)]
+        boot_means.append(sum(sample) / n)
+
+    boot_means.sort()
+    alpha = 1 - confidence
+    lo_idx = int(n_bootstrap * alpha / 2)
+    hi_idx = int(n_bootstrap * (1 - alpha / 2)) - 1
+    ci_low = boot_means[lo_idx]
+    ci_high = boot_means[hi_idx]
+
+    return BootstrapCI(
+        ci_low=round(ci_low, 4),
+        ci_high=round(ci_high, 4),
+        confidence=confidence,
+        excludes_zero=ci_low > 0 or ci_high < 0,
+    )
 
 
 @dataclass
@@ -24,6 +72,7 @@ class MetricsReport:
     avg_mfe: float
     avg_win_r: float
     avg_loss_r: float
+    bootstrap_ci: BootstrapCI | None = None
 
 
 def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> MetricsReport:
@@ -66,6 +115,8 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> Metrics
     avg_mae = sum(o.mae for o in outcomes) / n
     avg_mfe = sum(o.mfe for o in outcomes) / n
 
+    ci = bootstrap_expectancy(outcomes) if n >= 5 else None
+
     return MetricsReport(
         label=label,
         sample_size=n,
@@ -82,6 +133,7 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> Metrics
         avg_mfe=round(avg_mfe, 4),
         avg_win_r=round(avg_win_r, 4),
         avg_loss_r=round(avg_loss_r, 4),
+        bootstrap_ci=ci,
     )
 
 

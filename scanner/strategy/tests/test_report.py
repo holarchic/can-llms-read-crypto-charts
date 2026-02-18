@@ -325,21 +325,25 @@ class TestRegimeDecayReport:
 
 
 class TestSuggestDisabledTypes:
-    def test_suggests_negative_expectancy(self):
+    def test_suggests_negative_with_ci(self):
+        """Needs n >= 30 and bootstrap CI excluding zero (CI high < 0)."""
+        from scanner.backtest.metrics import BootstrapCI
+        ci_neg = BootstrapCI(ci_low=-0.8, ci_high=-0.2, confidence=0.95, excludes_zero=True)
         reports = [
-            MetricsReport(label="A", sample_size=15, wins=3, losses=12, expired=0,
-                         win_rate=0.2, avg_r=-0.5, expectancy=-0.5, profit_factor=0.5,
-                         total_r=-7.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
-                         avg_win_r=2.0, avg_loss_r=-1.0),
-            MetricsReport(label="B", sample_size=15, wins=10, losses=5, expired=0,
-                         win_rate=0.67, avg_r=0.5, expectancy=0.5, profit_factor=2.0,
-                         total_r=7.5, avg_bars_to_exit=15, avg_mae=0.5, avg_mfe=1.5,
+            MetricsReport(label="A", sample_size=35, wins=5, losses=30, expired=0,
+                         win_rate=0.14, avg_r=-0.5, expectancy=-0.5, profit_factor=0.3,
+                         total_r=-17.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
+                         avg_win_r=2.0, avg_loss_r=-1.0, bootstrap_ci=ci_neg),
+            MetricsReport(label="B", sample_size=35, wins=22, losses=13, expired=0,
+                         win_rate=0.63, avg_r=0.5, expectancy=0.5, profit_factor=2.0,
+                         total_r=17.5, avg_bars_to_exit=15, avg_mae=0.5, avg_mfe=1.5,
                          avg_win_r=1.5, avg_loss_r=-1.0),
         ]
         suggestions = suggest_disabled_types(reports)
         assert len(suggestions) == 1
         assert suggestions[0][0] == "A"
         assert suggestions[0][1] < 0
+        assert "95% CI" in suggestions[0][3]
 
     def test_min_sample_filter(self):
         reports = [
@@ -348,29 +352,45 @@ class TestSuggestDisabledTypes:
                          total_r=-2.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
                          avg_win_r=2.0, avg_loss_r=-1.0),
         ]
-        suggestions = suggest_disabled_types(reports, min_sample=10)
+        suggestions = suggest_disabled_types(reports, min_sample=30)
+        assert len(suggestions) == 0
+
+    def test_ci_includes_zero_blocks_suggestion(self):
+        """Negative expectancy but CI includes zero — not confident enough."""
+        from scanner.backtest.metrics import BootstrapCI
+        ci_wide = BootstrapCI(ci_low=-0.6, ci_high=0.1, confidence=0.95, excludes_zero=False)
+        reports = [
+            MetricsReport(label="A", sample_size=35, wins=12, losses=23, expired=0,
+                         win_rate=0.34, avg_r=-0.2, expectancy=-0.2, profit_factor=0.6,
+                         total_r=-7.0, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
+                         avg_win_r=2.0, avg_loss_r=-1.0, bootstrap_ci=ci_wide),
+        ]
+        suggestions = suggest_disabled_types(reports)
         assert len(suggestions) == 0
 
     def test_all_positive_returns_empty(self):
         reports = [
-            MetricsReport(label="A", sample_size=20, wins=15, losses=5, expired=0,
-                         win_rate=0.75, avg_r=0.8, expectancy=0.8, profit_factor=3.0,
-                         total_r=16.0, avg_bars_to_exit=12, avg_mae=0.3, avg_mfe=2.0,
+            MetricsReport(label="A", sample_size=35, wins=25, losses=10, expired=0,
+                         win_rate=0.71, avg_r=0.8, expectancy=0.8, profit_factor=3.0,
+                         total_r=28.0, avg_bars_to_exit=12, avg_mae=0.3, avg_mfe=2.0,
                          avg_win_r=1.5, avg_loss_r=-1.0),
         ]
         suggestions = suggest_disabled_types(reports)
         assert len(suggestions) == 0
 
     def test_sorted_worst_first(self):
+        from scanner.backtest.metrics import BootstrapCI
+        ci_a = BootstrapCI(ci_low=-0.6, ci_high=-0.05, confidence=0.95, excludes_zero=True)
+        ci_e = BootstrapCI(ci_low=-1.0, ci_high=-0.3, confidence=0.95, excludes_zero=True)
         reports = [
-            MetricsReport(label="A", sample_size=15, wins=3, losses=12, expired=0,
-                         win_rate=0.2, avg_r=-0.3, expectancy=-0.3, profit_factor=0.5,
-                         total_r=-4.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
-                         avg_win_r=2.0, avg_loss_r=-1.0),
-            MetricsReport(label="E", sample_size=15, wins=2, losses=13, expired=0,
-                         win_rate=0.13, avg_r=-0.7, expectancy=-0.7, profit_factor=0.3,
-                         total_r=-10.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.3,
-                         avg_win_r=2.0, avg_loss_r=-1.0),
+            MetricsReport(label="A", sample_size=35, wins=8, losses=27, expired=0,
+                         win_rate=0.23, avg_r=-0.3, expectancy=-0.3, profit_factor=0.5,
+                         total_r=-10.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.5,
+                         avg_win_r=2.0, avg_loss_r=-1.0, bootstrap_ci=ci_a),
+            MetricsReport(label="E", sample_size=35, wins=4, losses=31, expired=0,
+                         win_rate=0.11, avg_r=-0.7, expectancy=-0.7, profit_factor=0.3,
+                         total_r=-24.5, avg_bars_to_exit=20, avg_mae=1.0, avg_mfe=0.3,
+                         avg_win_r=2.0, avg_loss_r=-1.0, bootstrap_ci=ci_e),
         ]
         suggestions = suggest_disabled_types(reports)
         assert len(suggestions) == 2
@@ -473,10 +493,11 @@ class TestFormatRegimeDecay:
 
 class TestFormatDisableSuggestion:
     def test_with_suggestions(self):
-        suggestions = [("E", -0.5, 15), ("A", -0.2, 12)]
+        suggestions = [("E", -0.5, 35, "95% CI [-0.800, -0.200]"), ("A", -0.2, 32, "95% CI [-0.500, -0.050]")]
         output = format_disable_suggestion(suggestions)
         assert "SUGGESTED DISABLES" in output
         assert "E" in output
+        assert "95% CI" in output
         assert "python -m scanner.strategy disable" in output
 
     def test_no_suggestions(self):

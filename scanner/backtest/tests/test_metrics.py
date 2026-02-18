@@ -3,7 +3,7 @@
 import pytest
 
 from scanner.backtest.resolver import TradeSetup, TradeOutcome
-from scanner.backtest.metrics import compute_metrics, slice_metrics
+from scanner.backtest.metrics import compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI
 
 
 def _outcome(result="WIN", r_achieved=2.0, bars=5, mae=0.3, mfe=2.5, setup_type="C", direction="LONG", confidence=0.7):
@@ -128,3 +128,63 @@ class TestSliceMetrics:
         ]
         sliced = slice_metrics(outcomes, {"direction": lambda o: o.setup.direction})
         assert len(sliced["direction"]) == 2
+
+
+class TestBootstrapExpectancy:
+    """Bootstrap confidence interval on expectancy."""
+
+    def test_too_few_outcomes_returns_none(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(4)]
+        assert bootstrap_expectancy(outcomes) is None
+
+    def test_returns_bootstrap_ci(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
+        ci = bootstrap_expectancy(outcomes, seed=42)
+        assert isinstance(ci, BootstrapCI)
+        assert ci.confidence == 0.95
+        # All wins at 2.0R — CI should be tight around 2.0
+        assert ci.ci_low == pytest.approx(2.0)
+        assert ci.ci_high == pytest.approx(2.0)
+        assert ci.excludes_zero is True
+
+    def test_mixed_outcomes_ci_range(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(6)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(4)]
+        )
+        ci = bootstrap_expectancy(outcomes, seed=42)
+        # Expectancy = 0.5*2 + 0.5*(-1) = 0.8 (6/10 * 2 + 4/10 * -1 = 0.8)
+        assert ci.ci_low < ci.ci_high
+        # With 60% wins at 2R and 40% losses at -1R, CI should be mostly positive
+        assert ci.ci_low > -1.0
+        assert ci.ci_high < 3.0
+
+    def test_losing_system_ci_includes_negative(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(2)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(8)]
+        )
+        ci = bootstrap_expectancy(outcomes, seed=42)
+        # 20% WR — should be clearly negative
+        assert ci.ci_high <= 0.5  # upper bound shouldn't be strongly positive
+
+    def test_deterministic_with_seed(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(5)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(5)]
+        )
+        ci1 = bootstrap_expectancy(outcomes, seed=123)
+        ci2 = bootstrap_expectancy(outcomes, seed=123)
+        assert ci1.ci_low == ci2.ci_low
+        assert ci1.ci_high == ci2.ci_high
+
+    def test_compute_metrics_includes_ci(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
+        report = compute_metrics(outcomes, "test")
+        assert report.bootstrap_ci is not None
+        assert report.bootstrap_ci.excludes_zero is True
+
+    def test_compute_metrics_no_ci_when_small(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(3)]
+        report = compute_metrics(outcomes, "small")
+        assert report.bootstrap_ci is None

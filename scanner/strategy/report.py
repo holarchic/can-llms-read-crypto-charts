@@ -317,16 +317,27 @@ def regime_decay_report(
 
 def suggest_disabled_types(
     setup_type_reports: list[MetricsReport],
-    min_sample: int = 10,
-) -> list[tuple[str, float, int]]:
-    """Returns setup types with negative expectancy and sufficient sample.
+    min_sample: int = 30,
+) -> list[tuple[str, float, int, str]]:
+    """Returns setup types with negative expectancy and statistical confidence.
 
-    Returns [(setup_type, expectancy, sample_size), ...] sorted worst-first.
+    Requires both:
+    - n >= min_sample (CLT minimum)
+    - Bootstrap 95% CI upper bound < 0 (can't be explained by noise)
+
+    Returns [(setup_type, expectancy, sample_size, ci_note), ...] sorted worst-first.
     """
     suggestions = []
     for report in setup_type_reports:
-        if report.sample_size >= min_sample and report.expectancy < 0:
-            suggestions.append((report.label, report.expectancy, report.sample_size))
+        if report.sample_size < min_sample:
+            continue
+        if report.expectancy >= 0:
+            continue
+
+        ci = report.bootstrap_ci
+        if ci and ci.excludes_zero and ci.ci_high < 0:
+            ci_note = f"95% CI [{ci.ci_low:+.3f}, {ci.ci_high:+.3f}]"
+            suggestions.append((report.label, report.expectancy, report.sample_size, ci_note))
 
     suggestions.sort(key=lambda x: x[1])  # worst first
     return suggestions
@@ -435,14 +446,14 @@ def format_regime_decay(windows: list[tuple[str, MetricsReport]]) -> str:
     return "\n".join(sections)
 
 
-def format_disable_suggestion(suggestions: list[tuple[str, float, int]]) -> str:
+def format_disable_suggestion(suggestions: list[tuple[str, float, int, str]]) -> str:
     """Format auto-disable suggestions."""
     if not suggestions:
-        return "No setup types qualify for disabling (all positive or insufficient sample)."
+        return "No setup types qualify for disabling (all positive, insufficient sample, or CI includes zero)."
 
-    lines = ["SUGGESTED DISABLES (negative expectancy, n >= min_sample):", ""]
-    for setup_type, exp, n in suggestions:
-        lines.append(f"  {setup_type}: expectancy={exp:+.4f}R  n={n}")
+    lines = ["SUGGESTED DISABLES (negative expectancy, n >= 30, 95% CI excludes zero):", ""]
+    for setup_type, exp, n, ci_note in suggestions:
+        lines.append(f"  {setup_type}: expectancy={exp:+.4f}R  n={n}  {ci_note}")
 
     types_str = ",".join(s[0] for s in suggestions)
     lines.append("")

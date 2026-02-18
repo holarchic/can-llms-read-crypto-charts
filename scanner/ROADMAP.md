@@ -19,6 +19,17 @@ Screener detects setups A-G on 4H candles, LLM confirms/rejects via blind chart 
 
 Deployed on GCE e2-small, scanning every 4H close. Daily backtest + weekly validation reports to Discord.
 
+### Regime-Aware Monitoring
+
+#### Current: Time-window decay (SHIPPED — Loop 3)
+Rolling N-week window expectancy with trend arrows. Detects whether edge is growing/stable/decaying over time.
+
+#### Next: Market regime slicer
+**When**: 200+ signals with score components accumulated (est. ~4 weeks from 2026-02-18).
+**What**: Classify each signal's market context using volatility percentiles (trailing ATR) + trend efficiency ratio (net movement / total movement). Slice backtest metrics by regime (trending_up, trending_down, ranging, volatile) instead of just time windows. Produce a setup_type x regime cross-tab to identify which setups survive all regimes vs which are regime-dependent.
+**Why**: Time windows conflate regime changes with temporal effects. A setup that "decayed" may have just hit a regime it doesn't work in. Research shows regime diversity matters more than sample size — 150 trades across bull/bear/ranging > 500 trades in one regime.
+**Research basis**: See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 4 (robust backtesting), Section 6 (regime-aware backtesting), and Stream 1 (professional consensus: build robustness, don't predict regimes).
+
 ### Signal Ranking Evolution
 
 #### Tier 1: Composite scoring (SHIPPED)
