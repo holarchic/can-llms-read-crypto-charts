@@ -247,16 +247,30 @@ def build_llm_setup(row: dict) -> TradeSetup | None:
     """Build a TradeSetup from a scans table row (CONFIRM only).
 
     Parses entry_zone, stop_loss, take_profit from LLM text.
+    Direction is inferred from entry vs stop (not from screener's direction field,
+    since the LLM may classify the trade differently).
     """
+    # Strip TP1/TP2 prefixes that confuse the price parser
+    tp_text = row.get("take_profit", "")
+    if tp_text:
+        tp_text = re.sub(r"(?:TP|tp)\d+\s*:\s*", "", tp_text)
+
     entry = parse_price(row.get("entry_zone"))
     stop = parse_price(row.get("stop_loss"))
-    target = parse_price(row.get("take_profit"))
+    target = parse_price(tp_text)
 
     if not entry or not stop or not target:
         return None
 
-    direction = row.get("direction", "").upper()
-    if direction not in ("LONG", "SHORT"):
+    # Infer direction from entry vs stop (not from DB direction field)
+    if abs(entry - stop) < 1e-10:
+        return None
+    direction = "SHORT" if stop > entry else "LONG"
+
+    # Validate target is on the correct side
+    if direction == "LONG" and target <= entry:
+        return None
+    if direction == "SHORT" and target >= entry:
         return None
 
     return TradeSetup(

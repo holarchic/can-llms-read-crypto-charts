@@ -78,7 +78,16 @@ def analyze_for_scanner(
         "\n\n## SCANNER MODE\n"
         "Perform the full 8-step analysis procedure in your thinking. "
         "In your written response, output ONLY the DECISION block "
-        "(from //////////// to ////////////). No step-by-step walkthrough."
+        "(from //////////// to ////////////). No step-by-step walkthrough.\n\n"
+        "## DECISION CLASSIFICATION\n"
+        "- CONFIRM: An actionable trade exists RIGHT NOW at current price. "
+        "Entry zone, stop loss, and take profit are all defined.\n"
+        "- REJECT: No valid setup, or price is not at a tradeable level, "
+        "or conditions do not meet the ruleset criteria. Use REJECT for any "
+        "situation where you would not take the trade.\n"
+        "- WAIT: Use ONLY when a specific, high-quality setup exists but needs "
+        "a clear trigger that hasn't fired yet (e.g. a candle close confirmation). "
+        "WAIT must still include full entry/SL/TP. If there is no concrete plan, use REJECT."
     )
     user_content = _build_scanner_content(chart_paths, signal)
     messages = [{"role": "user", "content": user_content}]
@@ -106,6 +115,11 @@ def analyze_for_scanner(
         if block.type == "text":
             text_parts.append(block.text)
     analysis_text = "\n".join(text_parts)
+
+    # Handle empty text (thinking-only response — no decision block to parse)
+    if not analysis_text.strip():
+        print(f"  ⚠ {signal.coin}: Empty LLM response (stop_reason={response.stop_reason}). "
+              f"Model may have put everything in thinking tokens.")
 
     parsed = parse_decision_block(analysis_text)
     cost = _estimate_cost(response.usage, cfg.model)
