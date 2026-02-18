@@ -9,7 +9,7 @@ Phase 1 → 2 → 3 → 4: from signal detection to fully autonomous trade manag
 | **1** | Signal detection + alerts | **Live** — scanning, LLM analysis, Discord alerts, backtesting, strategy system, deployed to GCE VM |
 | **2** | Auto-execution | Not started — place trades on HyperLiquid with SL/TP |
 | **3** | Dynamic position management | Not started — manage open positions, early invalidation |
-| **4** | WAIT signal re-evaluation | Not started — revisit WAITs on shorter timeframe |
+| **4** | WAIT signal re-evaluation | **On hold** — early data shows WAITs have negative utility, REJECT steering deployed |
 
 ---
 
@@ -99,7 +99,9 @@ Actively manage open positions — don't just set-and-forget SL/TP.
 
 ---
 
-## Phase 4: WAIT Signal Re-Evaluation
+## Phase 4: WAIT Signal Re-Evaluation — ON HOLD
+
+> **2026-02-18 finding**: Early data (203 scans, bear market) shows conditional WAITs have negative utility. 86% never reach entry; those that do have negative expectancy. 97/177 WAITs were soft-rejects with no trade plan at all. REJECT steering prompt now deployed — expect most former WAITs to become REJECTs. Re-evaluate this phase once REJECT steering has accumulated 2+ weeks of data across varied market conditions.
 
 WAIT signals are "not yet, but watch this" — revisit them sooner than the next 4H candle.
 
@@ -114,6 +116,7 @@ WAIT signals are "not yet, but watch this" — revisit them sooner than the next
 - Re-check frequency (every 1H? every 2H?)
 - Cost budget for WAIT re-evaluation (could be significant if many WAITs accumulate)
 - Max WAIT lifetime before auto-expire
+- Whether WAITs are worth re-evaluating at all (pending more data)
 
 ---
 
