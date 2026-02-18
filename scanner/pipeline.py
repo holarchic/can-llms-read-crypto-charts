@@ -100,17 +100,27 @@ def stage1_screen(
     batch_id = uuid4().hex[:8]
     save_signals(all_signals, batch_id, len(capped), conn, strategy_id=strategy_id)
 
+    # Compute BTC 4H structure for market context (used in LLM prompts)
+    btc_structure = None
+    btc_df = candle_map.get("BTC")
+    if btc_df is not None and len(btc_df) >= 50:
+        btc_ctx = build_context(btc_df, config.swing_lookback, config.sr_cluster_pct)
+        btc_structure = btc_ctx.structure.value
+        if verbose:
+            print(f"BTC 4H structure: {btc_structure}")
+
     conn.close()
 
     if verbose:
         print(f"Stage 1 complete: {len(capped)} signals (from {len(all_signals)} pre-cap)")
 
-    return capped
+    return capped, btc_structure
 
 
 def _analyze_one(
     signal: SetupSignal,
     config: ScannerConfig,
+    btc_structure: str | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
@@ -119,7 +129,7 @@ def _analyze_one(
             candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
 
         chart_paths = generate_charts_for_signal(signal, candle_sets)
-        result = analyze_for_scanner(signal, chart_paths, config)
+        result = analyze_for_scanner(signal, chart_paths, config, btc_structure)
         return result
     except Exception as e:
         print(f"  Error analyzing {signal.coin}: {e}")
@@ -132,6 +142,7 @@ def stage2_analyze(
     verbose: bool = True,
     max_workers: int = 4,
     strategy_id: str = "v0",
+    btc_structure: str | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
     conn = get_connection()
@@ -158,7 +169,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config): signal
+            executor.submit(_analyze_one, signal, config, btc_structure): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -237,7 +248,7 @@ def run_scan(
         print("=" * 60)
 
     # Stage 1
-    signals = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
+    signals, btc_structure = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
 
     if dry_run:
         if verbose:
@@ -254,7 +265,7 @@ def run_scan(
         return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
 
     # Stage 2
-    results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id)
+    results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id, btc_structure=btc_structure)
 
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)

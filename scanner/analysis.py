@@ -16,7 +16,11 @@ from .config import ScannerConfig
 from .models import ScanResult, SetupSignal
 
 
-def _build_scanner_content(chart_paths: list[Path], signal: SetupSignal) -> list[dict]:
+def _build_scanner_content(
+    chart_paths: list[Path],
+    signal: SetupSignal,
+    btc_structure: str | None = None,
+) -> list[dict]:
     """Build user content blocks with chart images. No screener context — LLM analyzes blind."""
     content = []
 
@@ -41,9 +45,13 @@ def _build_scanner_content(chart_paths: list[Path], signal: SetupSignal) -> list
     if signal.max_leverage:
         constraint = f"\n\nExchange constraint: Maximum leverage for this pair is {signal.max_leverage}x. Do not recommend leverage above this."
 
+    market_ctx = ""
+    if btc_structure and signal.coin != "BTC":
+        market_ctx = f"\n\nMarket context: BTC 4H structure is {btc_structure}. Factor this into your directional bias and invalidation conditions."
+
     content.append({
         "type": "text",
-        "text": f"{prefix}\n\nApply the ruleset. Identify the setup, classify, and evaluate from scratch.{constraint}",
+        "text": f"{prefix}\n\nApply the ruleset. Identify the setup, classify, and evaluate from scratch.{constraint}{market_ctx}",
     })
 
     return content
@@ -69,6 +77,7 @@ def analyze_for_scanner(
     signal: SetupSignal,
     chart_paths: list[Path],
     config: ScannerConfig | None = None,
+    btc_structure: str | None = None,
 ) -> ScanResult:
     """Run LLM deep analysis on a screener signal. Returns ScanResult."""
     cfg = config or ScannerConfig()
@@ -87,9 +96,14 @@ def analyze_for_scanner(
         "situation where you would not take the trade.\n"
         "- WAIT: Use ONLY when a specific, high-quality setup exists but needs "
         "a clear trigger that hasn't fired yet (e.g. a candle close confirmation). "
-        "WAIT must still include full entry/SL/TP. If there is no concrete plan, use REJECT."
+        "WAIT must still include full entry/SL/TP. If there is no concrete plan, use REJECT.\n\n"
+        "## INVALIDATION FIELDS (required for CONFIRM and WAIT)\n"
+        "Include these fields in the decision block:\n"
+        "- **Expected Hold:** How long this trade should take (e.g. '1-2 days', '3-5 days')\n"
+        "- **Time Invalidation:** When to abandon if neither SL nor TP hit "
+        "(e.g. '4 days' = 2x expected hold). Stale trades lose their edge."
     )
-    user_content = _build_scanner_content(chart_paths, signal)
+    user_content = _build_scanner_content(chart_paths, signal, btc_structure)
     messages = [{"role": "user", "content": user_content}]
 
     client = anthropic.Anthropic()
