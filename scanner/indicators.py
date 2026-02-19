@@ -33,9 +33,12 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
 
 def compute_atr_percentile(df: pd.DataFrame, atr_period: int = 14, lookback: int = 100) -> float:
     """Current ATR as percentile of trailing ATR history. Returns 0-100."""
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
+    clean = df[["High", "Low", "Close"]].dropna()
+    if len(clean) < 2:
+        return 50.0
+    high = clean["High"]
+    low = clean["Low"]
+    close = clean["Close"]
     prev_close = close.shift(1)
 
     tr = pd.concat([
@@ -63,7 +66,9 @@ def compute_efficiency_ratio(df: pd.DataFrame, period: int = 20) -> float:
     if len(df) < period + 1:
         return 0.0
 
-    close = df["Close"].iloc[-(period + 1):]
+    close = df["Close"].dropna().iloc[-(period + 1):]
+    if len(close) < period + 1:
+        return 0.0
     net_move = abs(close.iloc[-1] - close.iloc[0])
     bar_moves = close.diff().abs().iloc[1:]  # drop first NaN
     total_move = bar_moves.sum()
@@ -71,7 +76,8 @@ def compute_efficiency_ratio(df: pd.DataFrame, period: int = 20) -> float:
     if total_move == 0:
         return 0.0
 
-    return round(float(net_move / total_move), 4)
+    er = float(net_move / total_move)
+    return round(min(er, 1.0), 4)  # clamp to [0, 1]
 
 
 def classify_regime(structure: Structure, vol_percentile: float, efficiency_ratio: float) -> str:
