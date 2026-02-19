@@ -154,6 +154,7 @@ DEFAULT_SLICERS = {
     "structure": lambda o: o.setup.structure if o.setup else "unknown",
     "confidence": lambda o: _confidence_bucket(o.setup.confidence) if o.setup else "unknown",
     "sent_to_llm": lambda o: "yes" if (o.setup and o.setup.sent_to_llm) else "no",
+    "regime": lambda o: o.setup.regime if (o.setup and o.setup.regime) else "unknown",
 }
 
 

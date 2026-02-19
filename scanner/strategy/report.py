@@ -446,6 +446,69 @@ def format_regime_decay(windows: list[tuple[str, MetricsReport]]) -> str:
     return "\n".join(sections)
 
 
+def regime_crosstab_report(
+    outcomes: list[TradeOutcome],
+) -> dict[str, dict[str, MetricsReport]]:
+    """2D grid: rows = setup types, columns = regimes.
+
+    Returns {setup_type: {regime: MetricsReport}}.
+    """
+    grid: dict[str, dict[str, list[TradeOutcome]]] = {}
+
+    for o in outcomes:
+        st = o.setup.setup_type if o.setup else "unknown"
+        regime = o.setup.regime if (o.setup and o.setup.regime) else "unknown"
+        grid.setdefault(st, {}).setdefault(regime, []).append(o)
+
+    result: dict[str, dict[str, MetricsReport]] = {}
+    for st in sorted(grid.keys()):
+        result[st] = {}
+        for regime in sorted(grid[st].keys()):
+            result[st][regime] = compute_metrics(grid[st][regime], f"{st}:{regime}")
+
+    return result
+
+
+def format_regime_crosstab(crosstab: dict[str, dict[str, MetricsReport]]) -> str:
+    """Format setup_type x regime grid showing N, WR, ExpR per cell."""
+    if not crosstab:
+        return "No data for regime cross-tab."
+
+    # Collect all regimes across all setup types
+    all_regimes = sorted({r for regimes in crosstab.values() for r in regimes})
+
+    sections = [
+        "=" * 60,
+        "  SETUP TYPE x REGIME CROSS-TAB",
+        "=" * 60,
+        "",
+    ]
+
+    # Header
+    col_w = 22
+    header = f"  {'Type':<6}"
+    for regime in all_regimes:
+        header += f" {regime:>{col_w}}"
+    sections.append(header)
+    sections.append("  " + "-" * (6 + (col_w + 1) * len(all_regimes)))
+
+    # Rows
+    for st in sorted(crosstab.keys()):
+        row = f"  {st:<6}"
+        for regime in all_regimes:
+            m = crosstab[st].get(regime)
+            if m and m.sample_size > 0:
+                cell = f"n={m.sample_size} {m.win_rate:.0%} {m.expectancy:+.2f}R"
+            else:
+                cell = "-"
+            row += f" {cell:>{col_w}}"
+        sections.append(row)
+
+    sections.append("")
+    sections.append("=" * 60)
+    return "\n".join(sections)
+
+
 def format_disable_suggestion(suggestions: list[tuple[str, float, int, str]]) -> str:
     """Format auto-disable suggestions."""
     if not suggestions:

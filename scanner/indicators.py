@@ -31,6 +31,68 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
     return float(atr_series.iloc[-1])
 
 
+def compute_atr_percentile(df: pd.DataFrame, atr_period: int = 14, lookback: int = 100) -> float:
+    """Current ATR as percentile of trailing ATR history. Returns 0-100."""
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+    prev_close = close.shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    atr_series = tr.rolling(window=atr_period).mean().dropna()
+    if len(atr_series) < 2:
+        return 50.0  # Not enough data — return neutral
+
+    current_atr = atr_series.iloc[-1]
+    trailing = atr_series.iloc[-lookback:] if len(atr_series) >= lookback else atr_series
+    rank = (trailing < current_atr).sum()
+    return round(float(rank / len(trailing)) * 100, 1)
+
+
+def compute_efficiency_ratio(df: pd.DataFrame, period: int = 20) -> float:
+    """Kaufman Efficiency Ratio. Returns 0.0-1.0.
+
+    ER = abs(net_move) / sum(abs(bar_moves)) over `period` bars.
+    Near 1.0 = clean trend, near 0.0 = chop.
+    """
+    if len(df) < period + 1:
+        return 0.0
+
+    close = df["Close"].iloc[-(period + 1):]
+    net_move = abs(close.iloc[-1] - close.iloc[0])
+    bar_moves = close.diff().abs().iloc[1:]  # drop first NaN
+    total_move = bar_moves.sum()
+
+    if total_move == 0:
+        return 0.0
+
+    return round(float(net_move / total_move), 4)
+
+
+def classify_regime(structure: Structure, vol_percentile: float, efficiency_ratio: float) -> str:
+    """Combine indicators into regime label.
+
+    | Regime         | Condition                                    |
+    |---------------|----------------------------------------------|
+    | trending_up   | ER >= 0.4 AND structure = BULLISH            |
+    | trending_down | ER >= 0.4 AND structure = BEARISH            |
+    | volatile      | vol_pct >= 75 AND ER < 0.4                   |
+    | ranging       | everything else                              |
+    """
+    if efficiency_ratio >= 0.4 and structure == Structure.BULLISH:
+        return "trending_up"
+    if efficiency_ratio >= 0.4 and structure == Structure.BEARISH:
+        return "trending_down"
+    if vol_percentile >= 75 and efficiency_ratio < 0.4:
+        return "volatile"
+    return "ranging"
+
+
 def find_swing_points(df: pd.DataFrame, lookback: int = 5) -> list[SwingPoint]:
     """Find swing highs and lows using rolling window on body prices (preferred per ruleset).
 
@@ -247,6 +309,10 @@ def build_context(df: pd.DataFrame, lookback: int = 5, sr_pct: float = 0.015) ->
         if recent_high.body_price > recent_low.body_price:
             fib_levels = calculate_fibs(recent_low.body_price, recent_high.body_price)
 
+    vol_pct = compute_atr_percentile(df)
+    er = compute_efficiency_ratio(df)
+    regime = classify_regime(structure, vol_pct, er)
+
     return MarketContext(
         structure=structure,
         swings=swings,
@@ -256,4 +322,7 @@ def build_context(df: pd.DataFrame, lookback: int = 5, sr_pct: float = 0.015) ->
         atr=atr,
         current_price=current_price,
         fib_levels=fib_levels,
+        vol_percentile=vol_pct,
+        efficiency_ratio=er,
+        regime=regime,
     )

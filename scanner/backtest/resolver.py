@@ -23,6 +23,7 @@ class TradeSetup:
     structure: str = ""
     sent_to_llm: bool = False
     source: str = ""  # "screener" or "llm"
+    regime: str = ""
 
 
 @dataclass
@@ -240,6 +241,7 @@ def build_screener_setup(
         structure=row.get("structure", ""),
         sent_to_llm=bool(row.get("sent_to_llm", 0)),
         source="screener",
+        regime=row.get("regime", ""),
     )
 
 

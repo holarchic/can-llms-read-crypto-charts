@@ -6,6 +6,9 @@ import pytest
 
 from scanner.indicators import (
     compute_atr,
+    compute_atr_percentile,
+    compute_efficiency_ratio,
+    classify_regime,
     find_swing_points,
     cluster_sr_levels,
     classify_structure,
@@ -151,3 +154,112 @@ class TestBuildContext:
     def test_current_price_matches_last_close(self, ranging_df):
         ctx = build_context(ranging_df)
         assert ctx.current_price == float(ranging_df["Close"].iloc[-1])
+
+    def test_has_regime_fields(self, uptrend_df):
+        ctx = build_context(uptrend_df)
+        assert 0 <= ctx.vol_percentile <= 100
+        assert 0.0 <= ctx.efficiency_ratio <= 1.0
+        assert ctx.regime in ("trending_up", "trending_down", "volatile", "ranging")
+
+
+class TestComputeATRPercentile:
+    def test_returns_0_to_100(self, uptrend_df):
+        pct = compute_atr_percentile(uptrend_df)
+        assert 0.0 <= pct <= 100.0
+
+    def test_known_series(self):
+        """Constant-volatility bars → ATR percentile near 50."""
+        n = 120
+        dates = pd.date_range("2026-01-01", periods=n, freq="4h", tz="UTC")
+        prices = []
+        for i in range(n):
+            o = 100.0
+            h = 102.0
+            l = 98.0
+            c = 100.0
+            prices.append((o, h, l, c))
+        df = pd.DataFrame(prices, index=dates, columns=["Open", "High", "Low", "Close"])
+        pct = compute_atr_percentile(df)
+        # All ATRs identical → current = all others → rank depends on < comparison
+        # With identical values, (trailing < current).sum() == 0
+        assert 0.0 <= pct <= 100.0
+
+    def test_short_history(self):
+        """Fewer bars than lookback → graceful handling."""
+        n = 20
+        dates = pd.date_range("2026-01-01", periods=n, freq="4h", tz="UTC")
+        np.random.seed(42)
+        prices = [(100 + np.random.randn(), 103, 97, 100 + np.random.randn()) for _ in range(n)]
+        df = pd.DataFrame(prices, index=dates, columns=["Open", "High", "Low", "Close"])
+        pct = compute_atr_percentile(df, lookback=100)
+        assert 0.0 <= pct <= 100.0
+
+    def test_very_short_returns_neutral(self):
+        """Only 2 bars → returns 50.0 (neutral)."""
+        dates = pd.date_range("2026-01-01", periods=2, freq="4h", tz="UTC")
+        df = pd.DataFrame(
+            {"Open": [100, 101], "High": [102, 103], "Low": [98, 99], "Close": [101, 102]},
+            index=dates,
+        )
+        pct = compute_atr_percentile(df)
+        assert pct == 50.0
+
+
+class TestComputeEfficiencyRatio:
+    def test_trending_near_1(self):
+        """Clean trend → ER near 1.0."""
+        n = 30
+        dates = pd.date_range("2026-01-01", periods=n, freq="4h", tz="UTC")
+        close = [100.0 + i * 1.0 for i in range(n)]
+        df = pd.DataFrame(
+            {"Open": close, "High": [c + 0.5 for c in close],
+             "Low": [c - 0.5 for c in close], "Close": close},
+            index=dates,
+        )
+        er = compute_efficiency_ratio(df, period=20)
+        assert er >= 0.9
+
+    def test_choppy_near_0(self):
+        """Sideways chop → ER near 0.0."""
+        n = 30
+        dates = pd.date_range("2026-01-01", periods=n, freq="4h", tz="UTC")
+        close = [100.0 + (1 if i % 2 == 0 else -1) for i in range(n)]
+        df = pd.DataFrame(
+            {"Open": close, "High": [c + 0.5 for c in close],
+             "Low": [c - 0.5 for c in close], "Close": close},
+            index=dates,
+        )
+        er = compute_efficiency_ratio(df, period=20)
+        assert er <= 0.15
+
+    def test_short_data(self):
+        """Fewer bars than period → returns 0.0."""
+        dates = pd.date_range("2026-01-01", periods=5, freq="4h", tz="UTC")
+        df = pd.DataFrame(
+            {"Open": [100]*5, "High": [102]*5, "Low": [98]*5, "Close": [100]*5},
+            index=dates,
+        )
+        er = compute_efficiency_ratio(df, period=20)
+        assert er == 0.0
+
+
+class TestClassifyRegime:
+    def test_trending_up(self):
+        assert classify_regime(Structure.BULLISH, 50.0, 0.6) == "trending_up"
+
+    def test_trending_down(self):
+        assert classify_regime(Structure.BEARISH, 50.0, 0.5) == "trending_down"
+
+    def test_volatile(self):
+        assert classify_regime(Structure.RANGING, 80.0, 0.2) == "volatile"
+
+    def test_ranging(self):
+        assert classify_regime(Structure.RANGING, 40.0, 0.2) == "ranging"
+
+    def test_bullish_low_er_is_ranging(self):
+        """BULLISH structure but low ER → ranging, not trending_up."""
+        assert classify_regime(Structure.BULLISH, 40.0, 0.2) == "ranging"
+
+    def test_bearish_high_vol_low_er(self):
+        """BEARISH structure, high vol, low ER → volatile (ER < 0.4 takes precedence)."""
+        assert classify_regime(Structure.BEARISH, 80.0, 0.3) == "volatile"

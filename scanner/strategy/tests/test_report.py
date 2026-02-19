@@ -18,10 +18,12 @@ from scanner.strategy.report import (
     llm_filter_report,
     LLMFilterResult,
     regime_decay_report,
+    regime_crosstab_report,
     suggest_disabled_types,
     format_signal_quality,
     format_llm_filter,
     format_regime_decay,
+    format_regime_crosstab,
     format_disable_suggestion,
 )
 
@@ -609,3 +611,84 @@ class TestDisabledTypesScreener:
         signals_none = detect_all_setups("BTC", df, ctx, max_per_coin=20, disabled_types=None)
         signals_empty = detect_all_setups("BTC", df, ctx, max_per_coin=20, disabled_types=set())
         assert len(signals_none) == len(signals_empty)
+
+
+# --- Tests: Regime Cross-Tab ---
+
+
+def _outcome_with_regime(
+    result="WIN", r_achieved=2.0, setup_type="C", regime="trending_up",
+):
+    """Helper to create TradeOutcome with regime metadata."""
+    setup = TradeSetup(
+        coin="BTC", direction="LONG", entry=100, stop=95, target=110,
+        timestamp="2026-01-01", setup_type=setup_type, confidence=0.7,
+        structure="BULLISH", sent_to_llm=False, source="screener", regime=regime,
+    )
+    return TradeOutcome(
+        result=result, r_achieved=r_achieved, bars_to_exit=10,
+        exit_price=110 if result == "WIN" else 95,
+        mae=0.3, mfe=2.5, fees_paid=0.0, setup=setup,
+    )
+
+
+class TestRegimeCrosstabReport:
+    def test_2d_structure(self):
+        outcomes = [
+            _outcome_with_regime("WIN", 2.0, "A", "trending_up"),
+            _outcome_with_regime("LOSS", -1.0, "A", "ranging"),
+            _outcome_with_regime("WIN", 1.5, "C", "trending_up"),
+            _outcome_with_regime("WIN", 2.0, "C", "volatile"),
+        ]
+        crosstab = regime_crosstab_report(outcomes)
+        assert "A" in crosstab
+        assert "C" in crosstab
+        assert "trending_up" in crosstab["A"]
+        assert "ranging" in crosstab["A"]
+        assert "trending_up" in crosstab["C"]
+        assert "volatile" in crosstab["C"]
+        assert crosstab["A"]["trending_up"].sample_size == 1
+        assert crosstab["C"]["volatile"].sample_size == 1
+
+    def test_empty_outcomes(self):
+        crosstab = regime_crosstab_report([])
+        assert crosstab == {}
+
+    def test_metrics_are_valid(self):
+        outcomes = [
+            _outcome_with_regime("WIN", 2.0, "B", "trending_down"),
+            _outcome_with_regime("LOSS", -1.0, "B", "trending_down"),
+            _outcome_with_regime("WIN", 1.5, "B", "trending_down"),
+        ]
+        crosstab = regime_crosstab_report(outcomes)
+        m = crosstab["B"]["trending_down"]
+        assert m.sample_size == 3
+        assert m.wins == 2
+        assert m.losses == 1
+
+
+class TestFormatRegimeCrosstab:
+    def test_format_has_headers(self):
+        outcomes = [
+            _outcome_with_regime("WIN", 2.0, "A", "trending_up"),
+            _outcome_with_regime("LOSS", -1.0, "C", "ranging"),
+        ]
+        crosstab = regime_crosstab_report(outcomes)
+        output = format_regime_crosstab(crosstab)
+        assert "CROSS-TAB" in output
+        assert "Type" in output
+        assert "trending_up" in output
+        assert "ranging" in output
+
+    def test_format_empty(self):
+        output = format_regime_crosstab({})
+        assert "No data" in output
+
+    def test_format_shows_cells(self):
+        outcomes = [
+            _outcome_with_regime("WIN", 2.0, "A", "volatile"),
+            _outcome_with_regime("WIN", 1.5, "A", "volatile"),
+        ]
+        crosstab = regime_crosstab_report(outcomes)
+        output = format_regime_crosstab(crosstab)
+        assert "n=2" in output

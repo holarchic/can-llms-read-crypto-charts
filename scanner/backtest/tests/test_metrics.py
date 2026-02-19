@@ -6,11 +6,11 @@ from scanner.backtest.resolver import TradeSetup, TradeOutcome
 from scanner.backtest.metrics import compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI
 
 
-def _outcome(result="WIN", r_achieved=2.0, bars=5, mae=0.3, mfe=2.5, setup_type="C", direction="LONG", confidence=0.7):
+def _outcome(result="WIN", r_achieved=2.0, bars=5, mae=0.3, mfe=2.5, setup_type="C", direction="LONG", confidence=0.7, regime=""):
     setup = TradeSetup(
         coin="BTC", direction=direction, entry=100, stop=95, target=110,
         timestamp="2026-01-01", setup_type=setup_type, confidence=confidence,
-        structure="BULLISH", sent_to_llm=False, source="screener",
+        structure="BULLISH", sent_to_llm=False, source="screener", regime=regime,
     )
     return TradeOutcome(
         result=result, r_achieved=r_achieved, bars_to_exit=bars,
@@ -188,3 +188,28 @@ class TestBootstrapExpectancy:
         outcomes = [_outcome("WIN", 2.0) for _ in range(3)]
         report = compute_metrics(outcomes, "small")
         assert report.bootstrap_ci is None
+
+
+class TestRegimeSlicer:
+    """Regime slicer in DEFAULT_SLICERS."""
+
+    def test_regime_in_default_slicers(self):
+        from scanner.backtest.metrics import DEFAULT_SLICERS
+        assert "regime" in DEFAULT_SLICERS
+
+    def test_regime_appears_in_slice_output(self):
+        outcomes = [
+            _outcome("WIN", 2.0, regime="trending_up"),
+            _outcome("LOSS", -1.0, mae=1.0, mfe=0.5, regime="ranging"),
+        ]
+        sliced = slice_metrics(outcomes)
+        assert "regime" in sliced
+        labels = {r.label for r in sliced["regime"]}
+        assert "trending_up" in labels
+        assert "ranging" in labels
+
+    def test_unknown_regime_when_empty(self):
+        outcomes = [_outcome("WIN", 2.0, regime="")]
+        sliced = slice_metrics(outcomes)
+        labels = {r.label for r in sliced["regime"]}
+        assert "unknown" in labels

@@ -24,11 +24,25 @@ Deployed on GCE e2-small, scanning every 4H close. Daily backtest + weekly valid
 #### Current: Time-window decay (SHIPPED — Loop 3)
 Rolling N-week window expectancy with trend arrows. Detects whether edge is growing/stable/decaying over time.
 
-#### Next: Market regime slicer
-**When**: 200+ signals with score components accumulated (est. ~4 weeks from 2026-02-18).
-**What**: Classify each signal's market context using volatility percentiles (trailing ATR) + trend efficiency ratio (net movement / total movement). Slice backtest metrics by regime (trending_up, trending_down, ranging, volatile) instead of just time windows. Produce a setup_type x regime cross-tab to identify which setups survive all regimes vs which are regime-dependent.
-**Why**: Time windows conflate regime changes with temporal effects. A setup that "decayed" may have just hit a regime it doesn't work in. Research shows regime diversity matters more than sample size — 150 trades across bull/bear/ranging > 500 trades in one regime.
-**Research basis**: See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 4 (robust backtesting), Section 6 (regime-aware backtesting), and Stream 1 (professional consensus: build robustness, don't predict regimes).
+#### Current: Market regime classification (SHIPPED)
+Every signal tagged with vol_percentile (ATR trailing percentile), efficiency_ratio (Kaufman ER), and regime label (trending_up, trending_down, volatile, ranging). Regime slicer in backtest metrics. Setup_type x regime cross-tab via `--regime-crosstab` flag on report command.
+
+#### Next: Concave allocation lifecycle
+**When**: Phase 2 auto-execution is live.
+**What**: Scale position sizing by setup-type edge lifecycle — small allocation for new/unproven setups, grow as edge is confirmed (positive expectancy, CI excludes zero), shrink as edge decays (regime decay trend). Requires Phase 2 auto-execution to act on allocations.
+**Research basis**: Lopez de Prado's concave strategy lifecycle. See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 1.
+
+### LLM Decision Consistency
+
+#### Current: Single-pass analysis (SHIPPED)
+One LLM call per signal, structured decision block output, ~$0.12/signal.
+
+#### Next: Majority-vote ensemble (3-5 passes)
+**When**: Once we can measure run-to-run variance on the same chart. Need ~50 CONFIRMs to test agreement rate.
+**What**: Run the same chart through the LLM 3-5 times. Take majority vote on CONFIRM/REJECT/WAIT. Only alert if >=3/5 agree on CONFIRM. Optionally average the entry/stop/target across agreeing runs.
+**Cost**: $0.36-0.60/signal (3-5x current). At 20 signals/scan, $7.20-12.00/scan vs current $2.40. Still within $15/day budget if scans stay at 1-2/day, tight at 6/day.
+**Why**: Research shows ~40% decision determinism for large models (arXiv:2601.15322). Simple aggregation across 3-5 runs "dramatically improves consistency." Our structured output format helps, but the underlying analysis still varies.
+**Research basis**: See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 3 (LLM trading), non-determinism section.
 
 ### Signal Ranking Evolution
 

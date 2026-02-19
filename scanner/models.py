@@ -85,6 +85,9 @@ class MarketContext:
     atr: float
     current_price: float
     fib_levels: FibLevels | None
+    vol_percentile: float = 0.0
+    efficiency_ratio: float = 0.0
+    regime: str = ""
 
 
 @dataclass

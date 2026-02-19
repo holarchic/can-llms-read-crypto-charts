@@ -22,10 +22,12 @@ from .report import (
     signal_quality_report,
     llm_filter_report,
     regime_decay_report,
+    regime_crosstab_report,
     suggest_disabled_types,
     format_signal_quality,
     format_llm_filter,
     format_regime_decay,
+    format_regime_crosstab,
     format_disable_suggestion,
 )
 from .calibrate import run_calibration, format_calibration
@@ -214,7 +216,7 @@ def cmd_report(args):
     coins = [c.upper() for c in args.coin] if args.coin else None
 
     # Default: run all loops unless specific ones requested
-    run_all = not (args.signal_quality or args.llm_filter or args.regime or args.suggest_disable)
+    run_all = not (args.signal_quality or args.llm_filter or args.regime or args.suggest_disable or args.regime_crosstab)
 
     sections: list[str] = []
 
@@ -239,6 +241,18 @@ def cmd_report(args):
             coins=coins, verbose=args.verbose,
         )
         sections.append(format_regime_decay(windows))
+
+    if run_all or args.regime_crosstab:
+        from .report import load_strategy_signals, resolve_signals
+        signal_rows = load_strategy_signals(
+            strategy.strategy_id, args.since, args.until, conn, coins,
+        )
+        outcomes = resolve_signals(
+            signal_rows, strategy.atr_stop_mult, strategy.atr_target_mult,
+            conn, verbose=args.verbose,
+        )
+        crosstab = regime_crosstab_report(outcomes)
+        sections.append(format_regime_crosstab(crosstab))
 
     if run_all or args.suggest_disable:
         # Need signal quality data for suggestions
@@ -409,6 +423,7 @@ def main():
     p_report.add_argument("--llm-filter", action="store_true", help="Run LLM filter value report only")
     p_report.add_argument("--regime", action="store_true", help="Run regime decay report only")
     p_report.add_argument("--suggest-disable", action="store_true", help="Suggest setup types to disable")
+    p_report.add_argument("--regime-crosstab", action="store_true", help="Show setup_type x regime cross-tab")
     p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for regime decay (default: 2)")
     p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
     p_report.add_argument("-v", "--verbose", action="store_true")

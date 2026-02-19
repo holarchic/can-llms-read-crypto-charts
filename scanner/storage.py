@@ -142,6 +142,10 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "signals", "score_proximity", "REAL", "NULL")
     _ensure_column(conn, "signals", "score_confluence", "REAL", "NULL")
     _ensure_column(conn, "signals", "btc_structure", "TEXT", "NULL")
+    # Regime classification columns
+    _ensure_column(conn, "signals", "vol_percentile", "REAL", "NULL")
+    _ensure_column(conn, "signals", "efficiency_ratio", "REAL", "NULL")
+    _ensure_column(conn, "signals", "regime", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -345,6 +349,9 @@ def save_signals(
             sc.proximity if sc else None,
             sc.confluence if sc else None,
             btc_structure,
+            ctx.vol_percentile,
+            ctx.efficiency_ratio,
+            ctx.regime,
         ))
 
     conn.executemany(
@@ -355,9 +362,10 @@ def save_signals(
          sent_to_llm, rank_in_batch, total_in_batch, timestamp, created_at,
          strategy_id,
          score_base, score_alignment, score_strength, score_proximity,
-         score_confluence, btc_structure)
+         score_confluence, btc_structure,
+         vol_percentile, efficiency_ratio, regime)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?)""",
+                ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()

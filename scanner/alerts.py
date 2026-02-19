@@ -91,16 +91,26 @@ def send_alert(
     if not chart_file and result.chart_paths:
         chart_file = Path(result.chart_paths[0])
 
+    import json
+
     try:
         if chart_file and chart_file.exists():
             # Multipart: embed as JSON + chart as file
-            import json
             resp = requests.post(
                 cfg.discord_webhook_url,
                 data={"payload_json": json.dumps(payload)},
                 files={"file": (chart_file.name, chart_file.read_bytes(), "image/png")},
                 timeout=10,
             )
+            if resp.status_code == 400:
+                # Log why Discord rejected the upload, then retry without chart
+                print(f"Discord multipart rejected (400): {resp.text[:500]}")
+                print(f"  Chart: {chart_file} ({chart_file.stat().st_size} bytes). Retrying without chart...")
+                resp = requests.post(
+                    cfg.discord_webhook_url,
+                    json=payload,
+                    timeout=10,
+                )
         else:
             resp = requests.post(
                 cfg.discord_webhook_url,
@@ -110,7 +120,10 @@ def send_alert(
         resp.raise_for_status()
         return True
     except requests.RequestException as e:
-        print(f"Discord alert failed: {e}")
+        body = ""
+        if hasattr(e, "response") and e.response is not None:
+            body = f" | Response: {e.response.text[:500]}"
+        print(f"Discord alert failed: {e}{body}")
         return False
 
 
