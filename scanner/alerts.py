@@ -42,6 +42,8 @@ def _build_embed(result: ScanResult) -> dict:
     color = COLOR_LONG if direction_str == "LONG" else COLOR_SHORT
 
     title = f"{direction_str} {result.coin} | {setup_display}"
+    if len(title) > 256:
+        title = title[:253] + "..."
 
     fields = []
 
