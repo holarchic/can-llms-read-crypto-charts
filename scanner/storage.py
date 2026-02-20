@@ -100,6 +100,17 @@ CREATE TABLE IF NOT EXISTS strategies (
 )
 """
 
+CREATE_SCAN_UNIVERSE_TABLE = """
+CREATE TABLE IF NOT EXISTS scan_universe (
+    batch_id TEXT NOT NULL,
+    coin TEXT NOT NULL,
+    volume_24h REAL,
+    max_leverage INTEGER,
+    timestamp TEXT NOT NULL,
+    PRIMARY KEY (batch_id, coin)
+)
+"""
+
 CREATE_STRATEGIES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_signals_strategy
 ON signals (strategy_id)
@@ -128,6 +139,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute(CREATE_CANDLES_TABLE)
     conn.execute(CREATE_CANDLES_INDEX)
     conn.execute(CREATE_STRATEGIES_TABLE)
+    conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
     # Migrate: add strategy_id to existing tables
     _ensure_column(conn, "signals", "strategy_id", "TEXT", "'v0'")
     _ensure_column(conn, "scans", "strategy_id", "TEXT", "'v0'")
@@ -372,6 +384,32 @@ def save_signals(
 
     if own_conn:
         conn.close()
+
+
+def save_scan_universe(
+    batch_id: str,
+    pairs: list[dict],
+    timestamp: str,
+    conn: sqlite3.Connection,
+) -> int:
+    """Log the full universe of pairs scanned in this batch.
+
+    Each pair dict should have: coin, volume_24h (optional), max_leverage (optional).
+    Returns number of rows inserted.
+    """
+    if not pairs:
+        return 0
+
+    rows = [
+        (batch_id, p["coin"], p.get("volume_24h"), p.get("max_leverage"), timestamp)
+        for p in pairs
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO scan_universe (batch_id, coin, volume_24h, max_leverage, timestamp) VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
 
 
 def signal_history(

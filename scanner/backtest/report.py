@@ -20,6 +20,11 @@ def format_summary(report: MetricsReport) -> str:
     elif report.sample_size > 0:
         lines.append(f"  95% CI:          insufficient data (n < 5)")
 
+    perm = report.permutation
+    if perm:
+        sig = "SIGNIFICANT" if perm.is_significant else "NOT SIGNIFICANT"
+        lines.append(f"  Permutation:     p={perm.p_value:.4f}  ({sig})")
+
     lines.extend([
         f"  Profit Factor:   {report.profit_factor:.2f}" if report.profit_factor != float("inf") else "  Profit Factor:   inf",
         f"  Total R:         {report.total_r:+.2f}",
@@ -29,6 +34,9 @@ def format_summary(report: MetricsReport) -> str:
         f"  Avg MAE:         {report.avg_mae:.2f}R",
         f"  Avg MFE:         {report.avg_mfe:.2f}R",
     ])
+
+    if report.avg_funding_r and report.avg_funding_r > 0:
+        lines.append(f"  Avg Funding:     {report.avg_funding_r:.4f}R")
     return "\n".join(lines)
 
 

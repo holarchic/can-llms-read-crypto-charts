@@ -1,6 +1,7 @@
 """Strategy validation reports — signal quality, LLM filter value, regime decay."""
 
 import sqlite3
+import sys
 from dataclasses import dataclass
 
 import pandas as pd
@@ -77,10 +78,13 @@ def resolve_signals(
     timeout_bars: int = 168,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    funding_rate_8h: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> list[TradeOutcome]:
     """Resolve signal rows into trade outcomes via walk-forward."""
     outcomes: list[TradeOutcome] = []
 
+    n = len(signal_rows)
     for i, row in enumerate(signal_rows):
         setup = build_screener_setup(row, atr_stop_mult, atr_target_mult)
         if not setup:
@@ -92,14 +96,18 @@ def resolve_signals(
                 + pd.Timedelta(hours=timeout_bars + 1)
             ).isoformat()
             candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn)
-            outcome = resolve_signal(setup, candles, timeout_bars, fee_rate)
+            outcome = resolve_signal(
+                setup, candles, timeout_bars, fee_rate,
+                funding_rate_8h=funding_rate_8h,
+                slippage_rate=slippage_rate,
+            )
             outcomes.append(outcome)
         except Exception as e:
             if verbose:
                 print(f"  Resolve {setup.coin} {setup.setup_type}: {e}")
 
-        if verbose and (i + 1) % 20 == 0:
-            print(f"  Resolved {i + 1}/{len(signal_rows)}")
+        if (i + 1) % 50 == 0 or i + 1 == n:
+            print(f"  Resolving signals: {i + 1}/{n} ({len(outcomes)} resolved)", file=sys.stderr)
 
     return outcomes
 
@@ -110,6 +118,8 @@ def resolve_llm_scans(
     timeout_bars: int = 168,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    funding_rate_8h: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> list[TradeOutcome]:
     """Resolve LLM scan rows (CONFIRMs only) using LLM's entry/stop/target."""
     outcomes: list[TradeOutcome] = []
@@ -126,13 +136,63 @@ def resolve_llm_scans(
                 + pd.Timedelta(hours=timeout_bars + 1)
             ).isoformat()
             candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn)
-            outcome = resolve_signal(setup, candles, timeout_bars, fee_rate)
+            outcome = resolve_signal(
+                setup, candles, timeout_bars, fee_rate,
+                funding_rate_8h=funding_rate_8h,
+                slippage_rate=slippage_rate,
+            )
             outcomes.append(outcome)
         except Exception as e:
             if verbose:
                 print(f"  Resolve LLM {setup.coin}: {e}")
 
     return outcomes
+
+
+# --- Shared window iteration ---
+
+
+def _rolling_window_outcomes(
+    strategy: Strategy,
+    since: str,
+    until: str,
+    conn: sqlite3.Connection,
+    window_weeks: int = 2,
+    coins: list[str] | None = None,
+    timeout_bars: int = 168,
+    fee_rate: float = 0.00035,
+) -> list[tuple[str, str, list[TradeOutcome]]]:
+    """Iterate rolling windows, load signals, resolve each.
+
+    Returns [(label, w_end, [TradeOutcome]), ...] per window.
+    """
+    start = pd.Timestamp(since, tz="UTC")
+    end = pd.Timestamp(until, tz="UTC")
+    delta = pd.Timedelta(weeks=window_weeks)
+
+    windows: list[tuple[str, str, list[TradeOutcome]]] = []
+    cursor = start
+
+    while cursor + delta <= end:
+        w_start = cursor.strftime("%Y-%m-%d")
+        w_end = (cursor + delta).strftime("%Y-%m-%d")
+
+        signal_rows = load_strategy_signals(
+            strategy.strategy_id, w_start, w_end, conn, coins,
+        )
+
+        if signal_rows:
+            outcomes = resolve_signals(
+                signal_rows, strategy.atr_stop_mult, strategy.atr_target_mult,
+                conn, timeout_bars, fee_rate, verbose=False,
+            )
+        else:
+            outcomes = []
+
+        windows.append((w_start, w_end, outcomes))
+        cursor += delta
+
+    return windows
 
 
 # --- Loop 1: Signal Quality ---
@@ -147,6 +207,7 @@ def signal_quality_report(
     timeout_bars: int = 168,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    run_permutation: bool = False,
 ) -> tuple[MetricsReport, dict[str, list[MetricsReport]]]:
     """Per-setup-type breakdown. Which of A-G produce edge?
 
@@ -164,7 +225,7 @@ def signal_quality_report(
         conn, timeout_bars, fee_rate, verbose,
     )
 
-    overall = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}")
+    overall = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}", run_permutation=run_permutation)
     sliced = slice_metrics(outcomes)
 
     return overall, sliced
@@ -310,6 +371,173 @@ def regime_decay_report(
         cursor += delta
 
     return windows
+
+
+# --- Decay metric 1: Regime-conditioned rolling expectancy ---
+
+
+def regime_conditioned_decay_report(
+    strategy: Strategy,
+    since: str,
+    until: str,
+    conn: sqlite3.Connection,
+    window_weeks: int = 2,
+    coins: list[str] | None = None,
+    timeout_bars: int = 168,
+    fee_rate: float = 0.00035,
+    verbose: bool = False,
+) -> list[tuple[str, dict[str, MetricsReport]]]:
+    """Rolling expectancy broken out by regime within each window.
+
+    Returns [(window_label, {regime: MetricsReport}), ...].
+    Declining expectancy within a *single regime* across windows → alpha decay.
+    Declining overall because regime mix shifted → regime change, not decay.
+    """
+    raw_windows = _rolling_window_outcomes(
+        strategy, since, until, conn, window_weeks, coins, timeout_bars, fee_rate,
+    )
+
+    result: list[tuple[str, dict[str, MetricsReport]]] = []
+    for label, _, outcomes in raw_windows:
+        # Group outcomes by regime
+        by_regime: dict[str, list[TradeOutcome]] = {}
+        for o in outcomes:
+            regime = o.setup.regime if (o.setup and o.setup.regime) else "unknown"
+            by_regime.setdefault(regime, []).append(o)
+
+        metrics_by_regime = {
+            regime: compute_metrics(outs, f"{label}:{regime}")
+            for regime, outs in sorted(by_regime.items())
+        }
+
+        if verbose:
+            parts = [f"{r}={m.expectancy:+.3f}" for r, m in metrics_by_regime.items()]
+            print(f"  {label}: {', '.join(parts)}")
+
+        result.append((label, metrics_by_regime))
+
+    return result
+
+
+# --- Decay metric 2: LLM filter alpha delta ---
+
+
+@dataclass
+class LLMAlphaDeltaWindow:
+    """Per-window comparison of all-signal vs CONFIRM expectancy."""
+
+    label: str
+    n_all: int
+    n_confirmed: int
+    exp_all: float
+    exp_confirmed: float
+    delta: float | None  # None when n_confirmed == 0
+
+
+def llm_alpha_decay_report(
+    strategy: Strategy,
+    since: str,
+    until: str,
+    conn: sqlite3.Connection,
+    window_weeks: int = 2,
+    coins: list[str] | None = None,
+    timeout_bars: int = 168,
+    fee_rate: float = 0.00035,
+    verbose: bool = False,
+) -> list[LLMAlphaDeltaWindow]:
+    """Delta = E[CONFIRM] - E[all_signals] in rolling windows.
+
+    Delta declining toward zero → LLM filter losing edge.
+    """
+    start = pd.Timestamp(since, tz="UTC")
+    end = pd.Timestamp(until, tz="UTC")
+    delta_td = pd.Timedelta(weeks=window_weeks)
+
+    windows: list[LLMAlphaDeltaWindow] = []
+    cursor = start
+
+    while cursor + delta_td <= end:
+        w_start = cursor.strftime("%Y-%m-%d")
+        w_end = (cursor + delta_td).strftime("%Y-%m-%d")
+
+        signal_rows = load_strategy_signals(
+            strategy.strategy_id, w_start, w_end, conn, coins,
+        )
+        scan_rows = load_llm_scans(
+            strategy.strategy_id, w_start, w_end, conn, coins,
+        )
+
+        # All signals expectancy
+        if signal_rows:
+            all_outcomes = resolve_signals(
+                signal_rows, strategy.atr_stop_mult, strategy.atr_target_mult,
+                conn, timeout_bars, fee_rate, verbose=False,
+            )
+            all_metrics = compute_metrics(all_outcomes, "all")
+        else:
+            all_metrics = compute_metrics([], "all")
+
+        # CONFIRM expectancy (using LLM's own levels)
+        confirm_outcomes = resolve_llm_scans(
+            scan_rows, conn, timeout_bars, fee_rate, verbose=False,
+        )
+        if confirm_outcomes:
+            conf_metrics = compute_metrics(confirm_outcomes, "confirmed")
+            delta_val = conf_metrics.expectancy - all_metrics.expectancy
+        else:
+            conf_metrics = compute_metrics([], "confirmed")
+            delta_val = None
+
+        window = LLMAlphaDeltaWindow(
+            label=w_start,
+            n_all=all_metrics.sample_size,
+            n_confirmed=conf_metrics.sample_size,
+            exp_all=all_metrics.expectancy,
+            exp_confirmed=conf_metrics.expectancy,
+            delta=round(delta_val, 4) if delta_val is not None else None,
+        )
+        windows.append(window)
+
+        if verbose:
+            d = f"{delta_val:+.3f}" if delta_val is not None else "n/a"
+            print(f"  {w_start}: all={all_metrics.expectancy:+.3f} conf={conf_metrics.expectancy:+.3f} Δ={d}")
+
+        cursor += delta_td
+
+    return windows
+
+
+# --- Decay metric 3: Time-to-resolution drift ---
+
+
+def resolution_drift_report(
+    strategy: Strategy,
+    since: str,
+    until: str,
+    conn: sqlite3.Connection,
+    window_weeks: int = 2,
+    coins: list[str] | None = None,
+    timeout_bars: int = 168,
+    fee_rate: float = 0.00035,
+    verbose: bool = False,
+) -> list[tuple[str, MetricsReport]]:
+    """Track avg_bars_to_exit in rolling windows.
+
+    Rising bars → setups losing urgency (crowding at same levels).
+    """
+    raw_windows = _rolling_window_outcomes(
+        strategy, since, until, conn, window_weeks, coins, timeout_bars, fee_rate,
+    )
+
+    result: list[tuple[str, MetricsReport]] = []
+    for label, _, outcomes in raw_windows:
+        metrics = compute_metrics(outcomes, label)
+        result.append((label, metrics))
+
+        if verbose:
+            print(f"  {label}: n={metrics.sample_size} avg_bars={metrics.avg_bars_to_exit:.1f}")
+
+    return result
 
 
 # --- Auto-disable suggestions ---
@@ -509,6 +737,133 @@ def format_regime_crosstab(crosstab: dict[str, dict[str, MetricsReport]]) -> str
     return "\n".join(sections)
 
 
+def format_regime_conditioned_decay(
+    windows: list[tuple[str, dict[str, MetricsReport]]],
+) -> str:
+    """Format regime-conditioned decay report.
+
+    Table: rows = windows, columns = all regimes seen (union across windows).
+    """
+    sections = [
+        "=" * 60,
+        "  REGIME-CONDITIONED DECAY",
+        "=" * 60,
+        "",
+    ]
+
+    if not windows:
+        sections.append("  No data.")
+        sections.append("")
+        sections.append("=" * 60)
+        return "\n".join(sections)
+
+    # Collect all regimes across all windows
+    all_regimes = sorted({r for _, regime_map in windows for r in regime_map})
+
+    col_w = 16
+    header = f"  {'Window':<12}"
+    for regime in all_regimes:
+        header += f" {regime:>{col_w}}"
+    sections.append(header)
+    sections.append("  " + "-" * (12 + (col_w + 1) * len(all_regimes)))
+
+    for label, regime_map in windows:
+        row = f"  {label:<12}"
+        for regime in all_regimes:
+            m = regime_map.get(regime)
+            if m and m.sample_size > 0:
+                cell = f"n={m.sample_size} {m.expectancy:+.3f}R"
+            else:
+                cell = "-"
+            row += f" {cell:>{col_w}}"
+        sections.append(row)
+
+    sections.append("")
+    sections.append("=" * 60)
+    return "\n".join(sections)
+
+
+def format_llm_alpha_decay(windows: list[LLMAlphaDeltaWindow]) -> str:
+    """Format LLM alpha delta decay report."""
+    sections = [
+        "=" * 60,
+        "  LLM FILTER ALPHA DECAY",
+        "=" * 60,
+        "",
+    ]
+
+    header = (
+        f"  {'Window':<12} {'N_all':>6} {'N_conf':>7} "
+        f"{'ExpAll':>8} {'ExpConf':>8} {'Delta':>8} {'Trend':>5}"
+    )
+    sep = "  " + "-" * len(header.strip())
+    sections.append(header)
+    sections.append(sep)
+
+    prev_delta = None
+    for w in windows:
+        if w.delta is not None:
+            delta_str = f"{w.delta:>+7.3f}R"
+        else:
+            delta_str = f"{'n/a':>8}"
+
+        if prev_delta is None or w.delta is None:
+            arrow = " "
+        elif w.delta > prev_delta + 0.01:
+            arrow = "^"
+        elif w.delta < prev_delta - 0.01:
+            arrow = "v"
+        else:
+            arrow = "="
+
+        sections.append(
+            f"  {w.label:<12} {w.n_all:>6} {w.n_confirmed:>7} "
+            f"{w.exp_all:>+7.3f}R {w.exp_confirmed:>+7.3f}R {delta_str}   {arrow}"
+        )
+        if w.delta is not None:
+            prev_delta = w.delta
+
+    sections.append("")
+    sections.append("=" * 60)
+    return "\n".join(sections)
+
+
+def format_resolution_drift(windows: list[tuple[str, MetricsReport]]) -> str:
+    """Format resolution drift report — avg_bars_to_exit trend."""
+    sections = [
+        "=" * 60,
+        "  RESOLUTION DRIFT",
+        "=" * 60,
+        "",
+    ]
+
+    header = f"  {'Window':<12} {'N':>5} {'WR':>7} {'ExpR':>8} {'AvgBars':>8} {'Trend':>5}"
+    sep = "  " + "-" * len(header.strip())
+    sections.append(header)
+    sections.append(sep)
+
+    prev_bars = None
+    for label, report in windows:
+        if prev_bars is None:
+            arrow = " "
+        elif report.avg_bars_to_exit > prev_bars + 1.0:
+            arrow = "^"  # increasing = warning
+        elif report.avg_bars_to_exit < prev_bars - 1.0:
+            arrow = "v"  # decreasing = good
+        else:
+            arrow = "="
+
+        sections.append(
+            f"  {label:<12} {report.sample_size:>5} {report.win_rate:>6.1%} "
+            f"{report.expectancy:>+7.3f}R {report.avg_bars_to_exit:>7.1f}   {arrow}"
+        )
+        prev_bars = report.avg_bars_to_exit
+
+    sections.append("")
+    sections.append("=" * 60)
+    return "\n".join(sections)
+
+
 def format_disable_suggestion(suggestions: list[tuple[str, float, int, str]]) -> str:
     """Format auto-disable suggestions."""
     if not suggestions:
@@ -523,3 +878,24 @@ def format_disable_suggestion(suggestions: list[tuple[str, float, int, str]]) ->
     lines.append(f"  Run: python -m scanner.strategy disable <strategy_id> {types_str}")
 
     return "\n".join(lines)
+
+
+# --- Roadmap: Future Decay Metrics ---
+#
+# These metrics require more data or external sources before implementation.
+# Documented here with triggers for when to build.
+#
+# 1. S/R Level Effectiveness Rate
+#    Track hit rate of key_level prices — how often does price react at our levels?
+#    Declining effectiveness = levels becoming crowded/invalidated.
+#    Trigger: 6+ months of level-tagged data in signals table.
+#
+# 2. Setup Type Half-Life
+#    For each setup type, measure time from first appearance to when expectancy
+#    decays to zero. Identifies which edges are structural vs ephemeral.
+#    Trigger: 6+ months of continuous data per setup type.
+#
+# 3. External Crowding Signals
+#    Monitor open interest concentration, funding rate extremes, or social
+#    mention frequency at our identified levels. Rising crowding = edge erosion.
+#    Trigger: Manual periodic review; requires external data source integration.

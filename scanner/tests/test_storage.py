@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.storage import get_connection, save_result, is_duplicate, mark_alerted, daily_cost, stats
+from scanner.storage import get_connection, save_result, save_scan_universe, is_duplicate, mark_alerted, daily_cost, stats
 from scanner.models import (
     ScanResult, SetupSignal, SetupType, Direction,
     MarketContext, Structure, SRLevel, SwingPoint,
@@ -119,3 +119,38 @@ class TestStats:
         assert s["total_scans"] == 1
         assert s["confirms"] == 1
         assert len(s["recent"]) == 1
+
+
+class TestScanUniverse:
+    def test_save_scan_universe(self, db_conn):
+        pairs = [
+            {"coin": "BTC", "volume_24h": 100_000_000, "max_leverage": 50},
+            {"coin": "ETH", "volume_24h": 50_000_000, "max_leverage": 25},
+        ]
+        count = save_scan_universe("batch1", pairs, "2026-02-20T12:00:00", db_conn)
+        assert count == 2
+
+        rows = db_conn.execute("SELECT * FROM scan_universe WHERE batch_id = 'batch1'").fetchall()
+        assert len(rows) == 2
+        coins = {r["coin"] for r in rows}
+        assert coins == {"BTC", "ETH"}
+
+    def test_dedup_on_batch_coin(self, db_conn):
+        pairs = [{"coin": "BTC", "volume_24h": 100_000_000}]
+        save_scan_universe("batch1", pairs, "2026-02-20T12:00:00", db_conn)
+        # Insert same batch_id + coin again — should be ignored
+        save_scan_universe("batch1", pairs, "2026-02-20T12:00:00", db_conn)
+
+        rows = db_conn.execute("SELECT COUNT(*) as cnt FROM scan_universe WHERE batch_id = 'batch1'").fetchone()
+        assert rows["cnt"] == 1
+
+    def test_different_batches_separate(self, db_conn):
+        pairs = [{"coin": "BTC"}]
+        save_scan_universe("batch1", pairs, "2026-02-20T12:00:00", db_conn)
+        save_scan_universe("batch2", pairs, "2026-02-20T13:00:00", db_conn)
+
+        rows = db_conn.execute("SELECT COUNT(DISTINCT batch_id) as cnt FROM scan_universe").fetchone()
+        assert rows["cnt"] == 2
+
+    def test_empty_pairs_returns_zero(self, db_conn):
+        assert save_scan_universe("batch1", [], "2026-02-20T12:00:00", db_conn) == 0

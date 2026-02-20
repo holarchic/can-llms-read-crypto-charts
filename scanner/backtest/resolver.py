@@ -37,9 +37,24 @@ class TradeOutcome:
     mae: float = 0.0  # Max Adverse Excursion in R
     mfe: float = 0.0  # Max Favorable Excursion in R
     fees_paid: float = 0.0  # In R-multiples
+    funding_paid: float = 0.0  # In R-multiples
 
     # Carry forward for slicing
     setup: TradeSetup | None = None
+
+
+def estimate_slippage(volume_24h: float | None) -> float:
+    """Estimate slippage rate based on 24h volume tier.
+
+    Returns per-side slippage rate (e.g. 0.0002 = 0.02%).
+    """
+    if volume_24h is None or volume_24h <= 0:
+        return 0.0015  # 0.15% worst case
+    if volume_24h >= 50_000_000:
+        return 0.0002  # 0.02%
+    if volume_24h >= 10_000_000:
+        return 0.0008  # 0.08%
+    return 0.0015  # 0.15%
 
 
 def resolve_signal(
@@ -47,6 +62,8 @@ def resolve_signal(
     candles: pd.DataFrame,
     timeout_bars: int = 168,
     fee_rate: float = 0.00035,
+    funding_rate_8h: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> TradeOutcome:
     """Walk forward through 1H candles from signal time to determine outcome.
 
@@ -55,6 +72,8 @@ def resolve_signal(
         candles: DataFrame with DatetimeIndex + Open/High/Low/Close columns.
         timeout_bars: Max bars before EXPIRED (default 168 = 7 days of 1H).
         fee_rate: Taker fee per side (default 0.035% for HyperLiquid).
+        funding_rate_8h: Funding rate per 8h period (default 0 = disabled).
+        slippage_rate: Slippage per side (default 0 = disabled).
 
     Returns:
         TradeOutcome with result, R-multiple achieved, MAE/MFE, etc.
@@ -69,8 +88,9 @@ def resolve_signal(
     reward = abs(setup.target - setup.entry)
     is_long = setup.direction == "LONG"
 
-    # Fee impact in R-multiples (round-trip: entry + exit)
-    fee_r = (fee_rate * 2 * setup.entry) / risk
+    # Fee + slippage impact in R-multiples (round-trip: entry + exit)
+    cost_per_side = fee_rate + slippage_rate
+    fee_r = (cost_per_side * 2 * setup.entry) / risk
 
     # Filter candles to after signal time
     signal_time = pd.Timestamp(setup.timestamp, tz="UTC")
@@ -106,28 +126,34 @@ def resolve_signal(
         mae = max(mae, adverse_r)
         mfe = max(mfe, favor_r)
 
+        bars_held = i + 1
+        funding_r = (funding_rate_8h * (bars_held / 8) * setup.entry) / risk if funding_rate_8h else 0.0
+        total_cost_r = fee_r + funding_r
+
         # Both hit same candle → conservative: LOSS
         if hit_stop and hit_target:
             return TradeOutcome(
                 result="LOSS",
-                r_achieved=-1.0 - fee_r,
-                bars_to_exit=i + 1,
+                r_achieved=-1.0 - total_cost_r,
+                bars_to_exit=bars_held,
                 exit_price=setup.stop,
                 mae=mae,
                 mfe=mfe,
                 fees_paid=fee_r,
+                funding_paid=funding_r,
                 setup=setup,
             )
 
         if hit_stop:
             return TradeOutcome(
                 result="LOSS",
-                r_achieved=-1.0 - fee_r,
-                bars_to_exit=i + 1,
+                r_achieved=-1.0 - total_cost_r,
+                bars_to_exit=bars_held,
                 exit_price=setup.stop,
                 mae=mae,
                 mfe=mfe,
                 fees_paid=fee_r,
+                funding_paid=funding_r,
                 setup=setup,
             )
 
@@ -135,16 +161,21 @@ def resolve_signal(
             target_r = reward / risk
             return TradeOutcome(
                 result="WIN",
-                r_achieved=target_r - fee_r,
-                bars_to_exit=i + 1,
+                r_achieved=target_r - total_cost_r,
+                bars_to_exit=bars_held,
                 exit_price=setup.target,
                 mae=mae,
                 mfe=mfe,
                 fees_paid=fee_r,
+                funding_paid=funding_r,
                 setup=setup,
             )
 
     # EXPIRED — close at last available bar
+    bars_held = min(timeout_bars, len(future))
+    funding_r = (funding_rate_8h * (bars_held / 8) * setup.entry) / risk if funding_rate_8h else 0.0
+    total_cost_r = fee_r + funding_r
+
     last_close = future.iloc[min(timeout_bars - 1, len(future) - 1)]["Close"]
     if is_long:
         unrealized_r = (last_close - setup.entry) / risk
@@ -153,12 +184,13 @@ def resolve_signal(
 
     return TradeOutcome(
         result="EXPIRED",
-        r_achieved=unrealized_r - fee_r,
-        bars_to_exit=min(timeout_bars, len(future)),
+        r_achieved=unrealized_r - total_cost_r,
+        bars_to_exit=bars_held,
         exit_price=last_close,
         mae=mae,
         mfe=mfe,
         fees_paid=fee_r,
+        funding_paid=funding_r,
         setup=setup,
     )
 

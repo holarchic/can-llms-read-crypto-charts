@@ -3,7 +3,11 @@
 import pytest
 
 from scanner.backtest.resolver import TradeSetup, TradeOutcome
-from scanner.backtest.metrics import compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI
+from scanner.backtest.metrics import (
+    compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI,
+    permutation_test, PermutationResult,
+    sharpe_ratio, deflated_sharpe_ratio, DSRResult,
+)
 
 
 def _outcome(result="WIN", r_achieved=2.0, bars=5, mae=0.3, mfe=2.5, setup_type="C", direction="LONG", confidence=0.7, regime=""):
@@ -213,3 +217,124 @@ class TestRegimeSlicer:
         sliced = slice_metrics(outcomes)
         labels = {r.label for r in sliced["regime"]}
         assert "unknown" in labels
+
+
+class TestPermutationTest:
+    """Monte Carlo permutation test on expectancy."""
+
+    def test_too_few_outcomes_returns_none(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(4)]
+        assert permutation_test(outcomes) is None
+
+    def test_all_wins_low_p_value(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(20)]
+        result = permutation_test(outcomes, seed=42)
+        assert isinstance(result, PermutationResult)
+        assert result.p_value < 0.05
+        assert result.is_significant is True
+
+    def test_random_5050_high_p_value(self):
+        outcomes = (
+            [_outcome("WIN", 1.0) for _ in range(10)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(10)]
+        )
+        result = permutation_test(outcomes, seed=42)
+        # 50/50 win/loss at symmetric R → expectancy ~0, p should be high
+        assert result.p_value > 0.1
+
+    def test_deterministic_with_seed(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(8)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(4)]
+        )
+        r1 = permutation_test(outcomes, seed=99)
+        r2 = permutation_test(outcomes, seed=99)
+        assert r1.p_value == r2.p_value
+
+    def test_compute_metrics_with_permutation_flag(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
+        report = compute_metrics(outcomes, "test", run_permutation=True)
+        assert report.permutation is not None
+        assert report.permutation.is_significant is True
+
+    def test_compute_metrics_no_permutation_by_default(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
+        report = compute_metrics(outcomes, "test")
+        assert report.permutation is None
+
+
+class TestSharpeRatio:
+    """Sharpe ratio calculation."""
+
+    def test_too_few_returns_none(self):
+        outcomes = [_outcome("WIN", 2.0)]
+        assert sharpe_ratio(outcomes) is None
+
+    def test_all_same_returns_inf(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
+        sr = sharpe_ratio(outcomes)
+        assert sr == float("inf")
+
+    def test_positive_system(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(7)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(3)]
+        )
+        sr = sharpe_ratio(outcomes)
+        assert sr > 0
+
+    def test_negative_system(self):
+        outcomes = (
+            [_outcome("WIN", 1.0) for _ in range(2)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(8)]
+        )
+        sr = sharpe_ratio(outcomes)
+        assert sr < 0
+
+
+class TestDeflatedSharpeRatio:
+    """DSR — multiple testing correction."""
+
+    def test_too_few_returns_none(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(5)]
+        assert deflated_sharpe_ratio(outcomes, n_trials=10) is None
+
+    def test_zero_trials_returns_none(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(20)]
+        assert deflated_sharpe_ratio(outcomes, n_trials=0) is None
+
+    def test_single_trial_strong_edge_significant(self):
+        # Strong edge, 1 trial → no penalty, should be significant
+        outcomes = (
+            [_outcome("WIN", 3.0) for _ in range(15)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(5)]
+        )
+        dsr = deflated_sharpe_ratio(outcomes, n_trials=1)
+        assert isinstance(dsr, DSRResult)
+        assert dsr.is_significant is True
+        assert dsr.n_trials == 1
+
+    def test_many_trials_marginal_edge_not_significant(self):
+        # Marginal edge + many trials → inflation, should not be significant
+        outcomes = (
+            [_outcome("WIN", 1.1) for _ in range(12)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(8)]
+        )
+        dsr = deflated_sharpe_ratio(outcomes, n_trials=100)
+        assert isinstance(dsr, DSRResult)
+        # With 100 trials and marginal edge, p should be high
+        assert dsr.p_value > 0.05
+
+    def test_returns_correct_n_trials(self):
+        outcomes = [_outcome("WIN", 2.0) for _ in range(10)] + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(5)]
+        dsr = deflated_sharpe_ratio(outcomes, n_trials=25)
+        assert dsr.n_trials == 25
+
+    def test_expected_max_sharpe_increases_with_trials(self):
+        outcomes = (
+            [_outcome("WIN", 2.0) for _ in range(10)]
+            + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(5)]
+        )
+        dsr_5 = deflated_sharpe_ratio(outcomes, n_trials=5)
+        dsr_50 = deflated_sharpe_ratio(outcomes, n_trials=50)
+        assert dsr_50.expected_max_sharpe > dsr_5.expected_max_sharpe

@@ -4,6 +4,8 @@ import argparse
 import sys
 from datetime import datetime, timezone, timedelta
 
+import pandas as pd
+
 from ..storage import get_connection
 from ..backtest.candles import cache_candles, fetch_and_cache
 from ..backtest.report import format_summary
@@ -17,17 +19,25 @@ from .store import (
 )
 from .replay import replay
 from .compare import format_comparison
-from .sweep import sweep_resolution, sweep_screener, _parse_range
+from ..backtest.metrics import deflated_sharpe_ratio
+from .sweep import sweep_resolution, sweep_screener, _parse_range, walk_forward_sweep
 from .report import (
     signal_quality_report,
     llm_filter_report,
     regime_decay_report,
     regime_crosstab_report,
+    regime_conditioned_decay_report,
+    llm_alpha_decay_report,
+    resolution_drift_report,
+    LLMAlphaDeltaWindow,
     suggest_disabled_types,
     format_signal_quality,
     format_llm_filter,
     format_regime_decay,
     format_regime_crosstab,
+    format_regime_conditioned_decay,
+    format_llm_alpha_decay,
+    format_resolution_drift,
     format_disable_suggestion,
 )
 from .calibrate import run_calibration, format_calibration
@@ -183,24 +193,97 @@ def cmd_sweep(args):
         conn.close()
         sys.exit(1)
 
-    print(f"Sweeping {len(stop_values)}x{len(target_values)} combos over {len(signal_rows)} signals...")
-    results = sweep_resolution(
-        signal_rows, stop_values, target_values, conn,
-        verbose=args.verbose,
-    )
-
-    # Print results sorted by expectancy
-    results.sort(key=lambda r: r[2].expectancy, reverse=True)
-
-    print(f"\n{'Stop':>6} {'Target':>7} {'N':>5} {'WR':>7} {'ExpR':>8} {'PF':>7} {'TotR':>8}")
-    print("-" * 55)
-    for stop, target, m in results:
-        pf = f"{m.profit_factor:.2f}" if m.profit_factor != float("inf") else "inf"
-        print(
-            f"{stop:>6.1f} {target:>7.1f} {m.sample_size:>5} "
-            f"{m.win_rate:>6.1%} {m.expectancy:>+7.3f}R "
-            f"{pf:>6} {m.total_r:>+7.2f}"
+    if args.walk_forward:
+        print(f"Walk-forward sweep: {args.folds} folds, "
+              f"{len(stop_values)}x{len(target_values)} combos, {len(signal_rows)} signals...")
+        wf_result = walk_forward_sweep(
+            signal_rows, stop_values, target_values, conn,
+            n_folds=args.folds, verbose=args.verbose,
         )
+
+        if not wf_result:
+            print("Insufficient data for walk-forward sweep.")
+            conn.close()
+            sys.exit(0)
+
+        print(f"\n{'Fold':>6} {'IS_window':<20} {'OOS_window':<20} {'IS_best':<12} "
+              f"{'IS_exp':>8} {'OOS_exp':>8} {'WFE':>6}")
+        print("-" * 85)
+        for fold in wf_result.folds:
+            s, t = fold.is_best_params
+            wfe_str = f"{fold.wfe:.2f}" if fold.wfe is not None else "n/a"
+            print(
+                f"{fold.fold_index:>6} {fold.is_start+'-'+fold.is_end:<20} "
+                f"{fold.oos_start+'-'+fold.oos_end:<20} "
+                f"{'s='+str(s)+' t='+str(t):<12} "
+                f"{fold.is_best_metrics.expectancy:>+7.3f}R "
+                f"{fold.oos_metrics.expectancy:>+7.3f}R "
+                f"{wfe_str:>6}"
+            )
+
+        oos = wf_result.overall_oos_metrics
+        avg_wfe = f"{wf_result.avg_wfe:.2f}" if wf_result.avg_wfe is not None else "n/a"
+        print(f"\n  Combined OOS: n={oos.sample_size} Exp={oos.expectancy:+.3f}R  Avg WFE: {avg_wfe}")
+
+        if wf_result.avg_wfe is not None:
+            if wf_result.avg_wfe > 0.5:
+                print("  Assessment: ACCEPTABLE (WFE > 0.5)")
+            elif wf_result.avg_wfe > 0.3:
+                print("  Assessment: CAUTION (WFE 0.3-0.5)")
+            else:
+                print("  Assessment: LIKELY OVERFITTING (WFE < 0.3)")
+
+    else:
+        print(f"Sweeping {len(stop_values)}x{len(target_values)} combos over {len(signal_rows)} signals...")
+        results = sweep_resolution(
+            signal_rows, stop_values, target_values, conn,
+            verbose=args.verbose,
+        )
+
+        # Print results sorted by expectancy
+        results.sort(key=lambda r: r[2].expectancy, reverse=True)
+
+        print(f"\n{'Stop':>6} {'Target':>7} {'N':>5} {'WR':>7} {'ExpR':>8} {'PF':>7} {'TotR':>8}")
+        print("-" * 55)
+        for stop, target, m in results:
+            pf = f"{m.profit_factor:.2f}" if m.profit_factor != float("inf") else "inf"
+            print(
+                f"{stop:>6.1f} {target:>7.1f} {m.sample_size:>5} "
+                f"{m.win_rate:>6.1%} {m.expectancy:>+7.3f}R "
+                f"{pf:>6} {m.total_r:>+7.2f}"
+            )
+
+        # DSR on best result
+        if len(results) > 1:
+            best_stop, best_target, best_m = results[0]
+            # Collect outcomes for best params to compute DSR
+            from ..backtest.resolver import build_screener_setup
+            print(f"\n  Computing DSR (re-resolving {len(signal_rows)} signals for best params)...",
+                  file=sys.stderr)
+            best_outcomes = []
+            for row in signal_rows:
+                setup = build_screener_setup(row, best_stop, best_target)
+                if not setup:
+                    continue
+                try:
+                    candles = fetch_and_cache(
+                        setup.coin, "1h", setup.timestamp,
+                        (pd.Timestamp(setup.timestamp, tz="UTC")
+                         + pd.Timedelta(hours=168 + 1)).isoformat(),
+                        conn,
+                    )
+                    from ..backtest.resolver import resolve_signal
+                    outcome = resolve_signal(setup, candles, 168, 0.00035)
+                    best_outcomes.append(outcome)
+                except Exception:
+                    continue
+
+            n_trials = len(results)
+            dsr = deflated_sharpe_ratio(best_outcomes, n_trials)
+            if dsr:
+                sig = "SIGNIFICANT" if dsr.is_significant else "LIKELY NOISE"
+                print(f"\n  DSR: p={dsr.p_value:.4f} (N={n_trials} trials) — {sig}")
+                print(f"  Observed SR: {dsr.observed_sharpe:.4f}  Expected max SR: {dsr.expected_max_sharpe:.4f}")
 
     conn.close()
 
@@ -216,7 +299,11 @@ def cmd_report(args):
     coins = [c.upper() for c in args.coin] if args.coin else None
 
     # Default: run all loops unless specific ones requested
-    run_all = not (args.signal_quality or args.llm_filter or args.regime or args.suggest_disable or args.regime_crosstab)
+    run_all = not (
+        args.signal_quality or args.llm_filter or args.regime
+        or args.suggest_disable or args.regime_crosstab
+        or args.decay_conditioned or args.llm_decay or args.resolution_drift
+    )
 
     sections: list[str] = []
 
@@ -224,6 +311,7 @@ def cmd_report(args):
         overall, sliced = signal_quality_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
+            run_permutation=args.permutation,
         )
         sections.append(format_signal_quality(overall, sliced))
 
@@ -254,12 +342,37 @@ def cmd_report(args):
         crosstab = regime_crosstab_report(outcomes)
         sections.append(format_regime_crosstab(crosstab))
 
+    if args.decay_conditioned:
+        dc_windows = regime_conditioned_decay_report(
+            strategy, args.since, args.until, conn,
+            window_weeks=args.window_weeks,
+            coins=coins, verbose=args.verbose,
+        )
+        sections.append(format_regime_conditioned_decay(dc_windows))
+
+    if args.llm_decay:
+        llm_windows = llm_alpha_decay_report(
+            strategy, args.since, args.until, conn,
+            window_weeks=args.window_weeks,
+            coins=coins, verbose=args.verbose,
+        )
+        sections.append(format_llm_alpha_decay(llm_windows))
+
+    if args.resolution_drift:
+        rd_windows = resolution_drift_report(
+            strategy, args.since, args.until, conn,
+            window_weeks=args.window_weeks,
+            coins=coins, verbose=args.verbose,
+        )
+        sections.append(format_resolution_drift(rd_windows))
+
     if run_all or args.suggest_disable:
         # Need signal quality data for suggestions
         if not (run_all or args.signal_quality):
             _, sliced = signal_quality_report(
                 strategy, args.since, args.until, conn,
                 coins=coins, verbose=args.verbose,
+                run_permutation=args.permutation,
             )
         setup_type_reports = sliced.get("setup_type", [])
         suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
@@ -410,6 +523,8 @@ def main():
     p_sweep.add_argument("--since", type=str, default=None, help="Start date")
     p_sweep.add_argument("--until", type=str, default=None, help="End date")
     p_sweep.add_argument("--days", type=int, default=30, help="Lookback days (if --since not set)")
+    p_sweep.add_argument("--walk-forward", action="store_true", help="Run anchored walk-forward sweep")
+    p_sweep.add_argument("--folds", type=int, default=3, help="Number of walk-forward folds (default: 3)")
     p_sweep.add_argument("-v", "--verbose", action="store_true")
     p_sweep.set_defaults(func=cmd_sweep)
 
@@ -424,8 +539,12 @@ def main():
     p_report.add_argument("--regime", action="store_true", help="Run regime decay report only")
     p_report.add_argument("--suggest-disable", action="store_true", help="Suggest setup types to disable")
     p_report.add_argument("--regime-crosstab", action="store_true", help="Show setup_type x regime cross-tab")
-    p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for regime decay (default: 2)")
+    p_report.add_argument("--decay-conditioned", action="store_true", help="Regime-conditioned rolling expectancy")
+    p_report.add_argument("--llm-decay", action="store_true", help="LLM filter alpha delta over time")
+    p_report.add_argument("--resolution-drift", action="store_true", help="Time-to-resolution drift")
+    p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for rolling reports (default: 2)")
     p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
+    p_report.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
     p_report.add_argument("-v", "--verbose", action="store_true")
     p_report.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     p_report.set_defaults(func=cmd_report)

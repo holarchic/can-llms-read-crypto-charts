@@ -13,7 +13,7 @@ from .indicators import build_context
 from .screener import detect_all_setups
 from .charts import generate_charts_for_signal, cleanup_charts
 from .analysis import analyze_for_scanner
-from .storage import get_connection, save_result, save_signals, is_duplicate, mark_alerted, daily_cost
+from .storage import get_connection, save_result, save_signals, save_scan_universe, is_duplicate, mark_alerted, daily_cost
 from .alerts import send_alert, format_alert_text
 from .models import SetupSignal, ScanResult
 from .backtest.candles import cache_candles
@@ -108,6 +108,8 @@ def stage1_screen(
 
     # Persist all signals for backtesting (with scoring components + BTC structure)
     batch_id = uuid4().hex[:8]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    save_scan_universe(batch_id, pairs, timestamp, conn)
     save_signals(all_signals, batch_id, len(capped), conn, strategy_id=strategy_id,
                  btc_structure=btc_structure)
 

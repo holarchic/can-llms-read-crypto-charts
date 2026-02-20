@@ -1,7 +1,10 @@
 """Aggregation: win rate, expectancy, profit factor, slicing by dimension."""
 
+import math
 import random
 from dataclasses import dataclass, field
+
+from scipy.stats import norm
 
 from .resolver import TradeOutcome
 
@@ -14,6 +17,138 @@ class BootstrapCI:
     ci_high: float
     confidence: float
     excludes_zero: bool
+
+
+@dataclass
+class PermutationResult:
+    """Monte Carlo permutation test on expectancy."""
+
+    observed_expectancy: float
+    p_value: float
+    n_permutations: int
+    is_significant: bool  # p < 0.05
+
+
+@dataclass
+class DSRResult:
+    """Deflated Sharpe Ratio — corrects for multiple testing."""
+
+    observed_sharpe: float
+    expected_max_sharpe: float
+    deflated_sharpe: float
+    p_value: float
+    n_trials: int
+    is_significant: bool  # p < 0.05
+
+
+def permutation_test(
+    outcomes: list[TradeOutcome],
+    n_permutations: int = 10_000,
+    seed: int | None = None,
+) -> PermutationResult | None:
+    """Monte Carlo permutation test: is this edge real?
+
+    Shuffles R-multiples n_permutations times, computes mean each time.
+    p-value = fraction of shuffled means >= observed mean.
+    Returns None if fewer than 5 outcomes.
+    """
+    if len(outcomes) < 5:
+        return None
+
+    r_values = [o.r_achieved for o in outcomes]
+    observed = sum(r_values) / len(r_values)
+    rng = random.Random(seed)
+
+    count_ge = 0
+    for _ in range(n_permutations):
+        shuffled = r_values[:]
+        rng.shuffle(shuffled)
+        # Under null: random assignment of signs (negate random subset)
+        perm_mean = sum(v * rng.choice((-1, 1)) for v in shuffled) / len(shuffled)
+        if perm_mean >= observed:
+            count_ge += 1
+
+    p_value = count_ge / n_permutations
+
+    return PermutationResult(
+        observed_expectancy=round(observed, 4),
+        p_value=round(p_value, 4),
+        n_permutations=n_permutations,
+        is_significant=p_value < 0.05,
+    )
+
+
+def sharpe_ratio(outcomes: list[TradeOutcome]) -> float | None:
+    """Compute Sharpe ratio from trade R-multiples.
+
+    Returns None if fewer than 2 outcomes.
+    """
+    if len(outcomes) < 2:
+        return None
+    r_values = [o.r_achieved for o in outcomes]
+    mean_r = sum(r_values) / len(r_values)
+    var_r = sum((v - mean_r) ** 2 for v in r_values) / (len(r_values) - 1)
+    std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+    if std_r == 0:
+        return float("inf") if mean_r > 0 else 0.0
+    return mean_r / std_r
+
+
+def deflated_sharpe_ratio(
+    outcomes: list[TradeOutcome],
+    n_trials: int,
+) -> DSRResult | None:
+    """Deflated Sharpe Ratio — Bailey & Lopez de Prado (2014).
+
+    Corrects observed Sharpe for multiple testing bias.
+    Returns None if fewer than 10 outcomes or n_trials < 1.
+    """
+    n = len(outcomes)
+    if n < 10 or n_trials < 1:
+        return None
+
+    r_values = [o.r_achieved for o in outcomes]
+    mean_r = sum(r_values) / n
+    var_r = sum((v - mean_r) ** 2 for v in r_values) / (n - 1)
+    std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+
+    if std_r == 0:
+        return None
+
+    observed_sr = mean_r / std_r
+
+    # Skewness and kurtosis
+    skew = sum((v - mean_r) ** 3 for v in r_values) / (n * std_r ** 3) if std_r > 0 else 0.0
+    kurt = sum((v - mean_r) ** 4 for v in r_values) / (n * std_r ** 4) - 3.0 if std_r > 0 else 0.0
+
+    # Expected maximum Sharpe under null (from n_trials independent trials)
+    # E[max(SR)] ≈ (1 - γ) * Φ^{-1}(1 - 1/N) + γ * Φ^{-1}(1 - 1/(N*e))
+    # Simplified: E[max(SR)] ≈ √(2 * ln(n_trials)) - (ln(π) + ln(ln(n_trials))) / (2 * √(2 * ln(n_trials)))
+    if n_trials == 1:
+        e_max_sr = 0.0
+    else:
+        v = math.sqrt(2 * math.log(n_trials))
+        e_max_sr = v - (math.log(math.pi) + math.log(math.log(n_trials))) / (2 * v) if v > 0 else 0.0
+
+    # Standard error of SR, adjusted for skewness and excess kurtosis
+    se_sr = math.sqrt((1 - skew * observed_sr + (kurt / 4) * observed_sr ** 2) / (n - 1))
+
+    if se_sr <= 0:
+        return None
+
+    # DSR = Prob(SR* > E[max(SR)])
+    # Test statistic: (SR* - E[max(SR)]) / SE(SR*)
+    z = (observed_sr - e_max_sr) / se_sr
+    p_value = 1 - norm.cdf(z)
+
+    return DSRResult(
+        observed_sharpe=round(observed_sr, 4),
+        expected_max_sharpe=round(e_max_sr, 4),
+        deflated_sharpe=round(z, 4),
+        p_value=round(float(p_value), 4),
+        n_trials=n_trials,
+        is_significant=bool(p_value < 0.05),
+    )
 
 
 def bootstrap_expectancy(
@@ -72,10 +207,12 @@ class MetricsReport:
     avg_mfe: float
     avg_win_r: float
     avg_loss_r: float
+    avg_funding_r: float = 0.0
     bootstrap_ci: BootstrapCI | None = None
+    permutation: PermutationResult | None = None
 
 
-def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> MetricsReport:
+def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_permutation: bool = False) -> MetricsReport:
     """Compute aggregate metrics from a list of trade outcomes."""
     n = len(outcomes)
     if n == 0:
@@ -114,8 +251,10 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> Metrics
     avg_bars = sum(o.bars_to_exit for o in outcomes) / n
     avg_mae = sum(o.mae for o in outcomes) / n
     avg_mfe = sum(o.mfe for o in outcomes) / n
+    avg_funding_r = sum(o.funding_paid for o in outcomes) / n
 
     ci = bootstrap_expectancy(outcomes) if n >= 5 else None
+    perm = permutation_test(outcomes) if (run_permutation and n >= 5) else None
 
     return MetricsReport(
         label=label,
@@ -133,7 +272,9 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All") -> Metrics
         avg_mfe=round(avg_mfe, 4),
         avg_win_r=round(avg_win_r, 4),
         avg_loss_r=round(avg_loss_r, 4),
+        avg_funding_r=round(avg_funding_r, 4),
         bootstrap_ci=ci,
+        permutation=perm,
     )
 
 

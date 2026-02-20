@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from scanner.backtest.resolver import TradeSetup, resolve_signal
+from scanner.backtest.resolver import TradeSetup, resolve_signal, estimate_slippage
 from .conftest import make_candles, make_candles_from_hlc
 
 
@@ -178,3 +178,103 @@ class TestEdgeCases:
         outcome = resolve_signal(setup, candles, fee_rate=0.0)
         assert outcome.setup is setup
         assert outcome.setup.coin == "BTC"
+
+
+class TestFundingRate:
+    """Funding rate deduction from R-multiples."""
+
+    def test_funding_deducted_on_win(self):
+        # Target hit at bar 8 → 1 funding period (8 bars / 8 = 1)
+        # funding_cost = 0.0001 * 1 * 100 / 5 = 0.002R
+        candles = make_candles_from_hlc(
+            [(101, 99, 100)] * 7 + [(111, 100, 110)]
+        )
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.0, funding_rate_8h=0.0001)
+
+        assert outcome.result == "WIN"
+        assert outcome.funding_paid == pytest.approx(0.002, abs=0.0001)
+        assert outcome.r_achieved == pytest.approx(2.0 - 0.002, abs=0.001)
+
+    def test_funding_deducted_on_loss(self):
+        # Stop hit at bar 16 → 2 funding periods
+        # funding_cost = 0.0001 * 2 * 100 / 5 = 0.004R
+        candles = make_candles_from_hlc(
+            [(101, 99, 100)] * 15 + [(100, 94, 95)]
+        )
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.0, funding_rate_8h=0.0001)
+
+        assert outcome.result == "LOSS"
+        assert outcome.funding_paid == pytest.approx(0.004, abs=0.0001)
+        assert outcome.r_achieved == pytest.approx(-1.0 - 0.004, abs=0.001)
+
+    def test_funding_on_expired(self):
+        # 168 bars → 21 funding periods
+        # funding_cost = 0.0001 * 21 * 100 / 5 = 0.042R
+        candles = make_candles_from_hlc(
+            [(101, 99, 100)] * 200
+        )
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, timeout_bars=168, fee_rate=0.0, funding_rate_8h=0.0001)
+
+        assert outcome.result == "EXPIRED"
+        assert outcome.funding_paid == pytest.approx(0.042, abs=0.001)
+
+    def test_zero_funding_rate_no_cost(self):
+        candles = make_candles_from_hlc([(111, 100, 110)])
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.0, funding_rate_8h=0.0)
+
+        assert outcome.funding_paid == 0.0
+        assert outcome.r_achieved == pytest.approx(2.0)
+
+    def test_funding_plus_fees_combined(self):
+        # Bar 8 win: fee_r = (0.001 * 2 * 100) / 5 = 0.04R, funding_r = 0.002R
+        candles = make_candles_from_hlc(
+            [(101, 99, 100)] * 7 + [(111, 100, 110)]
+        )
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.001, funding_rate_8h=0.0001)
+
+        assert outcome.result == "WIN"
+        expected_r = 2.0 - 0.04 - 0.002
+        assert outcome.r_achieved == pytest.approx(expected_r, abs=0.001)
+
+
+class TestSlippage:
+    """Slippage estimation and integration."""
+
+    def test_high_volume_low_slippage(self):
+        assert estimate_slippage(100_000_000) == 0.0002
+
+    def test_medium_volume_medium_slippage(self):
+        assert estimate_slippage(20_000_000) == 0.0008
+
+    def test_low_volume_high_slippage(self):
+        assert estimate_slippage(5_000_000) == 0.0015
+
+    def test_none_volume_worst_case(self):
+        assert estimate_slippage(None) == 0.0015
+
+    def test_zero_volume_worst_case(self):
+        assert estimate_slippage(0) == 0.0015
+
+    def test_slippage_deducted_from_r(self):
+        # slippage_rate = 0.001 → slippage_r = (0.001 * 2 * 100) / 5 = 0.04R
+        candles = make_candles_from_hlc([(111, 100, 110)])
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.0, slippage_rate=0.001)
+
+        assert outcome.result == "WIN"
+        assert outcome.r_achieved == pytest.approx(2.0 - 0.04, abs=0.001)
+
+    def test_slippage_plus_fees_combined(self):
+        # fee=0.001 + slippage=0.0005 → total_per_side=0.0015
+        # cost_r = (0.0015 * 2 * 100) / 5 = 0.06R
+        candles = make_candles_from_hlc([(111, 100, 110)])
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, fee_rate=0.001, slippage_rate=0.0005)
+
+        assert outcome.result == "WIN"
+        assert outcome.r_achieved == pytest.approx(2.0 - 0.06, abs=0.001)

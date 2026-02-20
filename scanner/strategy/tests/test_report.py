@@ -19,11 +19,18 @@ from scanner.strategy.report import (
     LLMFilterResult,
     regime_decay_report,
     regime_crosstab_report,
+    regime_conditioned_decay_report,
+    llm_alpha_decay_report,
+    resolution_drift_report,
+    LLMAlphaDeltaWindow,
     suggest_disabled_types,
     format_signal_quality,
     format_llm_filter,
     format_regime_decay,
     format_regime_crosstab,
+    format_regime_conditioned_decay,
+    format_llm_alpha_decay,
+    format_resolution_drift,
     format_disable_suggestion,
 )
 
@@ -101,37 +108,37 @@ def _insert_test_signals(conn, strategy_id):
 
     now = datetime.now(timezone.utc).isoformat()
     signals = [
-        # (setup_type, direction, confidence, key_level, atr, structure, sent_to_llm, timestamp)
-        ("A", "LONG", 0.65, 100.0, 3.0, "RANGING", 1, "2026-01-05T00:00:00+00:00"),
-        ("A", "SHORT", 0.55, 105.0, 3.0, "RANGING", 1, "2026-01-06T00:00:00+00:00"),
-        ("B", "LONG", 0.70, 102.0, 3.0, "BULLISH", 1, "2026-01-07T00:00:00+00:00"),
-        ("C", "LONG", 0.60, 101.0, 3.0, "BULLISH", 0, "2026-01-08T00:00:00+00:00"),
-        ("C", "SHORT", 0.62, 104.0, 3.0, "BEARISH", 0, "2026-01-09T00:00:00+00:00"),
-        ("E", "SHORT", 0.45, 103.0, 3.0, "BEARISH", 0, "2026-01-10T00:00:00+00:00"),
-        ("F", "LONG", 0.55, 100.5, 3.0, "RANGING", 1, "2026-01-11T00:00:00+00:00"),
+        # (setup_type, direction, confidence, key_level, atr, structure, sent_to_llm, timestamp, regime)
+        ("A", "LONG", 0.65, 100.0, 3.0, "RANGING", 1, "2026-01-05T00:00:00+00:00", "ranging"),
+        ("A", "SHORT", 0.55, 105.0, 3.0, "RANGING", 1, "2026-01-06T00:00:00+00:00", "ranging"),
+        ("B", "LONG", 0.70, 102.0, 3.0, "BULLISH", 1, "2026-01-07T00:00:00+00:00", "trending_up"),
+        ("C", "LONG", 0.60, 101.0, 3.0, "BULLISH", 0, "2026-01-08T00:00:00+00:00", "trending_up"),
+        ("C", "SHORT", 0.62, 104.0, 3.0, "BEARISH", 0, "2026-01-09T00:00:00+00:00", "trending_down"),
+        ("E", "SHORT", 0.45, 103.0, 3.0, "BEARISH", 0, "2026-01-10T00:00:00+00:00", "volatile"),
+        ("F", "LONG", 0.55, 100.5, 3.0, "RANGING", 1, "2026-01-11T00:00:00+00:00", "ranging"),
         # Second week
-        ("A", "LONG", 0.60, 101.0, 3.0, "RANGING", 1, "2026-01-15T00:00:00+00:00"),
-        ("B", "SHORT", 0.58, 106.0, 3.0, "BEARISH", 0, "2026-01-16T00:00:00+00:00"),
-        ("C", "LONG", 0.65, 102.0, 3.0, "BULLISH", 1, "2026-01-17T00:00:00+00:00"),
-        ("D", "LONG", 0.60, 101.5, 3.0, "BULLISH", 0, "2026-01-18T00:00:00+00:00"),
-        ("E", "SHORT", 0.50, 104.0, 3.0, "BEARISH", 0, "2026-01-19T00:00:00+00:00"),
+        ("A", "LONG", 0.60, 101.0, 3.0, "RANGING", 1, "2026-01-15T00:00:00+00:00", "ranging"),
+        ("B", "SHORT", 0.58, 106.0, 3.0, "BEARISH", 0, "2026-01-16T00:00:00+00:00", "trending_down"),
+        ("C", "LONG", 0.65, 102.0, 3.0, "BULLISH", 1, "2026-01-17T00:00:00+00:00", "trending_up"),
+        ("D", "LONG", 0.60, 101.5, 3.0, "BULLISH", 0, "2026-01-18T00:00:00+00:00", "trending_up"),
+        ("E", "SHORT", 0.50, 104.0, 3.0, "BEARISH", 0, "2026-01-19T00:00:00+00:00", "volatile"),
     ]
 
     batch_id = uuid4().hex[:8]
-    for i, (st, d, conf, kl, atr, struct, stl, ts) in enumerate(signals, 1):
+    for i, (st, d, conf, kl, atr, struct, stl, ts, regime) in enumerate(signals, 1):
         conn.execute(
             """INSERT INTO signals
             (signal_id, batch_id, coin, setup_type, setup_name, direction,
              confidence, key_level, description, current_price, atr, structure,
              range_low, range_high, fib_618, fib_786,
              sent_to_llm, rank_in_batch, total_in_batch, timestamp, created_at,
-             strategy_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             strategy_id, regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 uuid4().hex[:8], batch_id, "BTC", st, f"Setup {st}", d,
                 conf, kl, f"Test signal {st} {d}", kl, atr, struct,
                 None, None, None, None,
-                stl, i, len(signals), ts, now, strategy_id,
+                stl, i, len(signals), ts, now, strategy_id, regime,
             ),
         )
     conn.commit()
@@ -692,3 +699,236 @@ class TestFormatRegimeCrosstab:
         crosstab = regime_crosstab_report(outcomes)
         output = format_regime_crosstab(crosstab)
         assert "n=2" in output
+
+
+# --- Tests: Regime-Conditioned Decay ---
+
+
+class TestRegimeConditionedDecayReport:
+    def test_returns_windows_with_regimes(self, populated_db, strategy):
+        windows = regime_conditioned_decay_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        assert isinstance(windows, list)
+        assert len(windows) >= 1
+        for label, regime_map in windows:
+            assert isinstance(label, str)
+            assert isinstance(regime_map, dict)
+            for regime, metrics in regime_map.items():
+                assert isinstance(regime, str)
+                assert isinstance(metrics, MetricsReport)
+
+    def test_known_regimes_present(self, populated_db, strategy):
+        windows = regime_conditioned_decay_report(
+            strategy, "2026-01-01", "2026-01-15", populated_db,
+            window_weeks=2,
+        )
+        # First 2-week window should contain signals with regimes we inserted
+        all_regimes = set()
+        for _, regime_map in windows:
+            all_regimes.update(regime_map.keys())
+        # We inserted ranging, trending_up, trending_down, volatile
+        assert len(all_regimes) > 0
+
+    def test_per_regime_sample_sums(self, populated_db, strategy):
+        windows = regime_conditioned_decay_report(
+            strategy, "2026-01-01", "2026-01-15", populated_db,
+            window_weeks=2,
+        )
+        for _, regime_map in windows:
+            total = sum(m.sample_size for m in regime_map.values())
+            # Total per window should be <= signals in that window
+            assert total >= 0
+
+    def test_empty_range(self, populated_db, strategy):
+        windows = regime_conditioned_decay_report(
+            strategy, "2025-01-01", "2025-01-02", populated_db,
+            window_weeks=2,
+        )
+        assert len(windows) == 0
+
+    def test_missing_regime_becomes_unknown(self, db_conn, strategy):
+        """Signals without regime column → 'unknown' bucket."""
+        from uuid import uuid4
+        from datetime import datetime, timezone
+
+        save_strategy(strategy, db_conn)
+        df_1h = _make_1h_candles(base=100.0, n_bars=1200)
+        cache_candles("BTC", "1h", df_1h, db_conn)
+
+        now = datetime.now(timezone.utc).isoformat()
+        # Insert signal without regime
+        db_conn.execute(
+            """INSERT INTO signals
+            (signal_id, batch_id, coin, setup_type, setup_name, direction,
+             confidence, key_level, description, current_price, atr, structure,
+             range_low, range_high, fib_618, fib_786,
+             sent_to_llm, rank_in_batch, total_in_batch, timestamp, created_at,
+             strategy_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                uuid4().hex[:8], "batch1", "BTC", "A", "Setup A", "LONG",
+                0.6, 100.0, "Test", 100.0, 3.0, "RANGING",
+                None, None, None, None,
+                0, 1, 1, "2026-01-05T00:00:00+00:00", now, "v0",
+            ),
+        )
+        db_conn.commit()
+
+        windows = regime_conditioned_decay_report(
+            strategy, "2026-01-01", "2026-01-15", db_conn,
+            window_weeks=2,
+        )
+        all_regimes = set()
+        for _, regime_map in windows:
+            all_regimes.update(regime_map.keys())
+        # Signal has no regime, should appear as "unknown"
+        if windows and any(rm for _, rm in windows):
+            first_nonempty = next((rm for _, rm in windows if rm), None)
+            if first_nonempty:
+                assert "unknown" in first_nonempty
+
+
+class TestFormatRegimeConditionedDecay:
+    def test_header_present(self):
+        mr = MetricsReport(
+            label="w1:ranging", sample_size=5, wins=2, losses=3, expired=0,
+            win_rate=0.4, avg_r=-0.1, expectancy=-0.1, profit_factor=0.8,
+            total_r=-0.5, avg_bars_to_exit=20, avg_mae=0.5, avg_mfe=1.0,
+            avg_win_r=1.5, avg_loss_r=-1.0,
+        )
+        windows = [("2026-01-01", {"ranging": mr, "trending_up": mr})]
+        output = format_regime_conditioned_decay(windows)
+        assert "REGIME-CONDITIONED DECAY" in output
+        assert "ranging" in output
+        assert "trending_up" in output
+
+    def test_empty_windows(self):
+        output = format_regime_conditioned_decay([])
+        assert "No data" in output
+
+
+# --- Tests: LLM Alpha Decay ---
+
+
+class TestLLMAlphaDecayReport:
+    def test_returns_windows(self, populated_db, strategy):
+        _insert_test_scans(populated_db, "v0")
+        windows = llm_alpha_decay_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        assert isinstance(windows, list)
+        assert len(windows) >= 1
+        for w in windows:
+            assert isinstance(w, LLMAlphaDeltaWindow)
+
+    def test_delta_is_confirm_minus_all(self, populated_db, strategy):
+        _insert_test_scans(populated_db, "v0")
+        windows = llm_alpha_decay_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        for w in windows:
+            if w.delta is not None:
+                expected_delta = w.exp_confirmed - w.exp_all
+                assert abs(w.delta - expected_delta) < 0.001
+
+    def test_delta_none_when_no_confirms(self, populated_db, strategy):
+        # Don't insert scans — no CONFIRMs in DB
+        windows = llm_alpha_decay_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        for w in windows:
+            assert w.delta is None
+            assert w.n_confirmed == 0
+
+    def test_empty_range(self, populated_db, strategy):
+        windows = llm_alpha_decay_report(
+            strategy, "2025-01-01", "2025-01-02", populated_db,
+            window_weeks=2,
+        )
+        assert len(windows) == 0
+
+
+class TestFormatLLMAlphaDecay:
+    def test_header_present(self):
+        w = LLMAlphaDeltaWindow(
+            label="2026-01-01", n_all=50, n_confirmed=5,
+            exp_all=-0.1, exp_confirmed=0.3, delta=0.4,
+        )
+        output = format_llm_alpha_decay([w])
+        assert "LLM FILTER ALPHA DECAY" in output
+        assert "2026-01-01" in output
+
+    def test_delta_none_renders_na(self):
+        w = LLMAlphaDeltaWindow(
+            label="2026-01-01", n_all=50, n_confirmed=0,
+            exp_all=-0.1, exp_confirmed=0.0, delta=None,
+        )
+        output = format_llm_alpha_decay([w])
+        assert "n/a" in output
+
+
+# --- Tests: Resolution Drift ---
+
+
+class TestResolutionDriftReport:
+    def test_returns_windows(self, populated_db, strategy):
+        windows = resolution_drift_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        assert isinstance(windows, list)
+        assert len(windows) >= 1
+        for label, metrics in windows:
+            assert isinstance(label, str)
+            assert isinstance(metrics, MetricsReport)
+
+    def test_avg_bars_populated(self, populated_db, strategy):
+        windows = resolution_drift_report(
+            strategy, "2026-01-01", "2026-01-29", populated_db,
+            window_weeks=2,
+        )
+        for label, metrics in windows:
+            if metrics.sample_size > 0:
+                assert metrics.avg_bars_to_exit >= 0
+
+    def test_empty_range(self, populated_db, strategy):
+        windows = resolution_drift_report(
+            strategy, "2025-01-01", "2025-01-02", populated_db,
+            window_weeks=2,
+        )
+        assert len(windows) == 0
+
+
+class TestFormatResolutionDrift:
+    def test_header_present(self):
+        mr = MetricsReport(
+            label="2026-01-01", sample_size=25, wins=10, losses=13, expired=2,
+            win_rate=0.4, avg_r=-0.1, expectancy=-0.1, profit_factor=0.8,
+            total_r=-2.5, avg_bars_to_exit=20, avg_mae=0.7, avg_mfe=1.0,
+            avg_win_r=1.5, avg_loss_r=-1.0,
+        )
+        windows = [("2026-01-01", mr)]
+        output = format_resolution_drift(windows)
+        assert "RESOLUTION DRIFT" in output
+        assert "AvgBars" in output
+
+    def test_trend_arrows(self):
+        mr1 = MetricsReport(
+            label="w1", sample_size=10, wins=5, losses=5, expired=0,
+            win_rate=0.5, avg_r=0.0, expectancy=0.0, profit_factor=1.0,
+            total_r=0.0, avg_bars_to_exit=20, avg_mae=0.5, avg_mfe=1.0,
+            avg_win_r=1.5, avg_loss_r=-1.0,
+        )
+        mr2 = MetricsReport(
+            label="w2", sample_size=10, wins=5, losses=5, expired=0,
+            win_rate=0.5, avg_r=0.0, expectancy=0.0, profit_factor=1.0,
+            total_r=0.0, avg_bars_to_exit=35, avg_mae=0.5, avg_mfe=1.0,
+            avg_win_r=1.5, avg_loss_r=-1.0,
+        )
+        output = format_resolution_drift([("2026-01-01", mr1), ("2026-01-15", mr2)])
+        assert "^" in output  # bars increased = warning

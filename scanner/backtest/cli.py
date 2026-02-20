@@ -12,6 +12,7 @@ from .resolver import (
     resolve_signal,
     build_screener_setup,
     build_llm_setup,
+    estimate_slippage,
 )
 from .metrics import compute_metrics, slice_metrics
 from .report import format_full_report
@@ -81,9 +82,13 @@ def main():
     parser.add_argument("--atr-stop", type=float, default=1.5, help="ATR multiplier for stop (screener mode)")
     parser.add_argument("--atr-target", type=float, default=3.0, help="ATR multiplier for target (screener mode)")
     parser.add_argument("--fee", type=float, default=0.00035, help="Taker fee per side (default: 0.035%%)")
+    parser.add_argument("--funding-rate", type=float, default=0.0001, help="Funding rate per 8h (default: 0.01%%)")
+    parser.add_argument("--slippage", type=float, default=0.0005, help="Slippage rate per side (default: 0.05%%)")
+    parser.add_argument("--no-slippage", action="store_true", help="Disable slippage estimation")
     parser.add_argument("--strategy", type=str, default=None, help="Filter signals by strategy version")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print per-signal details")
     parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
+    parser.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -137,7 +142,12 @@ def main():
                 print(f"  [{i+1}/{len(setups)}] {setup.coin} {setup.setup_type} — fetch failed: {e}")
             continue
 
-        outcome = resolve_signal(setup, candles, args.timeout, args.fee)
+        slippage = 0.0 if args.no_slippage else args.slippage
+        outcome = resolve_signal(
+            setup, candles, args.timeout, args.fee,
+            funding_rate_8h=args.funding_rate,
+            slippage_rate=slippage,
+        )
         outcomes.append(outcome)
 
         if args.verbose:
@@ -154,7 +164,7 @@ def main():
         sys.exit(0)
 
     # Compute metrics
-    overall = compute_metrics(outcomes, "Overall")
+    overall = compute_metrics(outcomes, "Overall", run_permutation=args.permutation)
     sliced = slice_metrics(outcomes)
 
     report_text = format_full_report(overall, sliced, args.mode)
