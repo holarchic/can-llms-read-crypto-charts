@@ -864,6 +864,142 @@ def format_resolution_drift(windows: list[tuple[str, MetricsReport]]) -> str:
     return "\n".join(sections)
 
 
+# --- Discord Embeds ---
+
+COLOR_POS = 0x26A69A   # green
+COLOR_NEG = 0xEF5350   # red
+COLOR_WARN = 0xFFA726  # orange
+
+
+def _ci_verdict(report: MetricsReport) -> str:
+    """One-word CI verdict."""
+    ci = report.bootstrap_ci
+    if not ci:
+        return "n/a" if report.sample_size < 5 else ""
+    if ci.excludes_zero and ci.ci_low > 0:
+        return "edge"
+    if ci.excludes_zero:
+        return "negative"
+    return "inconclusive"
+
+
+def build_signal_quality_embeds(
+    overall: MetricsReport,
+    sliced: dict[str, list[MetricsReport]],
+) -> list[dict]:
+    """Build Discord embeds for signal quality report."""
+    from datetime import datetime, timezone
+
+    color = COLOR_POS if overall.expectancy >= 0 else COLOR_NEG
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    pf = f"{overall.profit_factor:.2f}" if overall.profit_factor != float("inf") else "inf"
+    overall_embed = {
+        "title": "Signal Quality: Overall",
+        "color": color,
+        "fields": [
+            {"name": "Trades", "value": str(overall.sample_size), "inline": True},
+            {"name": "W/L/E", "value": f"{overall.wins}/{overall.losses}/{overall.expired}", "inline": True},
+            {"name": "Win Rate", "value": f"{overall.win_rate:.1%}", "inline": True},
+            {"name": "Expectancy", "value": f"{overall.expectancy:+.3f}R", "inline": True},
+            {"name": "Total R", "value": f"{overall.total_r:+.1f}", "inline": True},
+            {"name": "PF", "value": pf, "inline": True},
+            {"name": "95% CI", "value": _ci_verdict(overall), "inline": True},
+        ],
+        "footer": {"text": timestamp},
+    }
+
+    embeds = [overall_embed]
+
+    type_reports = sliced.get("setup_type", [])
+    if type_reports:
+        type_lines = []
+        for r in type_reports:
+            type_lines.append(
+                f"**{r.label}**: {r.sample_size} trades | {r.win_rate:.0%} WR | {r.expectancy:+.2f}R"
+            )
+        embeds.append({
+            "title": "Signal Quality: By Setup Type",
+            "color": color,
+            "description": "\n".join(type_lines),
+            "footer": {"text": timestamp},
+        })
+
+    return embeds
+
+
+def build_llm_filter_embeds(result: "LLMFilterResult") -> list[dict]:
+    """Build Discord embeds for LLM filter report."""
+    from datetime import datetime, timezone
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Color based on whether LLM confirms outperform all signals
+    llm_better = result.llm_confirmed.expectancy > result.screener_all.expectancy
+    color = COLOR_POS if llm_better else COLOR_NEG
+
+    # Comparison lines
+    def _bucket_line(label: str, r: MetricsReport) -> str:
+        return f"{label:<16} {r.sample_size:>3} trades | {r.win_rate:.0%} WR | {r.expectancy:+.2f}R"
+
+    description = "\n".join([
+        f"```",
+        _bucket_line("All signals:", result.screener_all),
+        _bucket_line("Sent to LLM:", result.screener_sent),
+        _bucket_line("LLM Confirmed:", result.llm_confirmed),
+        f"```",
+    ])
+
+    embed = {
+        "title": "LLM Filter Value",
+        "color": color,
+        "fields": [
+            {"name": "Total Signals", "value": str(result.total_signals), "inline": True},
+            {"name": "Sent to LLM", "value": str(result.sent_to_llm_count), "inline": True},
+            {"name": "CONFIRMs", "value": str(result.confirm_count), "inline": True},
+            {"name": "Confirm Rate", "value": f"{result.confirm_rate:.1%}", "inline": True},
+            {"name": "Cost", "value": f"${result.total_cost:.2f}", "inline": True},
+            {"name": "Cost/Confirm", "value": f"${result.cost_per_confirm:.2f}", "inline": True},
+        ],
+        "description": description,
+        "footer": {"text": timestamp},
+    }
+
+    return [embed]
+
+
+def build_disable_embeds(
+    suggestions: list[tuple[str, float, int, str]],
+    strategy_id: str = "v0",
+) -> list[dict]:
+    """Build Discord embed for auto-disable suggestions."""
+    from datetime import datetime, timezone
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    if not suggestions:
+        return [{
+            "title": "Auto-Disable: Clean",
+            "color": COLOR_POS,
+            "description": "No types qualify for disabling",
+            "footer": {"text": timestamp},
+        }]
+
+    lines = []
+    for setup_type, exp, n, ci_note in suggestions:
+        lines.append(f"**{setup_type}**: exp={exp:+.3f}R (n={n}) {ci_note}")
+
+    types_str = ",".join(s[0] for s in suggestions)
+    lines.append(f"\n`python -m scanner.strategy disable {strategy_id} {types_str}`")
+
+    return [{
+        "title": "Auto-Disable: Suggestions",
+        "color": COLOR_WARN,
+        "description": "\n".join(lines),
+        "footer": {"text": timestamp},
+    }]
+
+
 def format_disable_suggestion(suggestions: list[tuple[str, float, int, str]]) -> str:
     """Format auto-disable suggestions."""
     if not suggestions:

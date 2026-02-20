@@ -1,8 +1,8 @@
-"""Tests for scanner.alerts — ops logging."""
+"""Tests for scanner.alerts — ops logging and report embeds."""
 
 from unittest.mock import patch, MagicMock
 
-from scanner.alerts import send_ops_log, COLOR_OK, COLOR_WARN, COLOR_ERROR
+from scanner.alerts import send_ops_log, send_report_embeds, COLOR_OK, COLOR_WARN, COLOR_ERROR
 from scanner.config import ScannerConfig
 
 
@@ -67,3 +67,31 @@ class TestSendOpsLog:
 
         embed = mock_post.call_args[1]["json"]["embeds"][0]
         assert embed["color"] == COLOR_ERROR
+
+
+class TestSendReportEmbeds:
+    @patch("scanner.alerts.requests.post")
+    def test_posts_embeds(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        embeds = [{"title": "Test", "color": 0x26A69A, "fields": []}]
+        result = send_report_embeds(embeds, _cfg(ops_url="", reports_url="https://reports.hook"))
+
+        assert result is True
+        payload = mock_post.call_args[1]["json"]
+        assert payload["embeds"] == embeds
+
+    def test_no_webhook_returns_false(self):
+        result = send_report_embeds([{"title": "X"}], _cfg(ops_url="", reports_url="", main_url=""))
+        assert result is False
+
+    @patch("scanner.alerts.requests.post")
+    def test_falls_back_to_main_webhook(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200)
+        mock_post.return_value.raise_for_status = MagicMock()
+
+        send_report_embeds([{"title": "X"}], _cfg(ops_url="", reports_url="", main_url="https://main.hook"))
+
+        url = mock_post.call_args[0][0]
+        assert url == "https://main.hook"

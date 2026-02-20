@@ -15,7 +15,7 @@ from .resolver import (
     estimate_slippage,
 )
 from .metrics import compute_metrics, slice_metrics
-from .report import format_full_report
+from .report import format_full_report, build_backtest_embeds
 
 
 def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
@@ -175,9 +175,9 @@ def main():
     print(footer)
 
     if args.discord:
-        from ..alerts import send_text_alert
-        full_text = report_text + footer
-        ok = send_text_alert(full_text, title="Daily Backtest Report")
+        from ..alerts import send_report_embeds
+        embeds = build_backtest_embeds(overall, sliced, args.mode, args.days)
+        ok = send_report_embeds(embeds)
         if ok:
             print("\n  Sent to Discord.")
         else:

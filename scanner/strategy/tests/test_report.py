@@ -32,6 +32,12 @@ from scanner.strategy.report import (
     format_llm_alpha_decay,
     format_resolution_drift,
     format_disable_suggestion,
+    build_signal_quality_embeds,
+    build_llm_filter_embeds,
+    build_disable_embeds,
+    COLOR_POS,
+    COLOR_NEG,
+    COLOR_WARN,
 )
 
 
@@ -932,3 +938,177 @@ class TestFormatResolutionDrift:
         )
         output = format_resolution_drift([("2026-01-01", mr1), ("2026-01-15", mr2)])
         assert "^" in output  # bars increased = warning
+
+
+# --- Tests: Embed Builders ---
+
+
+def _mr(label="test", sample_size=50, expectancy=0.3, win_rate=0.4,
+        wins=20, losses=25, expired=5, total_r=15.0, profit_factor=1.5):
+    """Quick MetricsReport builder for embed tests."""
+    return MetricsReport(
+        label=label, sample_size=sample_size, wins=wins, losses=losses,
+        expired=expired, win_rate=win_rate, avg_r=expectancy,
+        expectancy=expectancy, profit_factor=profit_factor,
+        total_r=total_r, avg_bars_to_exit=24, avg_mae=0.8, avg_mfe=1.2,
+        avg_win_r=1.5, avg_loss_r=-1.0,
+    )
+
+
+class TestBuildSignalQualityEmbeds:
+    def test_returns_two_embeds_with_type_data(self):
+        overall = _mr(expectancy=0.3)
+        sliced = {"setup_type": [_mr("A", expectancy=-0.2), _mr("C", expectancy=0.5)]}
+        embeds = build_signal_quality_embeds(overall, sliced)
+        assert len(embeds) == 2
+        assert embeds[0]["title"] == "Signal Quality: Overall"
+        assert embeds[1]["title"] == "Signal Quality: By Setup Type"
+
+    def test_returns_one_embed_without_type_data(self):
+        overall = _mr(expectancy=0.1)
+        embeds = build_signal_quality_embeds(overall, {})
+        assert len(embeds) == 1
+
+    def test_green_when_positive(self):
+        embeds = build_signal_quality_embeds(_mr(expectancy=0.1), {})
+        assert embeds[0]["color"] == COLOR_POS
+
+    def test_red_when_negative(self):
+        embeds = build_signal_quality_embeds(_mr(expectancy=-0.1), {})
+        assert embeds[0]["color"] == COLOR_NEG
+
+    def test_overall_embed_has_fields(self):
+        embeds = build_signal_quality_embeds(_mr(), {})
+        field_names = {f["name"] for f in embeds[0]["fields"]}
+        assert {"Trades", "W/L/E", "Win Rate", "Expectancy", "Total R", "PF", "95% CI"} == field_names
+
+    def test_type_embed_description_lines(self):
+        sliced = {"setup_type": [_mr("A"), _mr("B"), _mr("C")]}
+        embeds = build_signal_quality_embeds(_mr(), sliced)
+        desc = embeds[1]["description"]
+        assert "**A**:" in desc
+        assert "**B**:" in desc
+        assert "**C**:" in desc
+
+    def test_footer_has_timestamp(self):
+        embeds = build_signal_quality_embeds(_mr(), {})
+        assert "UTC" in embeds[0]["footer"]["text"]
+
+
+class TestBuildLLMFilterEmbeds:
+    def _result(self, llm_exp=0.5, all_exp=-0.1):
+        return LLMFilterResult(
+            screener_all=_mr("all_signals", expectancy=all_exp),
+            screener_sent=_mr("sent_to_llm", expectancy=-0.05),
+            llm_confirmed=_mr("llm_confirmed", expectancy=llm_exp),
+            total_signals=100, sent_to_llm_count=20, confirm_count=8,
+            reject_count=10, wait_count=2, total_cost=2.0,
+            confirm_rate=0.4, cost_per_confirm=0.25,
+        )
+
+    def test_returns_one_embed(self):
+        embeds = build_llm_filter_embeds(self._result())
+        assert len(embeds) == 1
+        assert embeds[0]["title"] == "LLM Filter Value"
+
+    def test_green_when_llm_outperforms(self):
+        embeds = build_llm_filter_embeds(self._result(llm_exp=0.5, all_exp=-0.1))
+        assert embeds[0]["color"] == COLOR_POS
+
+    def test_red_when_llm_underperforms(self):
+        embeds = build_llm_filter_embeds(self._result(llm_exp=-0.3, all_exp=0.1))
+        assert embeds[0]["color"] == COLOR_NEG
+
+    def test_has_funnel_fields(self):
+        embeds = build_llm_filter_embeds(self._result())
+        field_names = {f["name"] for f in embeds[0]["fields"]}
+        assert "Total Signals" in field_names
+        assert "CONFIRMs" in field_names
+        assert "Cost" in field_names
+
+    def test_description_has_comparison(self):
+        embeds = build_llm_filter_embeds(self._result())
+        desc = embeds[0]["description"]
+        assert "All signals:" in desc
+        assert "Sent to LLM:" in desc
+        assert "LLM Confirmed:" in desc
+
+
+class TestBuildDisableEmbeds:
+    def test_clean_when_no_suggestions(self):
+        embeds = build_disable_embeds([])
+        assert len(embeds) == 1
+        assert embeds[0]["color"] == COLOR_POS
+        assert "Clean" in embeds[0]["title"]
+        assert "No types qualify" in embeds[0]["description"]
+
+    def test_orange_when_suggestions_exist(self):
+        suggestions = [("A", -0.46, 45, "95% CI [-0.7, -0.2]")]
+        embeds = build_disable_embeds(suggestions)
+        assert len(embeds) == 1
+        assert embeds[0]["color"] == COLOR_WARN
+        assert "Suggestions" in embeds[0]["title"]
+
+    def test_suggestion_lines(self):
+        suggestions = [
+            ("A", -0.46, 45, "95% CI [-0.7, -0.2]"),
+            ("E", -0.30, 32, "95% CI [-0.5, -0.1]"),
+        ]
+        embeds = build_disable_embeds(suggestions, "v0")
+        desc = embeds[0]["description"]
+        assert "**A**:" in desc
+        assert "**E**:" in desc
+        assert "scanner.strategy disable v0 A,E" in desc
+
+    def test_custom_strategy_id(self):
+        embeds = build_disable_embeds([("A", -0.5, 40, "CI")], "v2")
+        assert "v2" in embeds[0]["description"]
+
+
+class TestBuildCalibrationEmbeds:
+    def _result(self, conf_win_r=0.2):
+        from scanner.strategy.calibrate import CalibrationResult
+        return CalibrationResult(
+            n_signals=100, n_resolved=80,
+            overall_wr=0.35, overall_avg_r=-0.10,
+            conf_win_r=conf_win_r, conf_r_r=0.05,
+            component_correlations={"base": 0.15, "alignment": -0.12, "proximity": 0.03},
+            quartiles=[("Q1", 20, 0.3, -0.2), ("Q4", 20, 0.5, 0.3)],
+            per_type=[("A", 30, 0.2, -0.3, -0.1), ("C", 25, 0.4, 0.1, 0.15)],
+            by_btc_regime=[("BULLISH", 40, 0.4, 0.1)],
+        )
+
+    def test_returns_two_embeds_with_type_data(self):
+        from scanner.strategy.calibrate import build_calibration_embeds
+        embeds = build_calibration_embeds(self._result())
+        assert len(embeds) == 2
+        assert embeds[0]["title"] == "Scoring Calibration"
+        assert embeds[1]["title"] == "Calibration: By Type"
+
+    def test_green_when_positive_correlation(self):
+        from scanner.strategy.calibrate import build_calibration_embeds
+        embeds = build_calibration_embeds(self._result(conf_win_r=0.2))
+        assert embeds[0]["color"] == 0x26A69A  # green
+
+    def test_orange_when_inverted(self):
+        from scanner.strategy.calibrate import build_calibration_embeds
+        embeds = build_calibration_embeds(self._result(conf_win_r=-0.2))
+        assert embeds[0]["color"] == 0xFFA726  # orange
+
+    def test_has_component_description(self):
+        from scanner.strategy.calibrate import build_calibration_embeds
+        embeds = build_calibration_embeds(self._result())
+        assert "Components" in embeds[0]["description"]
+        assert "base" in embeds[0]["description"]
+
+    def test_no_types_returns_one_embed(self):
+        from scanner.strategy.calibrate import CalibrationResult, build_calibration_embeds
+        result = CalibrationResult(
+            n_signals=10, n_resolved=5,
+            overall_wr=0.3, overall_avg_r=-0.1,
+            conf_win_r=0.0, conf_r_r=0.0,
+            component_correlations={}, quartiles=[], per_type=[],
+            by_btc_regime=[],
+        )
+        embeds = build_calibration_embeds(result)
+        assert len(embeds) == 1

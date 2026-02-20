@@ -39,8 +39,11 @@ from .report import (
     format_llm_alpha_decay,
     format_resolution_drift,
     format_disable_suggestion,
+    build_signal_quality_embeds,
+    build_llm_filter_embeds,
+    build_disable_embeds,
 )
-from .calibrate import run_calibration, format_calibration
+from .calibrate import run_calibration, format_calibration, build_calibration_embeds
 
 
 def cmd_create(args):
@@ -306,6 +309,7 @@ def cmd_report(args):
     )
 
     sections: list[str] = []
+    embeds: list[dict] = []
 
     if run_all or args.signal_quality:
         overall, sliced = signal_quality_report(
@@ -314,6 +318,7 @@ def cmd_report(args):
             run_permutation=args.permutation,
         )
         sections.append(format_signal_quality(overall, sliced))
+        embeds.extend(build_signal_quality_embeds(overall, sliced))
 
     if run_all or args.llm_filter:
         result = llm_filter_report(
@@ -321,6 +326,7 @@ def cmd_report(args):
             coins=coins, verbose=args.verbose,
         )
         sections.append(format_llm_filter(result))
+        embeds.extend(build_llm_filter_embeds(result))
 
     if run_all or args.regime:
         windows = regime_decay_report(
@@ -377,13 +383,14 @@ def cmd_report(args):
         setup_type_reports = sliced.get("setup_type", [])
         suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
         sections.append(format_disable_suggestion(suggestions))
+        embeds.extend(build_disable_embeds(suggestions, strategy.strategy_id))
 
     report_text = "\n\n".join(sections)
     print(report_text)
 
     if args.discord:
-        from ..alerts import send_text_alert
-        ok = send_text_alert(report_text, title=f"Strategy Report: {strategy.strategy_id}")
+        from ..alerts import send_report_embeds
+        ok = send_report_embeds(embeds)
         if ok:
             print("\n  Sent to Discord.")
         else:
@@ -419,8 +426,9 @@ def cmd_calibrate(args):
     print(report_text)
 
     if args.discord:
-        from ..alerts import send_text_alert
-        ok = send_text_alert(report_text, title="Scoring Calibration Report")
+        from ..alerts import send_report_embeds
+        embeds = build_calibration_embeds(result)
+        ok = send_report_embeds(embeds)
         if ok:
             print("\n  Sent to Discord.")
         else:

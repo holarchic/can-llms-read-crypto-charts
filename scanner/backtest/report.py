@@ -1,5 +1,7 @@
 """CLI table formatting for backtest reports."""
 
+from datetime import datetime, timezone
+
 from .metrics import MetricsReport
 
 
@@ -90,3 +92,74 @@ def format_full_report(
     sections.append("")
     sections.append(f"{'='*60}")
     return "\n".join(sections)
+
+
+def _ci_verdict(report: MetricsReport) -> str:
+    """One-word CI verdict."""
+    ci = report.bootstrap_ci
+    if not ci:
+        return "n/a" if report.sample_size < 5 else ""
+    if ci.excludes_zero and ci.ci_low > 0:
+        return "edge"
+    if ci.excludes_zero:
+        return "negative"
+    return "inconclusive"
+
+
+def build_backtest_embeds(
+    overall: MetricsReport,
+    sliced: dict[str, list[MetricsReport]],
+    mode: str,
+    days: int,
+) -> list[dict]:
+    """Build Discord embed dicts for a backtest report."""
+    COLOR_POS = 0x26A69A   # green
+    COLOR_NEG = 0xEF5350   # red
+
+    color = COLOR_POS if overall.expectancy >= 0 else COLOR_NEG
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Embed 1: Overall
+    pf = f"{overall.profit_factor:.2f}" if overall.profit_factor != float("inf") else "inf"
+    overall_embed = {
+        "title": f"Backtest: {mode.upper()} | {days}d",
+        "color": color,
+        "fields": [
+            {"name": "Trades", "value": str(overall.sample_size), "inline": True},
+            {"name": "W/L/E", "value": f"{overall.wins}/{overall.losses}/{overall.expired}", "inline": True},
+            {"name": "Win Rate", "value": f"{overall.win_rate:.1%}", "inline": True},
+            {"name": "Expectancy", "value": f"{overall.expectancy:+.3f}R", "inline": True},
+            {"name": "Total R", "value": f"{overall.total_r:+.1f}", "inline": True},
+            {"name": "PF", "value": pf, "inline": True},
+            {"name": "95% CI", "value": _ci_verdict(overall), "inline": True},
+        ],
+        "footer": {"text": timestamp},
+    }
+
+    embeds = [overall_embed]
+
+    # Embed 2: By setup type
+    type_reports = sliced.get("setup_type", [])
+    if type_reports:
+        type_lines = []
+        for r in type_reports:
+            type_lines.append(f"**{r.label}**: {r.sample_size} trades | {r.win_rate:.0%} WR | {r.expectancy:+.2f}R")
+        embeds.append({
+            "title": "By Setup Type",
+            "color": color,
+            "description": "\n".join(type_lines),
+        })
+
+    # Embed 3: By direction
+    dir_reports = sliced.get("direction", [])
+    if dir_reports:
+        dir_lines = []
+        for r in dir_reports:
+            dir_lines.append(f"**{r.label}**: {r.sample_size} trades | {r.win_rate:.0%} WR | {r.expectancy:+.2f}R")
+        embeds.append({
+            "title": "By Direction",
+            "color": color,
+            "description": "\n".join(dir_lines),
+        })
+
+    return embeds

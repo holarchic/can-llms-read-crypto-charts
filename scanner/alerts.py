@@ -211,6 +211,25 @@ def send_text_alert(
         return False
 
 
+def send_report_embeds(
+    embeds: list[dict],
+    config: ScannerConfig | None = None,
+) -> bool:
+    """Post a list of embeds to the reports Discord channel."""
+    cfg = config or ScannerConfig()
+    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_webhook_url
+    if not webhook_url:
+        return False
+
+    try:
+        resp = requests.post(webhook_url, json={"embeds": embeds}, timeout=10)
+        resp.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        print(f"Discord report embeds failed: {e}")
+        return False
+
+
 def send_ops_log(
     title: str,
     fields: dict[str, str],

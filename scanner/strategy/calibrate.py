@@ -38,9 +38,6 @@ class CalibrationResult:
     # BTC regime breakdown: list of (regime, n, wr, avg_r)
     by_btc_regime: list[tuple[str, int, float, float]]
 
-    # Sent vs not-sent (excluding Type A)
-    sent_stats: tuple[int, float, float] | None  # (n, wr, avg_r)
-    not_sent_stats: tuple[int, float, float] | None
 
 
 def _pearson(x: list[float], y: list[float]) -> float:
@@ -128,7 +125,7 @@ def run_calibration(
             overall_wr=0, overall_avg_r=0,
             conf_win_r=0, conf_r_r=0,
             component_correlations={}, quartiles=[], per_type=[],
-            by_btc_regime=[], sent_stats=None, not_sent_stats=None,
+            by_btc_regime=[],
         )
 
     # Overall
@@ -190,13 +187,6 @@ def run_calibration(
         rwr, ravg = _stats(r_rows)
         by_btc_regime.append((regime, len(r_rows), rwr, ravg))
 
-    # Sent vs not-sent (excluding Type A)
-    non_a = [o for o in outcomes if o["setup_type"] != "A"]
-    sent = [o for o in non_a if o["sent_to_llm"]]
-    not_sent = [o for o in non_a if not o["sent_to_llm"]]
-    sent_stats = (len(sent), *_stats(sent)) if sent else None
-    not_sent_stats = (len(not_sent), *_stats(not_sent)) if not_sent else None
-
     return CalibrationResult(
         n_signals=len(signals),
         n_resolved=len(outcomes),
@@ -208,9 +198,55 @@ def run_calibration(
         quartiles=quartiles,
         per_type=per_type,
         by_btc_regime=by_btc_regime,
-        sent_stats=sent_stats,
-        not_sent_stats=not_sent_stats,
     )
+
+
+def build_calibration_embeds(result: CalibrationResult) -> list[dict]:
+    """Build Discord embeds for calibration report."""
+    COLOR_POS = 0x26A69A
+    COLOR_WARN = 0xFFA726
+
+    color = COLOR_WARN if result.conf_win_r < -0.1 else COLOR_POS
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+    # Embed 1: Scoring overview
+    embed1 = {
+        "title": "Scoring Calibration",
+        "color": color,
+        "fields": [
+            {"name": "Signals", "value": str(result.n_signals), "inline": True},
+            {"name": "Resolved", "value": str(result.n_resolved), "inline": True},
+            {"name": "WR", "value": f"{result.overall_wr:.0%}", "inline": True},
+            {"name": "AvgR", "value": f"{result.overall_avg_r:+.2f}", "inline": True},
+            {"name": "Conf->Win r", "value": f"{result.conf_win_r:+.3f}", "inline": True},
+            {"name": "Conf->R r", "value": f"{result.conf_r_r:+.3f}", "inline": True},
+        ],
+        "footer": {"text": timestamp},
+    }
+
+    # Component correlations in description
+    if result.component_correlations:
+        comp_lines = []
+        for comp, r in sorted(result.component_correlations.items(), key=lambda x: x[1]):
+            marker = "!!" if r < -0.1 else ("ok" if r > 0.1 else "~")
+            comp_lines.append(f"{marker} {comp:<12} r={r:+.3f}")
+        embed1["description"] = "**Components:**\n```\n" + "\n".join(comp_lines) + "\n```"
+
+    embeds = [embed1]
+
+    # Embed 2: Per-type breakdown
+    if result.per_type:
+        type_lines = []
+        for t, n, wr, avg_r, corr in result.per_type:
+            type_lines.append(f"**{t}**: n={n} WR={wr:.0%} AvgR={avg_r:+.2f} conf->win r={corr:+.3f}")
+        embeds.append({
+            "title": "Calibration: By Type",
+            "color": color,
+            "description": "\n".join(type_lines),
+            "footer": {"text": timestamp},
+        })
+
+    return embeds
 
 
 def format_calibration(result: CalibrationResult) -> str:
@@ -262,15 +298,5 @@ def format_calibration(result: CalibrationResult) -> str:
         for regime, n, wr, avg_r in result.by_btc_regime:
             lines.append(f"  {regime:<10} n={n:>3} WR={wr:>4.0%} AvgR={avg_r:>+.2f}")
         lines.append("")
-
-    # Sent vs not-sent
-    if result.sent_stats or result.not_sent_stats:
-        lines.append("--- Sent vs Not-Sent (excl Type A) ---")
-        if result.sent_stats:
-            n, wr, avg_r = result.sent_stats
-            lines.append(f"  Sent:     n={n:>3} WR={wr:>4.0%} AvgR={avg_r:>+.2f}")
-        if result.not_sent_stats:
-            n, wr, avg_r = result.not_sent_stats
-            lines.append(f"  Not sent: n={n:>3} WR={wr:>4.0%} AvgR={avg_r:>+.2f}")
 
     return "\n".join(lines)
