@@ -1,0 +1,132 @@
+"""Tests for pipeline helpers (diversity selection)."""
+
+import pytest
+
+from scanner.models import (
+    SetupSignal, SetupType, Direction, Structure, MarketContext,
+)
+from scanner.pipeline import _select_with_diversity
+
+
+def _make_signal(
+    coin="BTC",
+    setup_type=SetupType.A,
+    direction=Direction.LONG,
+    confidence=0.5,
+):
+    ctx = MarketContext(
+        structure=Structure.BULLISH,
+        swings=[],
+        sr_levels=[],
+        msbs=[],
+        range_bounds=None,
+        atr=1.0,
+        current_price=100.0,
+        fib_levels=None,
+    )
+    return SetupSignal(
+        coin=coin,
+        setup_type=setup_type,
+        direction=direction,
+        confidence=confidence,
+        key_level=100.0,
+        context=ctx,
+        description=f"Test {coin} {setup_type.value}",
+    )
+
+
+class TestSelectWithDiversity:
+    def test_empty_list(self):
+        assert _select_with_diversity([], 10) == []
+
+    def test_under_max_returned_unchanged(self):
+        signals = [_make_signal(coin=f"C{i}") for i in range(5)]
+        result = _select_with_diversity(signals, 10)
+        assert result == signals
+
+    def test_exact_max_returned_unchanged(self):
+        signals = [_make_signal(coin=f"C{i}") for i in range(10)]
+        result = _select_with_diversity(signals, 10)
+        assert result == signals
+
+    def test_total_length_preserved(self):
+        """Selected + remaining = original length."""
+        signals = [_make_signal(coin=f"C{i}") for i in range(30)]
+        result = _select_with_diversity(signals, 10)
+        assert len(result) == 30
+
+    def test_dominant_type_penalized(self):
+        """15 Type B + 5 Type E with max=10 → Type E gets more slots than 5/20 proportion."""
+        signals = (
+            [_make_signal(coin=f"B{i}", setup_type=SetupType.B, confidence=0.6) for i in range(15)]
+            + [_make_signal(coin=f"E{i}", setup_type=SetupType.E, confidence=0.5) for i in range(5)]
+        )
+        result = _select_with_diversity(signals, 10)
+        selected = result[:10]
+        type_e_count = sum(1 for s in selected if s.setup_type == SetupType.E)
+        # Diversity penalty interleaves B and E picks. Without penalty, random would give
+        # ~2.5 Type E (5/20). With decay=0.85, B's higher confidence (0.6 vs 0.5) still
+        # wins alternating slots, but E gets 4 of 10 — much better than random.
+        assert type_e_count == 4
+
+    def test_diverse_types_all_represented(self):
+        """One signal per type — all should be selected."""
+        types = [SetupType.A, SetupType.B, SetupType.C, SetupType.D, SetupType.E, SetupType.F, SetupType.G]
+        signals = [_make_signal(coin=f"C{i}", setup_type=t, confidence=0.5) for i, t in enumerate(types)]
+        result = _select_with_diversity(signals, 5)
+        selected_types = {s.setup_type for s in result[:5]}
+        assert len(selected_types) == 5  # 5 distinct types in 5 slots
+
+    def test_decay_one_no_diversity_effect(self):
+        """decay=1.0 means no penalty — selection purely by confidence."""
+        signals = (
+            [_make_signal(coin=f"B{i}", setup_type=SetupType.B, confidence=0.9) for i in range(10)]
+            + [_make_signal(coin=f"E{i}", setup_type=SetupType.E, confidence=0.1) for i in range(10)]
+        )
+        result = _select_with_diversity(signals, 10, decay=1.0)
+        selected = result[:10]
+        type_b_count = sum(1 for s in selected if s.setup_type == SetupType.B)
+        # With no decay, all high-confidence Type Bs dominate
+        assert type_b_count == 10
+
+    def test_decay_zero_strict_round_robin(self):
+        """decay=0.0 means after first pick, score=0 for same type → strict round-robin."""
+        signals = (
+            [_make_signal(coin=f"B{i}", setup_type=SetupType.B, confidence=0.9) for i in range(10)]
+            + [_make_signal(coin=f"E{i}", setup_type=SetupType.E, confidence=0.1) for i in range(10)]
+        )
+        result = _select_with_diversity(signals, 10, decay=0.0)
+        selected = result[:10]
+        type_b_count = sum(1 for s in selected if s.setup_type == SetupType.B)
+        type_e_count = sum(1 for s in selected if s.setup_type == SetupType.E)
+        # First pick: B (0.9). Second: E (0.1 > 0.0). Then all scores are 0.
+        # After that, remaining picks are all score=0 ties (first in list wins).
+        # So we should have at least 1 B and at least 1 E.
+        assert type_b_count >= 1
+        assert type_e_count >= 1
+
+    def test_selected_first_remaining_after(self):
+        """First max_count items are the selected ones, rest are remaining."""
+        signals = (
+            [_make_signal(coin=f"B{i}", setup_type=SetupType.B, confidence=0.6) for i in range(15)]
+            + [_make_signal(coin=f"E{i}", setup_type=SetupType.E, confidence=0.5) for i in range(5)]
+        )
+        result = _select_with_diversity(signals, 10)
+        selected = result[:10]
+        remaining = result[10:]
+        # All signals accounted for, no duplicates
+        assert len(result) == 20
+        all_coins = [s.coin for s in result]
+        assert len(set(all_coins)) == 20
+
+    def test_confidence_tiebreak_within_type(self):
+        """Among same type with same penalty, higher confidence wins."""
+        signals = [
+            _make_signal(coin="LOW", setup_type=SetupType.A, confidence=0.3),
+            _make_signal(coin="HIGH", setup_type=SetupType.A, confidence=0.9),
+            _make_signal(coin="MED", setup_type=SetupType.A, confidence=0.6),
+        ]
+        result = _select_with_diversity(signals, 2)
+        # First pick: HIGH (0.9). Second: MED (0.6 * 0.85 = 0.51 > LOW 0.3 * 0.85 = 0.255)
+        assert result[0].coin == "HIGH"
+        assert result[1].coin == "MED"

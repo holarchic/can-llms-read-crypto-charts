@@ -20,6 +20,42 @@ from .backtest.candles import cache_candles
 from .strategy.store import get_strategy
 
 
+def _select_with_diversity(
+    signals: list[SetupSignal], max_count: int, decay: float = 0.85,
+) -> list[SetupSignal]:
+    """Greedy selection with diminishing returns per setup type.
+
+    Scores each candidate as confidence * decay^n where n = number of that
+    setup type already selected.  Random shuffle before calling ensures
+    confidence only acts as a tie-breaker within the diversity framework
+    (confidence alone is anti-predictive).
+
+    Returns selected + remaining so callers that rely on positional slicing
+    (e.g. save_signals marks first N as sent_to_llm) keep working.
+    """
+    if len(signals) <= max_count:
+        return signals
+
+    type_counts: dict[str, int] = {}
+    selected: list[SetupSignal] = []
+    remaining = list(signals)
+
+    while remaining and len(selected) < max_count:
+        best_idx = 0
+        best_score = -1.0
+        for i, sig in enumerate(remaining):
+            n = type_counts.get(sig.setup_type.value, 0)
+            score = sig.confidence * (decay ** n)
+            if score > best_score:
+                best_score = score
+                best_idx = i
+        chosen = remaining.pop(best_idx)
+        selected.append(chosen)
+        type_counts[chosen.setup_type.value] = type_counts.get(chosen.setup_type.value, 0) + 1
+
+    return selected + remaining
+
+
 def stage1_screen(
     config: ScannerConfig,
     coin_filter: str | None = None,
@@ -104,6 +140,8 @@ def stage1_screen(
 
     # Shuffle for unbiased LLM selection (confidence is anti-predictive — see calibration analysis)
     random.shuffle(all_signals)
+    # Diversity penalty: penalize repeated setup types so underrepresented types get LLM slots
+    all_signals = _select_with_diversity(all_signals, config.max_llm_calls_per_scan)
     capped = all_signals[:config.max_llm_calls_per_scan]
 
     # Persist all signals for backtesting (with scoring components + BTC structure)
