@@ -80,7 +80,7 @@ def replay(
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
     resolve: bool = False,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> tuple[list[dict], MetricsReport | None]:

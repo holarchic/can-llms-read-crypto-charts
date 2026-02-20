@@ -14,7 +14,7 @@ from .screener import detect_all_setups
 from .charts import generate_charts_for_signal, cleanup_charts
 from .analysis import analyze_for_scanner
 from .storage import get_connection, save_result, save_signals, save_scan_universe, is_duplicate, mark_alerted, daily_cost
-from .alerts import send_alert, format_alert_text
+from .alerts import send_alert, format_alert_text, send_ops_log, COLOR_OK, COLOR_WARN
 from .models import SetupSignal, ScanResult
 from .backtest.candles import cache_candles
 from .strategy.store import get_strategy
@@ -294,5 +294,23 @@ def run_scan(
         print(f"  Signals: {summary['signals']} | Analyzed: {summary['results']}")
         print(f"  CONFIRM: {summary['confirms']} | REJECT: {summary['rejects']} | WAIT: {summary['waits']}")
         print(f"  Alerted: {summary['alerted']} | Cost: ${summary['cost_usd']:.4f}")
+
+    # Post ops log to Discord
+    if not dry_run and not skip_discord:
+        parse_fails = sum(1 for r in results if not r.decision)
+        warn = summary["signals"] == 0 or parse_fails > 0
+        ops_fields = {
+            "Signals": str(summary["signals"]),
+            "Analyzed": str(summary["results"]),
+            "CONFIRM": str(summary["confirms"]),
+            "REJECT": str(summary["rejects"]),
+            "WAIT": str(summary["waits"]),
+            "Alerted": str(summary["alerted"]),
+            "Cost": f"${summary['cost_usd']:.2f}",
+            "Duration": f"{summary['elapsed_sec']:.0f}s",
+        }
+        if parse_fails:
+            ops_fields["Parse Fails"] = str(parse_fails)
+        send_ops_log("Scan Complete", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
 
     return summary

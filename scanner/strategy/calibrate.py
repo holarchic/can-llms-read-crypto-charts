@@ -70,7 +70,7 @@ def _stats(outcomes: list[dict]) -> tuple[float, float]:
 def run_calibration(
     conn: sqlite3.Connection,
     days: int = 30,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
 ) -> CalibrationResult:
     """Run full calibration analysis on signals from the last N days."""
 

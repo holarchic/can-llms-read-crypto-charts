@@ -78,7 +78,7 @@ def main():
     parser.add_argument("--days", type=int, default=30, help="Lookback days for signals (default: 30)")
     parser.add_argument("--coin", type=str, default=None, help="Filter by coin (e.g. BTC)")
     parser.add_argument("--type", type=str, default=None, help="Filter by setup type (e.g. C)")
-    parser.add_argument("--timeout", type=int, default=168, help="Timeout bars before EXPIRED (default: 168 = 7d)")
+    parser.add_argument("--timeout", type=int, default=72, help="Timeout bars before EXPIRED (default: 72 = 3d)")
     parser.add_argument("--atr-stop", type=float, default=1.5, help="ATR multiplier for stop (screener mode)")
     parser.add_argument("--atr-target", type=float, default=3.0, help="ATR multiplier for target (screener mode)")
     parser.add_argument("--fee", type=float, default=0.00035, help="Taker fee per side (default: 0.035%%)")

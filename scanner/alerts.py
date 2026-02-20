@@ -1,6 +1,7 @@
 """Discord webhook alerts — formatted embeds with chart images."""
 
 import time
+from datetime import datetime, timezone
 
 import requests
 from pathlib import Path
@@ -13,6 +14,11 @@ from .models import ScanResult, SETUP_NAMES, Direction
 COLOR_LONG = 0x26A69A   # green
 COLOR_SHORT = 0xEF5350  # red
 COLOR_NEUTRAL = 0x999999
+
+# Ops log colors
+COLOR_OK = 0x26A69A      # green — normal scan
+COLOR_WARN = 0xFFA726    # orange — anomaly
+COLOR_ERROR = 0xEF5350   # red — crash
 
 
 def _build_embed(result: ScanResult) -> dict:
@@ -202,4 +208,35 @@ def send_text_alert(
         return True
     except requests.RequestException as e:
         print(f"Discord text alert failed: {e}")
+        return False
+
+
+def send_ops_log(
+    title: str,
+    fields: dict[str, str],
+    color: int = COLOR_OK,
+    config: ScannerConfig | None = None,
+) -> bool:
+    """Post an operational log embed to Discord. Must never crash the scanner."""
+    try:
+        cfg = config or ScannerConfig()
+        webhook_url = cfg.discord_ops_webhook_url or cfg.discord_reports_webhook_url
+        if not webhook_url:
+            return False
+
+        embed_fields = [
+            {"name": k, "value": str(v), "inline": True}
+            for k, v in fields.items()
+        ]
+        embed = {
+            "title": title,
+            "color": color,
+            "fields": embed_fields,
+            "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+        }
+        resp = requests.post(webhook_url, json={"embeds": [embed]}, timeout=10)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Ops log failed: {e}")
         return False

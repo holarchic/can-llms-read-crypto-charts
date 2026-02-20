@@ -75,7 +75,7 @@ def resolve_signals(
     atr_stop_mult: float,
     atr_target_mult: float,
     conn: sqlite3.Connection,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
     funding_rate_8h: float = 0.0,
@@ -115,7 +115,7 @@ def resolve_signals(
 def resolve_llm_scans(
     scan_rows: list[dict],
     conn: sqlite3.Connection,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
     funding_rate_8h: float = 0.0,
@@ -159,7 +159,7 @@ def _rolling_window_outcomes(
     conn: sqlite3.Connection,
     window_weeks: int = 2,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
 ) -> list[tuple[str, str, list[TradeOutcome]]]:
     """Iterate rolling windows, load signals, resolve each.
@@ -204,7 +204,7 @@ def signal_quality_report(
     until: str,
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
     run_permutation: bool = False,
@@ -257,7 +257,7 @@ def llm_filter_report(
     until: str,
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> LLMFilterResult:
@@ -329,7 +329,7 @@ def regime_decay_report(
     conn: sqlite3.Connection,
     window_weeks: int = 2,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> list[tuple[str, MetricsReport]]:
@@ -383,7 +383,7 @@ def regime_conditioned_decay_report(
     conn: sqlite3.Connection,
     window_weeks: int = 2,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> list[tuple[str, dict[str, MetricsReport]]]:
@@ -441,7 +441,7 @@ def llm_alpha_decay_report(
     conn: sqlite3.Connection,
     window_weeks: int = 2,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> list[LLMAlphaDeltaWindow]:
@@ -517,7 +517,7 @@ def resolution_drift_report(
     conn: sqlite3.Connection,
     window_weeks: int = 2,
     coins: list[str] | None = None,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
 ) -> list[tuple[str, MetricsReport]]:

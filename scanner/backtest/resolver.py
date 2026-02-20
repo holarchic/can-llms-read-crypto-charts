@@ -60,7 +60,7 @@ def estimate_slippage(volume_24h: float | None) -> float:
 def resolve_signal(
     setup: TradeSetup,
     candles: pd.DataFrame,
-    timeout_bars: int = 168,
+    timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     funding_rate_8h: float = 0.0,
     slippage_rate: float = 0.0,
@@ -70,7 +70,7 @@ def resolve_signal(
     Args:
         setup: Trade setup with entry/stop/target.
         candles: DataFrame with DatetimeIndex + Open/High/Low/Close columns.
-        timeout_bars: Max bars before EXPIRED (default 168 = 7 days of 1H).
+        timeout_bars: Max bars before EXPIRED (default 72 = 3 days of 1H).
         fee_rate: Taker fee per side (default 0.035% for HyperLiquid).
         funding_rate_8h: Funding rate per 8h period (default 0 = disabled).
         slippage_rate: Slippage per side (default 0 = disabled).

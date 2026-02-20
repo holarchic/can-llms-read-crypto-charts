@@ -269,11 +269,11 @@ def cmd_sweep(args):
                     candles = fetch_and_cache(
                         setup.coin, "1h", setup.timestamp,
                         (pd.Timestamp(setup.timestamp, tz="UTC")
-                         + pd.Timedelta(hours=168 + 1)).isoformat(),
+                         + pd.Timedelta(hours=72 + 1)).isoformat(),
                         conn,
                     )
                     from ..backtest.resolver import resolve_signal
-                    outcome = resolve_signal(setup, candles, 168, 0.00035)
+                    outcome = resolve_signal(setup, candles, 72, 0.00035)
                     best_outcomes.append(outcome)
                 except Exception:
                     continue
@@ -558,7 +558,7 @@ def main():
     # calibrate
     p_cal = sub.add_parser("calibrate", help="Scoring calibration analysis")
     p_cal.add_argument("--days", type=int, default=30, help="Lookback days (default: 30)")
-    p_cal.add_argument("--timeout", type=int, default=168, help="Timeout bars (default: 168 = 7d)")
+    p_cal.add_argument("--timeout", type=int, default=72, help="Timeout bars (default: 72 = 3d)")
     p_cal.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     p_cal.set_defaults(func=cmd_calibrate)
 

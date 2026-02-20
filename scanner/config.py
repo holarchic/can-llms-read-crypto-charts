@@ -21,6 +21,7 @@ class ScannerConfig:
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     discord_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_WEBHOOK_URL", ""))
     discord_reports_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_REPORTS_WEBHOOK_URL", ""))
+    discord_ops_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_OPS_WEBHOOK_URL", ""))
 
     # HyperLiquid
     min_volume_usd: float = 2_000_000
@@ -44,6 +45,10 @@ class ScannerConfig:
     model: str = "claude-opus-4-6"
     max_llm_calls_per_scan: int = 20
     daily_cost_cap: float = 15.0
+
+    # Resolution
+    timeout_bars: int = 72  # 3 days of 1H candles
+    fee_rate: float = 0.00035
 
     # Storage
     dedup_hours: int = 12

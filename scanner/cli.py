@@ -2,10 +2,12 @@
 
 import argparse
 import sys
+import traceback
 
 from .config import ScannerConfig
 from .pipeline import run_scan
 from .storage import get_connection, stats, signal_history, signal_stats
+from .alerts import send_ops_log, COLOR_ERROR
 
 
 def main():
@@ -111,13 +113,23 @@ Examples:
         return
 
     config = ScannerConfig()
-    run_scan(
-        config=config,
-        coin=args.coin,
-        dry_run=args.dry_run,
-        skip_discord=args.no_discord,
-        verbose=not args.quiet,
-    )
+    try:
+        run_scan(
+            config=config,
+            coin=args.coin,
+            dry_run=args.dry_run,
+            skip_discord=args.no_discord,
+            verbose=not args.quiet,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        send_ops_log(
+            "Scan FAILED",
+            {"Error": str(e)[:200], "Type": type(e).__name__},
+            COLOR_ERROR,
+            config,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

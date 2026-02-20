@@ -127,6 +127,8 @@ Actively manage open positions — don't just set-and-forget SL/TP.
 - Re-evaluation frequency (every 4H candle? every 1H?)
 - Cost control — each re-evaluation is an LLM call
 
+**Multi-target exit optimization**: MFE analysis (2026-02-20) shows winners average +0.44R unrealized beyond TP. 13% of wins had MFE > 1.5x R achieved. Partial exit at TP1 (50%) + trail remainder could capture ~0.1-0.2R extra per winner. Implement as part of trailing stop logic above.
+
 ---
 
 ## Phase 4: WAIT Signal Re-Evaluation — ON HOLD
