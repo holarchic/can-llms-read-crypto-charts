@@ -50,6 +50,11 @@ One LLM call per signal, structured decision block output, ~$0.12/signal.
 Weighted composite replaces static per-setup-type confidence.
 Factors: base prior (0.30), structure alignment (0.25), level strength (0.15), proximity (0.15), confluence (0.15).
 
+#### Tier 1.5: Increase LLM cap (cost-gated)
+**When**: Scanner is profitable (positive expectancy on live trades, covering its own costs).
+**What**: Raise `max_llm_calls_per_scan` from 20 to 40. Currently dropping ~26 coins per scan (56%) that never get LLM eyes. At $0.16/call, doubling adds ~$10/day (~$20/day total).
+**Why wait**: At $10/day the scanner needs to be paying for itself first. The LLM filter is where the edge lives — more coverage = more CONFIRMs = more trades.
+
 #### Tier 2: Diminishing returns penalty
 **When**: If clustering appears in production (e.g. 15/20 signals are the same setup type).
 **What**: Greedy selection with decay — `effective_score = composite * 0.85^n` where `n` = count of same setup type already selected. Replaces the simple sort+slice in `pipeline.py:stage1_screen`.
