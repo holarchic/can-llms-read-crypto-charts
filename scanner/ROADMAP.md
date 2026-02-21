@@ -129,6 +129,8 @@ Actively manage open positions — don't just set-and-forget SL/TP.
 
 **Multi-target exit optimization**: MFE analysis (2026-02-20) shows winners average +0.44R unrealized beyond TP. 13% of wins had MFE > 1.5x R achieved. Partial exit at TP1 (50%) + trail remainder could capture ~0.1-0.2R extra per winner. Implement as part of trailing stop logic above.
 
+**"Leave a runner" for black swan hedge**: Close partial at TP, let remainder ride till 72-bar timeout. With ~4 concurrent positions often in mixed directions, a flash crash liquidates wrong-side positions (~5% account each) but a runner on right-side positions captures the tail move, partially offsetting liquidation losses. Only valuable if we have mixed-direction exposure — pure directional book doesn't benefit.
+
 ---
 
 ## Phase 4: WAIT Signal Re-Evaluation — ON HOLD

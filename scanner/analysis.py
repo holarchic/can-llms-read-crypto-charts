@@ -138,6 +138,15 @@ def analyze_for_scanner(
     parsed = parse_decision_block(analysis_text)
     cost = _estimate_cost(response.usage, cfg.model)
 
+    # Extract LLM confidence integer from parsed field
+    llm_confidence = None
+    raw_conf = parsed.get("llm_confidence")
+    if raw_conf:
+        import re as _re
+        m = _re.search(r"(\d+)", raw_conf)
+        if m:
+            llm_confidence = max(1, min(10, int(m.group(1))))
+
     return ScanResult(
         scan_id=str(uuid.uuid4())[:8],
         coin=signal.coin,
@@ -149,4 +158,5 @@ def analyze_for_scanner(
         parsed_decision=parsed,
         chart_paths=[str(p) for p in chart_paths],
         cost_usd=cost,
+        llm_confidence=llm_confidence,
     )

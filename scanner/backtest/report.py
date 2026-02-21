@@ -11,7 +11,6 @@ def format_summary(report: MetricsReport) -> str:
         f"  Sample:          {report.sample_size}",
         f"  Win/Loss/Exp:    {report.wins}/{report.losses}/{report.expired}",
         f"  Win Rate:        {report.win_rate:.1%}",
-        f"  Avg R:           {report.avg_r:+.2f}",
         f"  Expectancy:      {report.expectancy:+.4f}R",
     ]
 

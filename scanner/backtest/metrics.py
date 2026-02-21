@@ -238,10 +238,10 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_permut
 
     win_rate = len(wins) / n if n > 0 else 0.0
 
-    # Expectancy: (win_rate * avg_win) + (loss_rate * avg_loss)
-    # avg_loss is already negative
-    loss_rate = len(losses) / n if n > 0 else 0.0
-    expectancy = (win_rate * avg_win_r) + (loss_rate * avg_loss_r)
+    # Expectancy = mean R per trade (includes expired outcomes at their close R).
+    # The classic (WR * avg_win) + (LR * avg_loss) ignores expired P&L and diverges
+    # when expiry rate is high.
+    expectancy = avg_r
 
     # Profit factor: gross wins / gross losses (absolute)
     gross_wins = sum(o.r_achieved for o in wins)
@@ -298,6 +298,9 @@ DEFAULT_SLICERS = {
     "regime": lambda o: o.setup.regime if (o.setup and o.setup.regime) else "unknown",
 }
 
+# Conditional slicer — only added when data exists (see slice_metrics)
+_LLM_CONFIDENCE_SLICER = lambda o: "high" if (o.setup and o.setup.llm_confidence >= 8) else "med" if (o.setup and o.setup.llm_confidence >= 5) else "low"
+
 
 def slice_metrics(
     outcomes: list[TradeOutcome],
@@ -308,7 +311,10 @@ def slice_metrics(
     Returns {dimension_name: [MetricsReport per slice value]}.
     """
     if slicers is None:
-        slicers = DEFAULT_SLICERS
+        slicers = dict(DEFAULT_SLICERS)
+        # Only add llm_confidence slicer when at least one outcome has data
+        if any(o.setup and o.setup.llm_confidence > 0 for o in outcomes):
+            slicers["llm_confidence"] = _LLM_CONFIDENCE_SLICER
 
     result = {}
     for dim_name, key_fn in slicers.items():

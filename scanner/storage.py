@@ -206,6 +206,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "signals", "exchange", "TEXT", "'hyperliquid'")
     _ensure_column(conn, "scans", "exchange", "TEXT", "'hyperliquid'")
     _ensure_column(conn, "scan_universe", "exchange", "TEXT", "'hyperliquid'")
+    _ensure_column(conn, "scans", "llm_confidence", "INTEGER", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -231,8 +232,9 @@ def save_result(
         (scan_id, coin, timestamp, setup_type, setup_name, direction,
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
-         strategy_id, analysis_text, leverage, exchange, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         strategy_id, analysis_text, leverage, exchange, llm_confidence,
+         created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.scan_id,
             result.coin,
@@ -254,6 +256,7 @@ def save_result(
             result.analysis_text,
             parsed.get("leverage"),
             exchange,
+            result.llm_confidence,
             datetime.now(timezone.utc).isoformat(),
         ),
     )

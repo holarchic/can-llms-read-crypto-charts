@@ -126,3 +126,4 @@ class ScanResult:
     chart_paths: list[str]
     cost_usd: float
     alerted: bool = False
+    llm_confidence: int | None = None

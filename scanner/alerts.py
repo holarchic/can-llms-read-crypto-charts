@@ -55,6 +55,8 @@ def _build_embed(result: ScanResult, exchange_label: str = "HyperLiquid") -> dic
         fields.append({"name": "Take Profit", "value": parsed["take_profit"], "inline": True})
     if result.confluence_score:
         fields.append({"name": "Confluence", "value": result.confluence_score, "inline": True})
+    if result.llm_confidence is not None:
+        fields.append({"name": "Confidence", "value": f"{result.llm_confidence}/10", "inline": True})
     if parsed.get("leverage"):
         fields.append({"name": "Leverage", "value": parsed["leverage"], "inline": True})
     if parsed.get("risk_guidance"):
@@ -155,6 +157,8 @@ def format_alert_text(result: ScanResult) -> str:
 
     if result.confluence_score:
         lines.append(f"  Confluence: {result.confluence_score}")
+    if result.llm_confidence is not None:
+        lines.append(f"  LLM Confidence: {result.llm_confidence}/10")
     if parsed.get("entry_zone"):
         lines.append(f"  Entry: {parsed['entry_zone']}")
     if parsed.get("stop_loss"):

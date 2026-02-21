@@ -24,6 +24,7 @@ class TradeSetup:
     sent_to_llm: bool = False
     source: str = ""  # "screener" or "llm"
     regime: str = ""
+    llm_confidence: int = 0
 
 
 @dataclass
@@ -319,4 +320,5 @@ def build_llm_setup(row: dict) -> TradeSetup | None:
         structure="",
         sent_to_llm=True,
         source="llm",
+        llm_confidence=row.get("llm_confidence") or 0,
     )
