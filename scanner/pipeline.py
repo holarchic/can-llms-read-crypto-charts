@@ -170,6 +170,13 @@ def _analyze_one(
         for tf in ["1d", "4h", "1h"]:
             candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
 
+        # Cache all timeframes for experiment replay (4H already cached in stage1)
+        conn = get_connection()
+        for tf in ["1d", "1h"]:
+            if tf in candle_sets:
+                cache_candles(signal.coin, tf, candle_sets[tf], conn)
+        conn.close()
+
         chart_paths = generate_charts_for_signal(signal, candle_sets)
         result = analyze_for_scanner(signal, chart_paths, config, btc_structure)
         return result
