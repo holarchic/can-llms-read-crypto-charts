@@ -21,7 +21,7 @@ COLOR_WARN = 0xFFA726    # orange — anomaly
 COLOR_ERROR = 0xEF5350   # red — crash
 
 
-def _build_embed(result: ScanResult) -> dict:
+def _build_embed(result: ScanResult, exchange_label: str = "HyperLiquid") -> dict:
     """Build a Discord embed dict from a scan result."""
     signal = result.setup_signal
     parsed = result.parsed_decision or {}
@@ -69,7 +69,7 @@ def _build_embed(result: ScanResult) -> dict:
         "title": title,
         "color": color,
         "fields": fields,
-        "footer": {"text": f"Scan {result.scan_id} | Cost: ${result.cost_usd:.4f}"},
+        "footer": {"text": f"{exchange_label} | Scan {result.scan_id} | Cost: ${result.cost_usd:.4f}"},
     }
 
     return embed
@@ -78,6 +78,7 @@ def _build_embed(result: ScanResult) -> dict:
 def send_alert(
     result: ScanResult,
     config: ScannerConfig | None = None,
+    exchange_label: str = "HyperLiquid",
 ) -> bool:
     """Post a CONFIRM alert to Discord. Returns True on success.
 
@@ -87,7 +88,7 @@ def send_alert(
     if not cfg.discord_webhook_url:
         return False
 
-    embed = _build_embed(result)
+    embed = _build_embed(result, exchange_label=exchange_label)
     payload = {"embeds": [embed]}
 
     # Find the 4H chart to attach

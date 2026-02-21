@@ -4,6 +4,7 @@ import argparse
 import sys
 from datetime import datetime, timezone, timedelta
 
+from ..config import get_exchange_meta
 from ..storage import get_connection
 from .candles import fetch_and_cache
 from .resolver import (
@@ -75,13 +76,15 @@ def main():
         "--mode", choices=["screener", "llm"], default="screener",
         help="Resolution mode: screener (signals table) or llm (scans table, CONFIRM only)",
     )
+    parser.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
+                        default="hyperliquid", help="Exchange for candle data (default: hyperliquid)")
     parser.add_argument("--days", type=int, default=30, help="Lookback days for signals (default: 30)")
     parser.add_argument("--coin", type=str, default=None, help="Filter by coin (e.g. BTC)")
     parser.add_argument("--type", type=str, default=None, help="Filter by setup type (e.g. C)")
     parser.add_argument("--timeout", type=int, default=72, help="Timeout bars before EXPIRED (default: 72 = 3d)")
     parser.add_argument("--atr-stop", type=float, default=1.5, help="ATR multiplier for stop (screener mode)")
     parser.add_argument("--atr-target", type=float, default=3.0, help="ATR multiplier for target (screener mode)")
-    parser.add_argument("--fee", type=float, default=0.00035, help="Taker fee per side (default: 0.035%%)")
+    parser.add_argument("--fee", type=float, default=None, help="Taker fee per side (default: exchange-specific)")
     parser.add_argument("--funding-rate", type=float, default=0.0001, help="Funding rate per 8h (default: 0.01%%)")
     parser.add_argument("--slippage", type=float, default=0.0005, help="Slippage rate per side (default: 0.05%%)")
     parser.add_argument("--no-slippage", action="store_true", help="Disable slippage estimation")
@@ -90,6 +93,10 @@ def main():
     parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     parser.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
     args = parser.parse_args()
+
+    # Resolve fee rate: explicit --fee > exchange default
+    meta = get_exchange_meta(args.exchange)
+    fee_rate = args.fee if args.fee is not None else meta["fee_rate"]
 
     conn = get_connection()
 
@@ -136,6 +143,7 @@ def main():
                 signal_dt.isoformat(),
                 until_dt.isoformat(),
                 conn,
+                exchange=args.exchange,
             )
         except Exception as e:
             if args.verbose:
@@ -144,7 +152,7 @@ def main():
 
         slippage = 0.0 if args.no_slippage else args.slippage
         outcome = resolve_signal(
-            setup, candles, args.timeout, args.fee,
+            setup, candles, args.timeout, fee_rate,
             funding_rate_8h=args.funding_rate,
             slippage_rate=slippage,
         )

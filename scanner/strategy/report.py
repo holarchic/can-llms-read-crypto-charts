@@ -95,7 +95,8 @@ def resolve_signals(
                 pd.Timestamp(setup.timestamp, tz="UTC")
                 + pd.Timedelta(hours=timeout_bars + 1)
             ).isoformat()
-            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn)
+            exchange = row.get("exchange", "hyperliquid")
+            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn, exchange=exchange)
             outcome = resolve_signal(
                 setup, candles, timeout_bars, fee_rate,
                 funding_rate_8h=funding_rate_8h,
@@ -135,7 +136,8 @@ def resolve_llm_scans(
                 pd.Timestamp(setup.timestamp, tz="UTC")
                 + pd.Timedelta(hours=timeout_bars + 1)
             ).isoformat()
-            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn)
+            exchange = row.get("exchange", "hyperliquid")
+            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn, exchange=exchange)
             outcome = resolve_signal(
                 setup, candles, timeout_bars, fee_rate,
                 funding_rate_8h=funding_rate_8h,

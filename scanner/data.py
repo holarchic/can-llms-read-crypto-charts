@@ -1,4 +1,4 @@
-"""HyperLiquid data fetching via ccxt."""
+"""Exchange data fetching via ccxt — supports HyperLiquid, Bybit, Binance."""
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6,29 +6,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import ccxt
 import pandas as pd
 
-from .config import ScannerConfig
+from .config import ScannerConfig, get_exchange_meta
 
-# Module-level exchange instance — reused across all calls.
-# load_markets() takes ~11s, so we only want to do it once.
-_exchange: ccxt.hyperliquid | None = None
+# Module-level exchange instances — reused across all calls.
+# load_markets() takes ~11s, so we only want to do it once per exchange.
+_exchanges: dict[str, object] = {}
 
 
-def get_exchange() -> ccxt.hyperliquid:
-    """Get or create the shared exchange instance."""
-    global _exchange
-    if _exchange is None:
-        _exchange = ccxt.hyperliquid({"timeout": 30000})
-        _exchange.load_markets()
-    return _exchange
+def get_exchange(exchange_id: str = "hyperliquid") -> object:
+    """Get or create a shared exchange instance for the given exchange."""
+    global _exchanges
+    if exchange_id not in _exchanges:
+        meta = get_exchange_meta(exchange_id)
+        cls = getattr(ccxt, meta["ccxt_class"])
+        _exchanges[exchange_id] = cls({"timeout": 30000})
+        _exchanges[exchange_id].load_markets()
+    return _exchanges[exchange_id]
 
 
 def fetch_pairs_with_volume(config: ScannerConfig | None = None) -> list[dict]:
-    """Fetch all HyperLiquid perps, return sorted by 24h volume descending.
+    """Fetch all perps for the configured exchange, return sorted by 24h volume descending.
 
-    Returns list of dicts: {coin, symbol, volume_24h, last_price}
+    Returns list of dicts: {coin, symbol, volume_24h, last_price, max_leverage}
     """
     cfg = config or ScannerConfig()
-    exchange = get_exchange()
+    exchange = get_exchange(cfg.exchange)
     tickers = exchange.fetch_tickers()
 
     pairs = []
@@ -56,10 +58,11 @@ def fetch_pairs_with_volume(config: ScannerConfig | None = None) -> list[dict]:
     return pairs[:cfg.max_pairs]
 
 
-def get_max_leverage(coin: str) -> int | None:
-    """Get max leverage for a coin from HyperLiquid market data."""
-    exchange = get_exchange()
-    symbol = f"{coin}/USDC:USDC"
+def get_max_leverage(coin: str, exchange_id: str = "hyperliquid") -> int | None:
+    """Get max leverage for a coin from exchange market data."""
+    meta = get_exchange_meta(exchange_id)
+    exchange = get_exchange(exchange_id)
+    symbol = meta["symbol_template"].format(coin=coin)
     market = exchange.markets.get(symbol, {})
     max_lev = (market.get("limits", {}).get("leverage", {}) or {}).get("max")
     return int(max_lev) if max_lev else None
@@ -70,14 +73,18 @@ def fetch_candles(
     interval: str,
     count: int,
     config: ScannerConfig | None = None,
+    exchange_id: str | None = None,
 ) -> pd.DataFrame:
     """Fetch OHLCV candles for a coin. Returns DataFrame with DatetimeIndex + OHLCV columns.
 
     Column names are capitalized (Open, High, Low, Close, Volume) for mplfinance compatibility.
+    exchange_id overrides config.exchange when fetching from a non-primary exchange.
     """
     cfg = config or ScannerConfig()
-    exchange = get_exchange()
-    symbol = f"{coin}/USDC:USDC"
+    eid = exchange_id or cfg.exchange
+    meta = get_exchange_meta(eid)
+    exchange = get_exchange(eid)
+    symbol = meta["symbol_template"].format(coin=coin)
 
     for attempt in range(3):
         try:
@@ -102,16 +109,18 @@ def fetch_candles_batch(
     count: int,
     config: ScannerConfig | None = None,
     max_workers: int = 6,
+    exchange_id: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch candles for multiple coins in parallel. Returns {coin: DataFrame}.
 
     Uses threading since ccxt is I/O-bound. Respects rate limits via max_workers.
+    exchange_id overrides config.exchange when fetching from a non-primary exchange.
     """
     results = {}
 
     def _fetch_one(coin: str) -> tuple[str, pd.DataFrame | None]:
         try:
-            df = fetch_candles(coin, interval, count, config)
+            df = fetch_candles(coin, interval, count, config, exchange_id=exchange_id)
             return coin, df
         except Exception:
             return coin, None

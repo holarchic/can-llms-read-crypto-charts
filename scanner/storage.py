@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS candles (
     interval TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     open REAL, high REAL, low REAL, close REAL, volume REAL,
-    PRIMARY KEY (coin, interval, timestamp)
+    exchange TEXT NOT NULL DEFAULT 'hyperliquid',
+    PRIMARY KEY (coin, interval, timestamp, exchange)
 )
 """
 
@@ -126,6 +127,47 @@ def _ensure_column(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")
 
 
+def _migrate_candles_table(conn: sqlite3.Connection) -> None:
+    """Migrate candles table to include exchange in PK if needed.
+
+    Old PK: (coin, interval, timestamp)
+    New PK: (coin, interval, timestamp, exchange)
+    Existing rows get exchange='hyperliquid'.
+    """
+    # Check if candles table exists
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='candles'"
+    ).fetchone()
+    if not exists:
+        conn.execute(CREATE_CANDLES_TABLE)
+        return
+
+    # Check if exchange column already exists
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(candles)").fetchall()}
+    if "exchange" in cols:
+        return
+
+    # Migrate: create new table → copy data → swap
+    conn.execute("""
+        CREATE TABLE candles_new (
+            coin TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL, volume REAL,
+            exchange TEXT NOT NULL DEFAULT 'hyperliquid',
+            PRIMARY KEY (coin, interval, timestamp, exchange)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO candles_new (coin, interval, timestamp, open, high, low, close, volume, exchange)
+        SELECT coin, interval, timestamp, open, high, low, close, volume, 'hyperliquid'
+        FROM candles
+    """)
+    conn.execute("DROP TABLE candles")
+    conn.execute("ALTER TABLE candles_new RENAME TO candles")
+    conn.commit()
+
+
 def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     """Get a database connection, creating the table if needed."""
     path = db_path or DB_PATH
@@ -136,7 +178,8 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
     conn.execute(CREATE_SIGNALS_INDEX)
-    conn.execute(CREATE_CANDLES_TABLE)
+    # Candles table: migrate PK to include exchange if needed
+    _migrate_candles_table(conn)
     conn.execute(CREATE_CANDLES_INDEX)
     conn.execute(CREATE_STRATEGIES_TABLE)
     conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
@@ -158,6 +201,10 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "signals", "vol_percentile", "REAL", "NULL")
     _ensure_column(conn, "signals", "efficiency_ratio", "REAL", "NULL")
     _ensure_column(conn, "signals", "regime", "TEXT", "NULL")
+    # Exchange columns
+    _ensure_column(conn, "signals", "exchange", "TEXT", "'hyperliquid'")
+    _ensure_column(conn, "scans", "exchange", "TEXT", "'hyperliquid'")
+    _ensure_column(conn, "scan_universe", "exchange", "TEXT", "'hyperliquid'")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -167,6 +214,7 @@ def save_result(
     result: ScanResult,
     conn: sqlite3.Connection | None = None,
     strategy_id: str = "v0",
+    exchange: str = "hyperliquid",
 ) -> None:
     """Save a scan result to the database."""
     own_conn = conn is None
@@ -182,8 +230,8 @@ def save_result(
         (scan_id, coin, timestamp, setup_type, setup_name, direction,
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
-         strategy_id, analysis_text, leverage, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         strategy_id, analysis_text, leverage, exchange, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.scan_id,
             result.coin,
@@ -204,6 +252,7 @@ def save_result(
             strategy_id,
             result.analysis_text,
             parsed.get("leverage"),
+            exchange,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -219,6 +268,7 @@ def is_duplicate(
     direction: str,
     hours: int = 12,
     conn: sqlite3.Connection | None = None,
+    exchange: str = "hyperliquid",
 ) -> bool:
     """Check if the same setup was already detected within `hours` hours."""
     own_conn = conn is None
@@ -228,8 +278,9 @@ def is_duplicate(
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM scans
         WHERE coin = ? AND setup_type = ? AND direction = ?
+        AND exchange = ?
         AND datetime(timestamp) > datetime('now', ?)""",
-        (coin, setup_type, direction, f"-{hours} hours"),
+        (coin, setup_type, direction, exchange, f"-{hours} hours"),
     ).fetchone()
 
     if own_conn:
@@ -313,6 +364,7 @@ def save_signals(
     conn: sqlite3.Connection | None = None,
     strategy_id: str = "v0",
     btc_structure: str | None = None,
+    exchange: str = "hyperliquid",
 ) -> None:
     """Batch insert all screener signals from a single run."""
     if not signals:
@@ -364,6 +416,7 @@ def save_signals(
             ctx.vol_percentile,
             ctx.efficiency_ratio,
             ctx.regime,
+            exchange,
         ))
 
     conn.executemany(
@@ -375,9 +428,10 @@ def save_signals(
          strategy_id,
          score_base, score_alignment, score_strength, score_proximity,
          score_confluence, btc_structure,
-         vol_percentile, efficiency_ratio, regime)
+         vol_percentile, efficiency_ratio, regime,
+         exchange)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -391,6 +445,7 @@ def save_scan_universe(
     pairs: list[dict],
     timestamp: str,
     conn: sqlite3.Connection,
+    exchange: str = "hyperliquid",
 ) -> int:
     """Log the full universe of pairs scanned in this batch.
 
@@ -401,11 +456,11 @@ def save_scan_universe(
         return 0
 
     rows = [
-        (batch_id, p["coin"], p.get("volume_24h"), p.get("max_leverage"), timestamp)
+        (batch_id, p["coin"], p.get("volume_24h"), p.get("max_leverage"), timestamp, exchange)
         for p in pairs
     ]
     conn.executemany(
-        "INSERT OR IGNORE INTO scan_universe (batch_id, coin, volume_24h, max_leverage, timestamp) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO scan_universe (batch_id, coin, volume_24h, max_leverage, timestamp, exchange) VALUES (?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
@@ -418,6 +473,7 @@ def signal_history(
     days: int = 7,
     sent_only: bool = False,
     conn: sqlite3.Connection | None = None,
+    exchange: str | None = None,
 ) -> list[dict]:
     """Query signal history with optional filters."""
     own_conn = conn is None
@@ -435,6 +491,9 @@ def signal_history(
         params.append(setup_type.upper())
     if sent_only:
         clauses.append("sent_to_llm = 1")
+    if exchange:
+        clauses.append("exchange = ?")
+        params.append(exchange)
 
     where = " AND ".join(clauses)
     rows = conn.execute(
@@ -452,6 +511,7 @@ def signal_history(
 def signal_stats(
     days: int = 7,
     conn: sqlite3.Connection | None = None,
+    exchange: str | None = None,
 ) -> dict:
     """Aggregate signal stats for backtesting review."""
     own_conn = conn is None

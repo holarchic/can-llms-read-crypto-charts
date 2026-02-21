@@ -58,6 +58,7 @@ def sweep_resolution(
                 continue
 
             try:
+                exchange = row.get("exchange", "hyperliquid")
                 candles = fetch_and_cache(
                     setup.coin, "1h",
                     setup.timestamp,
@@ -66,6 +67,7 @@ def sweep_resolution(
                     .__add__(pd.Timedelta(hours=timeout_bars + 1))
                     .isoformat(),
                     conn,
+                    exchange=exchange,
                 )
                 outcome = resolve_signal(
                     setup, candles, timeout_bars, fee_rate,
@@ -243,12 +245,14 @@ def walk_forward_sweep(
             if not setup:
                 continue
             try:
+                exchange = row.get("exchange", "hyperliquid")
                 candles = fetch_and_cache(
                     setup.coin, "1h",
                     setup.timestamp,
                     (pd.Timestamp(setup.timestamp, tz="UTC")
                      + pd.Timedelta(hours=timeout_bars + 1)).isoformat(),
                     conn,
+                    exchange=exchange,
                 )
                 outcome = resolve_signal(
                     setup, candles, timeout_bars, fee_rate,

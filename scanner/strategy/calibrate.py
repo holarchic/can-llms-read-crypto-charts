@@ -88,10 +88,12 @@ def run_calibration(
         until_dt = signal_dt + timedelta(hours=timeout_bars + 1)
 
         try:
+            exchange = sig.get("exchange", "hyperliquid")
             candles = fetch_and_cache(
                 sig["coin"], "1h",
                 signal_dt.isoformat(), until_dt.isoformat(),
                 conn,
+                exchange=exchange,
             )
         except Exception:
             continue

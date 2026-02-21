@@ -12,19 +12,23 @@ from .alerts import send_ops_log, COLOR_ERROR
 
 def main():
     parser = argparse.ArgumentParser(
-        description="HyperLiquid Perpetuals Scanner",
+        description="Crypto Perpetuals Scanner (HyperLiquid, Bybit, Binance)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m scanner.cli                  # Full scan
-  python -m scanner.cli --dry-run        # Stage 1 only, print signals
-  python -m scanner.cli --coin BTC       # Single coin
-  python -m scanner.cli --no-discord     # Skip Discord alerts
-  python -m scanner.cli --stats          # Scan history summary
-  python -m scanner.cli --signals        # View signal history
-  python -m scanner.cli --signal-stats   # Screener performance summary
+  python -m scanner.cli                                  # Scan HL, collect candles from all 3
+  python -m scanner.cli --exchange bybit                 # Scan Bybit, collect candles from all 3
+  python -m scanner.cli --candle-exchanges hyperliquid   # Only collect HL candles (skip Bybit/Binance)
+  python -m scanner.cli --dry-run                        # Stage 1 only, print signals
+  python -m scanner.cli --coin BTC                       # Single coin
+  python -m scanner.cli --no-discord                     # Skip Discord alerts
+  python -m scanner.cli --stats                          # Scan history summary
         """,
     )
+    parser.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
+                        default="hyperliquid", help="Exchange to scan (default: hyperliquid)")
+    parser.add_argument("--candle-exchanges", nargs="*",
+                        help="Exchanges to collect candles from (default: all three)")
     parser.add_argument("--dry-run", action="store_true", help="Run screener only, skip LLM + alerts")
     parser.add_argument("--coin", help="Scan a single coin (e.g. BTC, ETH, SOL)")
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord alerts")
@@ -112,7 +116,8 @@ Examples:
                       f"{r['decision'] or 'N/A':>7}  ${r['cost_usd']:.4f}  {r['timestamp'][:16]}")
         return
 
-    config = ScannerConfig()
+    candle_exchanges = args.candle_exchanges if args.candle_exchanges is not None else ["hyperliquid", "bybit", "binance"]
+    config = ScannerConfig(exchange=args.exchange, candle_exchanges=candle_exchanges)
     try:
         run_scan(
             config=config,

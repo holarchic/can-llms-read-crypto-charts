@@ -269,11 +269,13 @@ def cmd_sweep(args):
                 if not setup:
                     continue
                 try:
+                    exchange = row.get("exchange", "hyperliquid")
                     candles = fetch_and_cache(
                         setup.coin, "1h", setup.timestamp,
                         (pd.Timestamp(setup.timestamp, tz="UTC")
                          + pd.Timedelta(hours=72 + 1)).isoformat(),
                         conn,
+                        exchange=exchange,
                     )
                     from ..backtest.resolver import resolve_signal
                     outcome = resolve_signal(setup, candles, 72, 0.00035)
@@ -438,28 +440,29 @@ def cmd_calibrate(args):
 
 
 def cmd_backfill(args):
-    from ..data import fetch_pairs_with_volume, get_exchange
-    from ..config import ScannerConfig
+    from ..data import fetch_pairs_with_volume
+    from ..config import ScannerConfig, get_exchange_meta
     import time
 
+    exchange_id = args.exchange
+    meta = get_exchange_meta(exchange_id)
     conn = get_connection()
-    config = ScannerConfig()
+    config = ScannerConfig(exchange=exchange_id)
 
     if args.coin:
         coins = [args.coin.upper()]
     else:
         pairs = fetch_pairs_with_volume(config)
         coins = [p["coin"] for p in pairs]
-        print(f"Backfilling {len(coins)} coins")
+        print(f"Backfilling {len(coins)} {meta['label']} coins")
 
-    exchange = get_exchange()
     since = args.since
     until = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
     total_cached = 0
     for i, coin in enumerate(coins):
         try:
-            df = fetch_and_cache(coin, "4h", since, until, conn, config)
+            df = fetch_and_cache(coin, "4h", since, until, conn, config, exchange=exchange_id)
             n = len(df) if df is not None else 0
             total_cached += n
             if args.verbose:
@@ -575,6 +578,8 @@ def main():
     p_backfill.add_argument("--since", required=True, help="Start date (YYYY-MM-DD)")
     p_backfill.add_argument("--until", type=str, default=None, help="End date")
     p_backfill.add_argument("--coin", type=str, default=None, help="Single coin filter")
+    p_backfill.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
+                            default="hyperliquid", help="Exchange (default: hyperliquid)")
     p_backfill.add_argument("-v", "--verbose", action="store_true")
     p_backfill.set_defaults(func=cmd_backfill)
 

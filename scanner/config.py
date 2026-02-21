@@ -14,6 +14,35 @@ DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 DB_PATH = DATA_DIR / "scanner.db"
 
+# Exchange profiles — one entry per supported exchange
+EXCHANGE_META: dict[str, dict] = {
+    "hyperliquid": {
+        "ccxt_class": "hyperliquid",
+        "symbol_template": "{coin}/USDC:USDC",
+        "fee_rate": 0.00035,
+        "label": "HyperLiquid",
+    },
+    "bybit": {
+        "ccxt_class": "bybit",
+        "symbol_template": "{coin}/USDT:USDT",
+        "fee_rate": 0.00055,
+        "label": "Bybit",
+    },
+    "binance": {
+        "ccxt_class": "binanceusdm",
+        "symbol_template": "{coin}/USDT:USDT",
+        "fee_rate": 0.0004,
+        "label": "Binance",
+    },
+}
+
+
+def get_exchange_meta(exchange_id: str) -> dict:
+    """Get metadata for an exchange. Raises ValueError for unknown exchanges."""
+    if exchange_id not in EXCHANGE_META:
+        raise ValueError(f"Unknown exchange: '{exchange_id}'. Supported: {', '.join(EXCHANGE_META)}")
+    return EXCHANGE_META[exchange_id]
+
 
 @dataclass
 class ScannerConfig:
@@ -23,7 +52,9 @@ class ScannerConfig:
     discord_reports_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_REPORTS_WEBHOOK_URL", ""))
     discord_ops_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_OPS_WEBHOOK_URL", ""))
 
-    # HyperLiquid
+    # Exchange
+    exchange: str = "hyperliquid"
+    candle_exchanges: list = field(default_factory=lambda: ["hyperliquid", "bybit", "binance"])
     min_volume_usd: float = 2_000_000
     max_pairs: int = 80
 
@@ -33,7 +64,11 @@ class ScannerConfig:
         "1d": 120,
         "4h": 200,
         "1h": 120,
+        "15m": 200,
     })
+
+    # Timeframes to collect across all candle_exchanges (data pipeline)
+    collection_timeframes: list = field(default_factory=lambda: ["15m", "1h", "4h", "1d"])
 
     # Screener params
     swing_lookback: int = 5

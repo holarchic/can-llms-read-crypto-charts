@@ -47,14 +47,16 @@ def _get_trailing_candles(
     timestamp: str,
     lookback: int,
     conn: sqlite3.Connection,
+    exchange: str = "hyperliquid",
 ) -> pd.DataFrame | None:
     """Load trailing `lookback` 4H candles ending at `timestamp` from cache."""
     rows = conn.execute(
         """SELECT timestamp, open, high, low, close, volume
         FROM candles
         WHERE coin = ? AND interval = '4h' AND timestamp <= ?
+        AND exchange = ?
         ORDER BY timestamp DESC LIMIT ?""",
-        (coin, timestamp, lookback),
+        (coin, timestamp, exchange, lookback),
     ).fetchall()
 
     if len(rows) < 50:  # Need minimum bars for indicators
@@ -203,6 +205,7 @@ def replay(
                 ).isoformat()
                 candles = fetch_and_cache(
                     setup.coin, "1h", ts, until_dt, conn,
+                    exchange="hyperliquid",
                 )
                 outcome = resolve_signal(setup, candles, timeout_bars, fee_rate)
                 outcomes.append(outcome)

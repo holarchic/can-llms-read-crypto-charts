@@ -5,7 +5,7 @@ import time
 
 import pandas as pd
 
-from ..config import ScannerConfig
+from ..config import ScannerConfig, get_exchange_meta
 
 
 def get_cached_candles(
@@ -14,6 +14,7 @@ def get_cached_candles(
     since: str,
     until: str,
     conn: sqlite3.Connection,
+    exchange: str = "hyperliquid",
 ) -> pd.DataFrame | None:
     """Retrieve cached candles for a coin/interval within a time range.
 
@@ -24,8 +25,9 @@ def get_cached_candles(
         """SELECT timestamp, open, high, low, close, volume
         FROM candles
         WHERE coin = ? AND interval = ? AND timestamp >= ? AND timestamp <= ?
+        AND exchange = ?
         ORDER BY timestamp""",
-        (coin, interval, since, until),
+        (coin, interval, since, until, exchange),
     ).fetchall()
 
     if not rows:
@@ -49,6 +51,7 @@ def cache_candles(
     interval: str,
     df: pd.DataFrame,
     conn: sqlite3.Connection,
+    exchange: str = "hyperliquid",
 ) -> int:
     """Insert candles into cache. Returns number of rows inserted (ignores duplicates)."""
     if df is None or df.empty:
@@ -61,12 +64,13 @@ def cache_candles(
             float(row["Open"]), float(row["High"]),
             float(row["Low"]), float(row["Close"]),
             float(row["Volume"]),
+            exchange,
         ))
 
     conn.executemany(
         """INSERT OR IGNORE INTO candles
-        (coin, interval, timestamp, open, high, low, close, volume)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (coin, interval, timestamp, open, high, low, close, volume, exchange)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -80,19 +84,21 @@ def fetch_and_cache(
     until: str,
     conn: sqlite3.Connection,
     config: ScannerConfig | None = None,
+    exchange: str = "hyperliquid",
 ) -> pd.DataFrame:
     """Fetch candles, using cache where available. Fills gaps from ccxt.
 
     since/until are ISO-format strings. Returns DataFrame with DatetimeIndex + OHLCV.
     """
-    from ..data import get_exchange
+    from ..data import get_exchange as get_ccxt_exchange
 
-    cached = get_cached_candles(coin, interval, since, until, conn)
+    cached = get_cached_candles(coin, interval, since, until, conn, exchange=exchange)
 
     # Determine what we need to fetch
     cfg = config or ScannerConfig()
-    exchange = get_exchange()
-    symbol = f"{coin}/USDC:USDC"
+    meta = get_exchange_meta(exchange)
+    ccxt_exchange = get_ccxt_exchange(exchange)
+    symbol = meta["symbol_template"].format(coin=coin)
 
     since_ms = int(pd.Timestamp(since).timestamp() * 1000)
     until_ms = int(pd.Timestamp(until).timestamp() * 1000)
@@ -114,7 +120,7 @@ def fetch_and_cache(
     all_new = []
     cursor = fetch_since
     while cursor < until_ms:
-        batch = exchange.fetch_ohlcv(symbol, interval, since=cursor, limit=500)
+        batch = ccxt_exchange.fetch_ohlcv(symbol, interval, since=cursor, limit=500)
         time.sleep(cfg.api_sleep_ms / 1000)
         if not batch:
             break
@@ -130,7 +136,7 @@ def fetch_and_cache(
         new_df.set_index("timestamp", inplace=True)
         # Filter to requested range
         new_df = new_df[new_df.index <= pd.Timestamp(until, tz="UTC")]
-        cache_candles(coin, interval, new_df, conn)
+        cache_candles(coin, interval, new_df, conn, exchange=exchange)
     else:
         new_df = None
 

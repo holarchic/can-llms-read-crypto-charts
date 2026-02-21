@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .config import ScannerConfig, CHARTS_DIR
+from .config import ScannerConfig, CHARTS_DIR, get_exchange_meta
 from .data import fetch_pairs_with_volume, fetch_candles, fetch_candles_batch, get_max_leverage
 from .indicators import build_context
 from .screener import detect_all_setups
@@ -56,6 +56,41 @@ def _select_with_diversity(
     return selected + remaining
 
 
+def _collect_candles(
+    coins: list[str],
+    config: ScannerConfig,
+    conn,
+    verbose: bool = True,
+) -> None:
+    """Collect candles across all configured exchanges and timeframes.
+
+    Skips (primary exchange, 4H) since that's already fetched and cached by stage1.
+    Errors per exchange are caught and logged — one failing doesn't block the rest.
+    """
+    for eid in config.candle_exchanges:
+        label = get_exchange_meta(eid)["label"]
+        for tf in config.collection_timeframes:
+            # Primary exchange 4H already cached above
+            if eid == config.exchange and tf == "4h":
+                continue
+            count = config.candle_counts.get(tf, 200)
+            if verbose:
+                print(f"Collecting {tf} candles from {label}...")
+            try:
+                tf_map = fetch_candles_batch(
+                    coins, tf, count, config, exchange_id=eid,
+                )
+                tf_cached = 0
+                for coin_name, df in tf_map.items():
+                    if df is not None and not df.empty:
+                        tf_cached += cache_candles(coin_name, tf, df, conn, exchange=eid)
+                if verbose:
+                    print(f"  {label} {tf}: {len(tf_map)} pairs, {tf_cached} rows cached")
+            except Exception as e:
+                if verbose:
+                    print(f"  {label} {tf}: failed — {e}")
+
+
 def stage1_screen(
     config: ScannerConfig,
     coin_filter: str | None = None,
@@ -69,17 +104,20 @@ def stage1_screen(
     strategy = get_strategy(strategy_id, conn)
     disabled_types = strategy.disabled_types_set if strategy else None
 
+    meta = get_exchange_meta(config.exchange)
+
     # Fetch pairs
     if coin_filter:
         coin_upper = coin_filter.upper()
-        max_lev = get_max_leverage(coin_upper)
-        pairs = [{"coin": coin_upper, "symbol": f"{coin_upper}/USDC:USDC", "max_leverage": max_lev}]
+        max_lev = get_max_leverage(coin_upper, config.exchange)
+        symbol = meta["symbol_template"].format(coin=coin_upper)
+        pairs = [{"coin": coin_upper, "symbol": symbol, "max_leverage": max_lev}]
         if verbose:
-            print(f"Single coin mode: {coin_upper} (max leverage: {max_lev or '?'}x)")
+            print(f"Single coin mode: {coin_upper} on {meta['label']} (max leverage: {max_lev or '?'}x)")
     else:
         pairs = fetch_pairs_with_volume(config)
         if verbose:
-            print(f"Found {len(pairs)} pairs above ${config.min_volume_usd:,.0f} volume")
+            print(f"Found {len(pairs)} {meta['label']} pairs above ${config.min_volume_usd:,.0f} volume")
 
     # Batch fetch all 4H candles in parallel
     coins = [p["coin"] for p in pairs]
@@ -89,13 +127,17 @@ def stage1_screen(
     if verbose:
         print(f"Fetched {len(candle_map)}/{len(coins)} pairs")
 
-    # Cache 4H candles for replay
+    # Cache 4H candles for replay (primary exchange — already fetched above)
     cached = 0
     for coin, df in candle_map.items():
         if df is not None and not df.empty:
-            cached += cache_candles(coin, "4h", df, conn)
+            cached += cache_candles(coin, "4h", df, conn, exchange=config.exchange)
     if verbose and cached:
         print(f"Cached {cached} 4H candle rows")
+
+    # Collect candles across all configured exchanges and timeframes (data pipeline)
+    if not coin_filter:
+        _collect_candles(coins, config, conn, verbose)
 
     # Build leverage lookup from pairs data
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
@@ -118,7 +160,7 @@ def stage1_screen(
             for signal in signals:
                 signal.max_leverage = leverage_map.get(coin)
                 if is_duplicate(coin, signal.setup_type.value, signal.direction.value,
-                                config.dedup_hours, conn):
+                                config.dedup_hours, conn, exchange=config.exchange):
                     if verbose:
                         print(f"  {coin} {signal.setup_type.value} — skipped (duplicate)")
                     continue
@@ -147,9 +189,9 @@ def stage1_screen(
     # Persist all signals for backtesting (with scoring components + BTC structure)
     batch_id = uuid4().hex[:8]
     timestamp = datetime.now(timezone.utc).isoformat()
-    save_scan_universe(batch_id, pairs, timestamp, conn)
+    save_scan_universe(batch_id, pairs, timestamp, conn, exchange=config.exchange)
     save_signals(all_signals, batch_id, len(capped), conn, strategy_id=strategy_id,
-                 btc_structure=btc_structure)
+                 btc_structure=btc_structure, exchange=config.exchange)
 
     conn.close()
 
@@ -174,7 +216,7 @@ def _analyze_one(
         conn = get_connection()
         for tf in ["1d", "1h"]:
             if tf in candle_sets:
-                cache_candles(signal.coin, tf, candle_sets[tf], conn)
+                cache_candles(signal.coin, tf, candle_sets[tf], conn, exchange=config.exchange)
         conn.close()
 
         chart_paths = generate_charts_for_signal(signal, candle_sets)
@@ -232,7 +274,7 @@ def stage2_analyze(
                     if not result.decision:
                         preview = (result.analysis_text or '')[:200].replace('\n', ' ')
                         print(f"    ⚠ Parse failed. Raw output: {preview}")
-                save_result(result, conn, strategy_id=strategy_id)
+                save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange)
                 results.append(result)
 
     conn.close()
@@ -258,7 +300,8 @@ def stage3_alert(
             print(format_alert_text(result))
 
         if not skip_discord and config.discord_webhook_url:
-            success = send_alert(result, config)
+            exchange_label = get_exchange_meta(config.exchange)["label"]
+            success = send_alert(result, config, exchange_label=exchange_label)
             if success:
                 mark_alerted(result.scan_id, conn)
                 alerted_count += 1
@@ -292,8 +335,9 @@ def run_scan(
     cfg = config or ScannerConfig()
     start = datetime.now(timezone.utc)
 
+    exchange_label = get_exchange_meta(cfg.exchange)["label"]
     if verbose:
-        print(f"Scanner started at {start.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print(f"Scanner started at {start.strftime('%Y-%m-%d %H:%M:%S UTC')} [{exchange_label}]")
         print("=" * 60)
 
     # Stage 1
@@ -356,6 +400,6 @@ def run_scan(
         }
         if parse_fails:
             ops_fields["Parse Fails"] = str(parse_fails)
-        send_ops_log("Scan Complete", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
+        send_ops_log(f"Scan Complete [{exchange_label}]", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
 
     return summary
