@@ -15,6 +15,8 @@ Options:
     --dry-run         Show selected signals without running LLM
     --output FILE     Save results to JSON file
     --cost-limit N    Max total cost in USD (default: 15.0)
+    --cached-only     Use only cached candles (4H/1H) — no exchange fetches.
+                      Guarantees identical inputs to original analysis.
 """
 
 import argparse
@@ -188,6 +190,7 @@ def run_experiment(
     n_runs: int,
     config: ScannerConfig,
     conn: sqlite3.Connection,
+    cached_only: bool = False,
     cost_limit: float = 15.0,
     dry_run: bool = False,
 ) -> list[dict]:
@@ -229,7 +232,10 @@ def run_experiment(
 
         # Fetch candles as of signal time
         candle_sets = {}
-        for tf, count in [("1d", 120), ("4h", 200), ("1h", 120)]:
+        timeframes = [("4h", 200), ("1h", 120)]
+        if not cached_only:
+            timeframes = [("1d", 120)] + timeframes
+        for tf, count in timeframes:
             df = get_candles_as_of(coin, tf, as_of, count, conn, config)
             if df is not None and len(df) >= 10:
                 candle_sets[tf] = df
@@ -417,6 +423,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Show selection without running LLM")
     parser.add_argument("--output", type=str, help="Save results to JSON file")
     parser.add_argument("--cost-limit", type=float, default=15.0, help="Max total cost USD")
+    parser.add_argument("--cached-only", action="store_true",
+                        help="Use only cached candles (4H/1H) — identical inputs guaranteed")
     args = parser.parse_args()
 
     config = ScannerConfig()
@@ -437,9 +445,13 @@ def main():
     print(f"Estimated cost: ${len(samples) * args.runs * 0.12:.2f}")
     print(f"Cost limit: ${args.cost_limit:.2f}")
 
+    if args.cached_only:
+        print("Mode: CACHED-ONLY (4H/1H from cache, no 1D fetch)")
+
     results = run_experiment(
         samples, args.runs, config, conn,
         cost_limit=args.cost_limit, dry_run=args.dry_run,
+        cached_only=args.cached_only,
     )
 
     print_report(results)
