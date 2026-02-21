@@ -174,6 +174,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(CREATE_TABLE)
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
@@ -465,6 +466,38 @@ def save_scan_universe(
     )
     conn.commit()
     return len(rows)
+
+
+def cleanup_old_candles(
+    retention_days: dict[str, int] | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Delete candles older than retention policy. Returns rows deleted.
+
+    Default retention: 15m = 180 days, others kept forever.
+    """
+    defaults = {"15m": 180}
+    policy = retention_days or defaults
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    total_deleted = 0
+    for interval, days in policy.items():
+        cursor = conn.execute(
+            "DELETE FROM candles WHERE interval = ? AND datetime(timestamp) < datetime('now', ?)",
+            (interval, f"-{days} days"),
+        )
+        total_deleted += cursor.rowcount
+
+    if total_deleted:
+        conn.commit()
+
+    if own_conn:
+        conn.close()
+
+    return total_deleted
 
 
 def signal_history(
