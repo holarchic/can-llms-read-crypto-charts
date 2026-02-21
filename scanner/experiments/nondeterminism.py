@@ -172,7 +172,11 @@ def rebuild_context_from_candles(
     This ensures chart overlays match what was shown originally.
     """
     try:
-        ctx = build_context(candle_4h, config)
+        ctx = build_context(
+            candle_4h,
+            lookback=config.swing_lookback,
+            sr_pct=config.sr_cluster_pct,
+        )
         signal.context = ctx
     except Exception as e:
         print(f"  Warning: could not rebuild context for {signal.coin}: {e}")
@@ -240,9 +244,14 @@ def run_experiment(
 
         # Generate charts (deterministic from candle data)
         chart_paths = generate_charts_for_signal(signal, candle_sets)
+        # Verify all chart files actually exist (encode_image calls sys.exit on missing)
+        chart_paths = [p for p in chart_paths if p.exists()]
         if not chart_paths:
             print(f"  Skipping {coin} — chart generation failed")
             continue
+        print(f"  Charts: {[p.name for p in chart_paths]}"
+              f" | S/R levels: {len(signal.context.sr_levels)}"
+              f" | Swings: {len(signal.context.swings)}")
 
         # Run LLM N times
         runs = []
