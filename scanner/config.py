@@ -78,8 +78,8 @@ class ScannerConfig:
 
     # LLM
     model: str = "claude-opus-4-6"
-    max_llm_calls_per_scan: int = 20
-    daily_cost_cap: float = 15.0
+    max_llm_calls_per_scan: int = 40
+    daily_cost_cap: float = 30.0
 
     # Resolution
     timeout_bars: int = 72  # 3 days of 1H candles
