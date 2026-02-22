@@ -231,7 +231,7 @@ def stage2_analyze(
     signals: list[SetupSignal],
     config: ScannerConfig,
     verbose: bool = True,
-    max_workers: int = 4,
+    max_workers: int = 2,
     strategy_id: str = "v0",
     btc_structure: str | None = None,
 ) -> list[ScanResult]:

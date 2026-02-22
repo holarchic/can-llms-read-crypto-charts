@@ -86,13 +86,13 @@ def fetch_candles(
     exchange = get_exchange(eid)
     symbol = meta["symbol_template"].format(coin=coin)
 
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             candles = exchange.fetch_ohlcv(symbol, interval, limit=count)
             break
         except Exception as e:
-            if "429" in str(e) and attempt < 2:
-                time.sleep(2 ** attempt)  # 1s, 2s backoff
+            if "429" in str(e) and attempt < 4:
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s, 16s backoff
                 continue
             raise
     time.sleep(cfg.api_sleep_ms / 1000)
@@ -108,7 +108,7 @@ def fetch_candles_batch(
     interval: str,
     count: int,
     config: ScannerConfig | None = None,
-    max_workers: int = 6,
+    max_workers: int = 3,
     exchange_id: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch candles for multiple coins in parallel. Returns {coin: DataFrame}.
