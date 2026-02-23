@@ -19,6 +19,8 @@ def _parse_range(spec: str) -> list[float]:
     parts = spec.split(":")
     if len(parts) == 3:
         start, step, end = float(parts[0]), float(parts[1]), float(parts[2])
+        if step <= 0:
+            raise ValueError(f"step must be positive, got {step} in '{spec}'")
         values = []
         v = start
         while v <= end + 1e-9:
