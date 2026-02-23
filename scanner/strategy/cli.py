@@ -259,8 +259,7 @@ def cmd_sweep(args):
         # DSR on best result
         if len(results) > 1:
             best_stop, best_target, best_m = results[0]
-            # Collect outcomes for best params to compute DSR
-            from ..backtest.resolver import build_screener_setup
+            from ..backtest.resolver import build_screener_setup, fetch_and_resolve
             print(f"\n  Computing DSR (re-resolving {len(signal_rows)} signals for best params)...",
                   file=sys.stderr)
             best_outcomes = []
@@ -270,15 +269,10 @@ def cmd_sweep(args):
                     continue
                 try:
                     exchange = row.get("exchange", "hyperliquid")
-                    candles = fetch_and_cache(
-                        setup.coin, "1h", setup.timestamp,
-                        (pd.Timestamp(setup.timestamp, tz="UTC")
-                         + pd.Timedelta(hours=72 + 1)).isoformat(),
-                        conn,
+                    outcome = fetch_and_resolve(
+                        setup, conn, timeout_bars=72, fee_rate=0.00035,
                         exchange=exchange,
                     )
-                    from ..backtest.resolver import resolve_signal
-                    outcome = resolve_signal(setup, candles, 72, 0.00035)
                     best_outcomes.append(outcome)
                 except (ValueError, KeyError, IndexError, OSError) as e:
                     print(f"  DSR resolve {setup.coin}: {e}", file=sys.stderr)

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from ..backtest.candles import fetch_and_cache
 from ..backtest.metrics import MetricsReport, compute_metrics, slice_metrics
 from ..backtest.report import format_summary, format_slice_table
 from ..backtest.resolver import (
@@ -14,7 +13,7 @@ from ..backtest.resolver import (
     TradeSetup,
     build_llm_setup,
     build_screener_setup,
-    resolve_signal,
+    fetch_and_resolve,
 )
 from .models import Strategy
 
@@ -91,16 +90,12 @@ def resolve_signals(
             continue
 
         try:
-            until_dt = (
-                pd.Timestamp(setup.timestamp, tz="UTC")
-                + pd.Timedelta(hours=timeout_bars + 1)
-            ).isoformat()
             exchange = row.get("exchange", "hyperliquid")
-            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn, exchange=exchange)
-            outcome = resolve_signal(
-                setup, candles, timeout_bars, fee_rate,
+            outcome = fetch_and_resolve(
+                setup, conn, timeout_bars, fee_rate,
                 funding_rate_8h=funding_rate_8h,
                 slippage_rate=slippage_rate,
+                exchange=exchange,
             )
             outcomes.append(outcome)
         except (ValueError, KeyError, IndexError, OSError) as e:
@@ -131,16 +126,12 @@ def resolve_llm_scans(
             continue
 
         try:
-            until_dt = (
-                pd.Timestamp(setup.timestamp, tz="UTC")
-                + pd.Timedelta(hours=timeout_bars + 1)
-            ).isoformat()
             exchange = row.get("exchange", "hyperliquid")
-            candles = fetch_and_cache(setup.coin, "1h", setup.timestamp, until_dt, conn, exchange=exchange)
-            outcome = resolve_signal(
-                setup, candles, timeout_bars, fee_rate,
+            outcome = fetch_and_resolve(
+                setup, conn, timeout_bars, fee_rate,
                 funding_rate_8h=funding_rate_8h,
                 slippage_rate=slippage_rate,
+                exchange=exchange,
             )
             outcomes.append(outcome)
         except (ValueError, KeyError, IndexError, OSError) as e:

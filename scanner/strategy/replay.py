@@ -10,8 +10,7 @@ import pandas as pd
 from ..indicators import build_context
 from ..screener import detect_all_setups
 from ..models import SetupSignal, SETUP_NAMES
-from ..backtest.candles import fetch_and_cache
-from ..backtest.resolver import build_screener_setup, resolve_signal, TradeOutcome
+from ..backtest.resolver import build_screener_setup, fetch_and_resolve, TradeOutcome
 from ..backtest.metrics import compute_metrics, MetricsReport
 from .models import Strategy
 
@@ -199,15 +198,9 @@ def replay(
                 continue
 
             try:
-                until_dt = (
-                    pd.Timestamp(ts, tz="UTC")
-                    + pd.Timedelta(hours=timeout_bars + 1)
-                ).isoformat()
-                candles = fetch_and_cache(
-                    setup.coin, "1h", ts, until_dt, conn,
-                    exchange="hyperliquid",
+                outcome = fetch_and_resolve(
+                    setup, conn, timeout_bars, fee_rate,
                 )
-                outcome = resolve_signal(setup, candles, timeout_bars, fee_rate)
                 outcomes.append(outcome)
             except (ValueError, KeyError, IndexError, OSError) as e:
                 print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)

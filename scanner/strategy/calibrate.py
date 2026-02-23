@@ -11,8 +11,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from ..backtest.resolver import build_screener_setup, resolve_signal
-from ..backtest.candles import fetch_and_cache
+from ..backtest.resolver import build_screener_setup, fetch_and_resolve
 
 
 @dataclass
@@ -85,25 +84,17 @@ def run_calibration(
         if not setup:
             continue
 
-        signal_dt = datetime.fromisoformat(setup.timestamp)
-        until_dt = signal_dt + timedelta(hours=timeout_bars + 1)
-
         try:
             exchange = sig.get("exchange", "hyperliquid")
-            candles = fetch_and_cache(
-                sig["coin"], "1h",
-                signal_dt.isoformat(), until_dt.isoformat(),
-                conn,
-                exchange=exchange,
+            outcome = fetch_and_resolve(
+                setup, conn, timeout_bars, exchange=exchange,
             )
         except (ValueError, KeyError, IndexError, OSError) as e:
-            print(f"  Candle fetch {sig['coin']}: {e}", file=sys.stderr)
+            print(f"  Resolve {sig['coin']}: {e}", file=sys.stderr)
             continue
 
-        if candles is None or candles.empty:
+        if outcome.result == "EXPIRED" and outcome.bars_to_exit == 0:
             continue
-
-        outcome = resolve_signal(setup, candles, timeout_bars)
         outcomes.append({
             "coin": sig["coin"],
             "setup_type": sig["setup_type"],

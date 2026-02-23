@@ -5,8 +5,7 @@ import sys
 from dataclasses import dataclass
 from itertools import product
 
-from ..backtest.resolver import build_screener_setup, resolve_signal, TradeOutcome
-from ..backtest.candles import fetch_and_cache
+from ..backtest.resolver import build_screener_setup, fetch_and_resolve, TradeOutcome
 from ..backtest.metrics import compute_metrics, MetricsReport
 from .models import Strategy
 from .replay import replay
@@ -61,20 +60,11 @@ def sweep_resolution(
 
             try:
                 exchange = row.get("exchange", "hyperliquid")
-                candles = fetch_and_cache(
-                    setup.coin, "1h",
-                    setup.timestamp,
-                    pd.Timestamp(setup.timestamp, tz="UTC")
-                    .to_pydatetime()
-                    .__add__(pd.Timedelta(hours=timeout_bars + 1))
-                    .isoformat(),
-                    conn,
-                    exchange=exchange,
-                )
-                outcome = resolve_signal(
-                    setup, candles, timeout_bars, fee_rate,
+                outcome = fetch_and_resolve(
+                    setup, conn, timeout_bars, fee_rate,
                     funding_rate_8h=funding_rate_8h,
                     slippage_rate=slippage_rate,
+                    exchange=exchange,
                 )
                 outcomes.append(outcome)
             except (ValueError, KeyError, IndexError, OSError) as e:
@@ -249,18 +239,11 @@ def walk_forward_sweep(
                 continue
             try:
                 exchange = row.get("exchange", "hyperliquid")
-                candles = fetch_and_cache(
-                    setup.coin, "1h",
-                    setup.timestamp,
-                    (pd.Timestamp(setup.timestamp, tz="UTC")
-                     + pd.Timedelta(hours=timeout_bars + 1)).isoformat(),
-                    conn,
-                    exchange=exchange,
-                )
-                outcome = resolve_signal(
-                    setup, candles, timeout_bars, fee_rate,
+                outcome = fetch_and_resolve(
+                    setup, conn, timeout_bars, fee_rate,
                     funding_rate_8h=funding_rate_8h,
                     slippage_rate=slippage_rate,
+                    exchange=exchange,
                 )
                 oos_outcomes.append(outcome)
             except (ValueError, KeyError, IndexError, OSError) as e:

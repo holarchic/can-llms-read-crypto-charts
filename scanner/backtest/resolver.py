@@ -1,9 +1,12 @@
 """Walk-forward trade outcome resolution + price parsing."""
 
 import re
+import sqlite3
 from dataclasses import dataclass, field
 
 import pandas as pd
+
+from .candles import fetch_and_cache
 
 
 @dataclass
@@ -56,6 +59,33 @@ def estimate_slippage(volume_24h: float | None) -> float:
     if volume_24h >= 10_000_000:
         return 0.0008  # 0.08%
     return 0.0015  # 0.15%
+
+
+def fetch_and_resolve(
+    setup: TradeSetup,
+    conn: sqlite3.Connection,
+    timeout_bars: int = 72,
+    fee_rate: float = 0.0,
+    funding_rate_8h: float = 0.0,
+    slippage_rate: float = 0.0,
+    exchange: str = "hyperliquid",
+) -> TradeOutcome:
+    """Fetch 1H candles and walk-forward resolve a single setup."""
+    until_dt = (
+        pd.Timestamp(setup.timestamp, tz="UTC")
+        + pd.Timedelta(hours=timeout_bars + 1)
+    ).isoformat()
+    candles = fetch_and_cache(
+        setup.coin, "1h", setup.timestamp, until_dt, conn,
+        exchange=exchange,
+    )
+    if candles is None:
+        candles = pd.DataFrame()
+    return resolve_signal(
+        setup, candles, timeout_bars, fee_rate,
+        funding_rate_8h=funding_rate_8h,
+        slippage_rate=slippage_rate,
+    )
 
 
 def resolve_signal(
