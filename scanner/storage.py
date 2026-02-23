@@ -118,10 +118,20 @@ ON signals (strategy_id)
 """
 
 
+_VALID_TABLES = {"signals", "scans", "strategies", "candles", "scan_universe"}
+_VALID_COL_TYPES = {"TEXT", "REAL", "INTEGER"}
+
+
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, col_type: str, default: str,
 ) -> None:
     """Add a column to an existing table if it doesn't exist yet."""
+    if table not in _VALID_TABLES:
+        raise ValueError(f"unknown table: {table}")
+    if col_type not in _VALID_COL_TYPES:
+        raise ValueError(f"unknown column type: {col_type}")
+    if not column.isidentifier():
+        raise ValueError(f"invalid column name: {column}")
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")

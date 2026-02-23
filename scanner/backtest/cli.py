@@ -21,8 +21,8 @@ from .report import format_full_report, build_backtest_embeds
 
 def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
     """Load signals from the signals table."""
-    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
-    params = []
+    clauses = ["datetime(timestamp) > datetime('now', ? || ' days')"]
+    params = [f"-{int(days)}"]
 
     if coin:
         clauses.append("coin = ?")
@@ -45,10 +45,10 @@ def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
 def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None):
     """Load CONFIRM scans from the scans table."""
     clauses = [
-        f"datetime(timestamp) > datetime('now', '-{days} days')",
+        "datetime(timestamp) > datetime('now', ? || ' days')",
         "decision = 'CONFIRM'",
     ]
-    params = []
+    params = [f"-{int(days)}"]
 
     if coin:
         clauses.append("coin = ?")
