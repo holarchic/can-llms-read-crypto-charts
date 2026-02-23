@@ -75,6 +75,92 @@ def _get_trailing_candles(
     return df
 
 
+def _detect_setups(
+    strategy: Strategy,
+    ts_groups: dict[str, list[str]],
+    conn: sqlite3.Connection,
+    verbose: bool = False,
+) -> list[tuple[SetupSignal, str]]:
+    """Run screener on cached 4H candles for each timestamp group."""
+    all_pairs: list[tuple[SetupSignal, str]] = []
+
+    for ts_idx, (timestamp, ts_coins) in enumerate(sorted(ts_groups.items())):
+        for coin in ts_coins:
+            df = _get_trailing_candles(coin, timestamp, 200, conn)
+            if df is None:
+                continue
+
+            try:
+                ctx = build_context(df, strategy.swing_lookback, strategy.sr_cluster_pct)
+                signals = detect_all_setups(
+                    coin, df, ctx,
+                    strategy.max_setups_per_coin,
+                    strategy.proximity_atr_mult,
+                    disabled_types=strategy.disabled_types_set,
+                )
+                for sig in signals:
+                    all_pairs.append((sig, timestamp))
+            except (ValueError, KeyError, IndexError) as e:
+                print(f"  {coin}@{timestamp}: {e}", file=sys.stderr)
+
+        if verbose and (ts_idx + 1) % 10 == 0:
+            print(f"  Processed {ts_idx + 1}/{len(ts_groups)} timestamps, "
+                  f"{len(all_pairs)} signals so far")
+
+    return all_pairs
+
+
+def _resolve_replay_signals(
+    all_pairs: list[tuple[SetupSignal, str]],
+    strategy: Strategy,
+    conn: sqlite3.Connection,
+    timeout_bars: int = 72,
+    fee_rate: float = 0.00035,
+    verbose: bool = False,
+) -> MetricsReport | None:
+    """Walk-forward resolve replay signals and compute metrics."""
+    if verbose:
+        print(f"Resolving {len(all_pairs)} signals...")
+
+    outcomes: list[TradeOutcome] = []
+    for i, (sig, ts) in enumerate(all_pairs):
+        ctx = sig.context
+        row = {
+            "key_level": sig.key_level,
+            "atr": ctx.atr,
+            "direction": sig.direction.value,
+            "coin": sig.coin,
+            "timestamp": ts,
+            "setup_type": sig.setup_type.value,
+            "confidence": sig.confidence,
+            "structure": ctx.structure.value,
+        }
+        setup = build_screener_setup(
+            row, strategy.atr_stop_mult, strategy.atr_target_mult,
+        )
+        if not setup:
+            continue
+
+        try:
+            outcome = fetch_and_resolve(
+                setup, conn, timeout_bars, fee_rate,
+            )
+            outcomes.append(outcome)
+        except (ValueError, KeyError, IndexError, OSError) as e:
+            print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
+
+        if verbose and (i + 1) % 20 == 0:
+            print(f"  Resolved {i + 1}/{len(all_pairs)}")
+
+    if not outcomes:
+        return None
+
+    metrics = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}")
+    if verbose:
+        print(f"Resolved {len(outcomes)}/{len(all_pairs)} signals")
+    return metrics
+
+
 def replay(
     strategy: Strategy,
     since: str,
@@ -102,7 +188,6 @@ def replay(
         (signals_list, MetricsReport or None)
     """
     # Dedup: clear any existing replay signals for this strategy
-    # (replay replaces the full signal set for a given strategy_id)
     conn.execute(
         "DELETE FROM signals WHERE strategy_id = ?",
         (strategy.strategy_id,),
@@ -121,37 +206,13 @@ def replay(
     for coin, ts in points:
         ts_groups.setdefault(ts, []).append(coin)
 
-    # Collect (signal, candle_timestamp) pairs
-    all_pairs: list[tuple[SetupSignal, str]] = []
+    # Detect setups
+    all_pairs = _detect_setups(strategy, ts_groups, conn, verbose)
     batch_id = uuid4().hex[:8]
 
-    for ts_idx, (timestamp, ts_coins) in enumerate(sorted(ts_groups.items())):
-        for coin in ts_coins:
-            df = _get_trailing_candles(coin, timestamp, 200, conn)
-            if df is None:
-                continue
-
-            try:
-                ctx = build_context(df, strategy.swing_lookback, strategy.sr_cluster_pct)
-                signals = detect_all_setups(
-                    coin, df, ctx,
-                    strategy.max_setups_per_coin,
-                    strategy.proximity_atr_mult,
-                    disabled_types=strategy.disabled_types_set,
-                )
-                for sig in signals:
-                    all_pairs.append((sig, timestamp))
-            except (ValueError, KeyError, IndexError) as e:
-                print(f"  {coin}@{timestamp}: {e}", file=sys.stderr)
-
-        if verbose and (ts_idx + 1) % 10 == 0:
-            print(f"  Processed {ts_idx + 1}/{len(ts_groups)} timestamps, "
-                  f"{len(all_pairs)} signals so far")
-
-    # Batch insert with correct candle timestamps (not wall-clock time)
+    # Persist signals
     if all_pairs:
         _save_replay_signals(all_pairs, batch_id, strategy.strategy_id, conn)
-
     if verbose:
         print(f"Replay complete: {len(all_pairs)} signals saved")
 
@@ -175,43 +236,9 @@ def replay(
     # Walk-forward resolution
     metrics = None
     if resolve and all_pairs:
-        if verbose:
-            print(f"Resolving {len(all_pairs)} signals...")
-
-        outcomes: list[TradeOutcome] = []
-        for i, (sig, ts) in enumerate(all_pairs):
-            ctx = sig.context
-            row = {
-                "key_level": sig.key_level,
-                "atr": ctx.atr,
-                "direction": sig.direction.value,
-                "coin": sig.coin,
-                "timestamp": ts,
-                "setup_type": sig.setup_type.value,
-                "confidence": sig.confidence,
-                "structure": ctx.structure.value,
-            }
-            setup = build_screener_setup(
-                row, strategy.atr_stop_mult, strategy.atr_target_mult,
-            )
-            if not setup:
-                continue
-
-            try:
-                outcome = fetch_and_resolve(
-                    setup, conn, timeout_bars, fee_rate,
-                )
-                outcomes.append(outcome)
-            except (ValueError, KeyError, IndexError, OSError) as e:
-                print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
-
-            if verbose and (i + 1) % 20 == 0:
-                print(f"  Resolved {i + 1}/{len(all_pairs)}")
-
-        if outcomes:
-            metrics = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}")
-            if verbose:
-                print(f"Resolved {len(outcomes)}/{len(all_pairs)} signals")
+        metrics = _resolve_replay_signals(
+            all_pairs, strategy, conn, timeout_bars, fee_rate, verbose,
+        )
 
     return signal_rows, metrics
 

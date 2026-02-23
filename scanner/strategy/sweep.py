@@ -154,6 +154,96 @@ class WalkForwardResult:
     n_signals_total: int
 
 
+def _run_fold(
+    fold_idx: int,
+    n_folds: int,
+    sorted_rows: list[dict],
+    boundaries: list,
+    stop_range: list[float],
+    target_range: list[float],
+    conn: sqlite3.Connection,
+    timeout_bars: int,
+    fee_rate: float,
+    funding_rate_8h: float,
+    slippage_rate: float,
+    verbose: bool,
+) -> tuple[WalkForwardFold, list[TradeOutcome]] | None:
+    """Run one fold of anchored walk-forward: IS sweep → OOS evaluate."""
+    is_start = boundaries[0]
+    is_end = boundaries[fold_idx + 1]
+    oos_start = boundaries[fold_idx + 1]
+    oos_end = boundaries[fold_idx + 2]
+
+    is_rows = [r for r in sorted_rows
+                if is_start <= pd.Timestamp(r["timestamp"], tz="UTC") < is_end]
+    oos_rows = [r for r in sorted_rows
+                 if oos_start <= pd.Timestamp(r["timestamp"], tz="UTC") < oos_end]
+
+    if not is_rows or not oos_rows:
+        return None
+
+    print(f"  Fold {fold_idx + 1}/{n_folds}: IS {len(is_rows)} signals, OOS {len(oos_rows)} signals",
+          file=sys.stderr)
+
+    # Find best params on IS
+    is_results = sweep_resolution(
+        is_rows, stop_range, target_range, conn,
+        timeout_bars=timeout_bars, fee_rate=fee_rate,
+        funding_rate_8h=funding_rate_8h, slippage_rate=slippage_rate,
+    )
+    if not is_results:
+        return None
+
+    is_results.sort(key=lambda r: r[2].expectancy, reverse=True)
+    best_stop, best_target, best_is_metrics = is_results[0]
+
+    # Evaluate best params on OOS
+    oos_outcomes: list[TradeOutcome] = []
+    for row in oos_rows:
+        setup = build_screener_setup(row, best_stop, best_target)
+        if not setup:
+            continue
+        try:
+            exchange = row.get("exchange", "hyperliquid")
+            outcome = fetch_and_resolve(
+                setup, conn, timeout_bars, fee_rate,
+                funding_rate_8h=funding_rate_8h,
+                slippage_rate=slippage_rate,
+                exchange=exchange,
+            )
+            oos_outcomes.append(outcome)
+        except (ValueError, KeyError, IndexError, OSError) as e:
+            print(f"  OOS resolve {setup.coin}: {e}", file=sys.stderr)
+
+    oos_metrics = compute_metrics(oos_outcomes, f"fold-{fold_idx + 1}-oos")
+
+    wfe = None
+    if best_is_metrics.expectancy > 0 and oos_metrics.sample_size > 0:
+        wfe = round(oos_metrics.expectancy / best_is_metrics.expectancy, 4)
+
+    fold = WalkForwardFold(
+        fold_index=fold_idx + 1,
+        is_start=is_start.strftime("%Y-%m-%d"),
+        is_end=is_end.strftime("%Y-%m-%d"),
+        oos_start=oos_start.strftime("%Y-%m-%d"),
+        oos_end=oos_end.strftime("%Y-%m-%d"),
+        is_best_params=(best_stop, best_target),
+        is_best_metrics=best_is_metrics,
+        oos_metrics=oos_metrics,
+        wfe=wfe,
+    )
+
+    if verbose:
+        wfe_str = f"{wfe:.2f}" if wfe is not None else "n/a"
+        print(f"  Fold {fold_idx + 1}: IS [{is_start.strftime('%m/%d')}-{is_end.strftime('%m/%d')}] "
+              f"→ OOS [{oos_start.strftime('%m/%d')}-{oos_end.strftime('%m/%d')}] "
+              f"best=s{best_stop:.1f}/t{best_target:.1f} "
+              f"IS_exp={best_is_metrics.expectancy:+.3f} "
+              f"OOS_exp={oos_metrics.expectancy:+.3f} WFE={wfe_str}")
+
+    return fold, oos_outcomes
+
+
 def walk_forward_sweep(
     signal_rows: list[dict],
     stop_range: list[float],
@@ -176,10 +266,7 @@ def walk_forward_sweep(
     if not signal_rows:
         return None
 
-    # Sort signals by timestamp
     sorted_rows = sorted(signal_rows, key=lambda r: r.get("timestamp", ""))
-
-    # Get time range
     ts_first = pd.Timestamp(sorted_rows[0]["timestamp"], tz="UTC")
     ts_last = pd.Timestamp(sorted_rows[-1]["timestamp"], tz="UTC")
     total_duration = ts_last - ts_first
@@ -187,103 +274,29 @@ def walk_forward_sweep(
     if total_duration.total_seconds() <= 0:
         return None
 
-    # Split into n_folds + 1 segments by time
     n_segments = n_folds + 1
     segment_duration = total_duration / n_segments
-
-    boundaries = []
-    for i in range(n_segments + 1):
-        boundaries.append(ts_first + segment_duration * i)
+    boundaries = [ts_first + segment_duration * i for i in range(n_segments + 1)]
 
     folds: list[WalkForwardFold] = []
     all_oos_outcomes: list[TradeOutcome] = []
 
     for fold_idx in range(n_folds):
-        # IS = segments 0..fold_idx (expanding window)
-        is_start = boundaries[0]
-        is_end = boundaries[fold_idx + 1]
-        # OOS = segment fold_idx + 1
-        oos_start = boundaries[fold_idx + 1]
-        oos_end = boundaries[fold_idx + 2]
-
-        is_rows = [r for r in sorted_rows
-                    if is_start <= pd.Timestamp(r["timestamp"], tz="UTC") < is_end]
-        oos_rows = [r for r in sorted_rows
-                     if oos_start <= pd.Timestamp(r["timestamp"], tz="UTC") < oos_end]
-
-        if not is_rows or not oos_rows:
-            continue
-
-        print(f"  Fold {fold_idx + 1}/{n_folds}: IS {len(is_rows)} signals, OOS {len(oos_rows)} signals",
-              file=sys.stderr)
-
-        # Find best params on IS
-        is_results = sweep_resolution(
-            is_rows, stop_range, target_range, conn,
-            timeout_bars=timeout_bars, fee_rate=fee_rate,
-            funding_rate_8h=funding_rate_8h, slippage_rate=slippage_rate,
+        result = _run_fold(
+            fold_idx, n_folds, sorted_rows, boundaries,
+            stop_range, target_range, conn,
+            timeout_bars, fee_rate, funding_rate_8h, slippage_rate, verbose,
         )
-
-        if not is_results:
+        if result is None:
             continue
-
-        # Best by expectancy
-        is_results.sort(key=lambda r: r[2].expectancy, reverse=True)
-        best_stop, best_target, best_is_metrics = is_results[0]
-
-        # Evaluate best params on OOS
-        oos_outcomes: list[TradeOutcome] = []
-        for row in oos_rows:
-            setup = build_screener_setup(row, best_stop, best_target)
-            if not setup:
-                continue
-            try:
-                exchange = row.get("exchange", "hyperliquid")
-                outcome = fetch_and_resolve(
-                    setup, conn, timeout_bars, fee_rate,
-                    funding_rate_8h=funding_rate_8h,
-                    slippage_rate=slippage_rate,
-                    exchange=exchange,
-                )
-                oos_outcomes.append(outcome)
-            except (ValueError, KeyError, IndexError, OSError) as e:
-                print(f"  OOS resolve {setup.coin}: {e}", file=sys.stderr)
-                continue
-
-        oos_metrics = compute_metrics(oos_outcomes, f"fold-{fold_idx + 1}-oos")
-        all_oos_outcomes.extend(oos_outcomes)
-
-        # WFE
-        wfe = None
-        if best_is_metrics.expectancy > 0 and oos_metrics.sample_size > 0:
-            wfe = round(oos_metrics.expectancy / best_is_metrics.expectancy, 4)
-
-        fold = WalkForwardFold(
-            fold_index=fold_idx + 1,
-            is_start=is_start.strftime("%Y-%m-%d"),
-            is_end=is_end.strftime("%Y-%m-%d"),
-            oos_start=oos_start.strftime("%Y-%m-%d"),
-            oos_end=oos_end.strftime("%Y-%m-%d"),
-            is_best_params=(best_stop, best_target),
-            is_best_metrics=best_is_metrics,
-            oos_metrics=oos_metrics,
-            wfe=wfe,
-        )
+        fold, oos_outcomes = result
         folds.append(fold)
-
-        if verbose:
-            wfe_str = f"{wfe:.2f}" if wfe is not None else "n/a"
-            print(f"  Fold {fold_idx + 1}: IS [{is_start.strftime('%m/%d')}-{is_end.strftime('%m/%d')}] "
-                  f"→ OOS [{oos_start.strftime('%m/%d')}-{oos_end.strftime('%m/%d')}] "
-                  f"best=s{best_stop:.1f}/t{best_target:.1f} "
-                  f"IS_exp={best_is_metrics.expectancy:+.3f} "
-                  f"OOS_exp={oos_metrics.expectancy:+.3f} WFE={wfe_str}")
+        all_oos_outcomes.extend(oos_outcomes)
 
     if not folds:
         return None
 
     overall_oos = compute_metrics(all_oos_outcomes, "combined-oos")
-
     wfe_values = [f.wfe for f in folds if f.wfe is not None]
     avg_wfe = round(sum(wfe_values) / len(wfe_values), 4) if wfe_values else None
 

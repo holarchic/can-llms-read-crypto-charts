@@ -64,20 +64,12 @@ def _stats(outcomes: list[dict]) -> tuple[float, float]:
     return wr, avg_r
 
 
-def run_calibration(
+def _resolve_calibration_signals(
+    signals: list,
     conn: sqlite3.Connection,
-    days: int = 30,
-    timeout_bars: int = 72,
-) -> CalibrationResult:
-    """Run full calibration analysis on signals from the last N days."""
-
-    signals = conn.execute(
-        f"""SELECT * FROM signals
-        WHERE datetime(timestamp) > datetime('now', '-{days} days')
-        ORDER BY confidence DESC""",
-    ).fetchall()
-
-    # Resolve each signal
+    timeout_bars: int,
+) -> list[dict]:
+    """Resolve signals and build outcome dicts with score components."""
     outcomes = []
     for sig in signals:
         setup = build_screener_setup(dict(sig))
@@ -105,7 +97,6 @@ def run_calibration(
             "result": outcome.result,
             "r_achieved": outcome.r_achieved,
             "mfe": outcome.mfe,
-            # Score components (may be NULL for pre-instrumentation signals)
             "score_base": sig["score_base"],
             "score_alignment": sig["score_alignment"],
             "score_strength": sig["score_strength"],
@@ -113,27 +104,19 @@ def run_calibration(
             "score_confluence": sig["score_confluence"],
             "btc_structure": sig["btc_structure"],
         })
+    return outcomes
 
-    if not outcomes:
-        return CalibrationResult(
-            n_signals=len(signals), n_resolved=0,
-            overall_wr=0, overall_avg_r=0,
-            conf_win_r=0, conf_r_r=0,
-            component_correlations={}, quartiles=[], per_type=[],
-            by_btc_regime=[],
-        )
 
-    # Overall
+def _analyze_outcomes(outcomes: list[dict]) -> dict:
+    """Compute correlations, quartiles, per-type, and regime breakdowns."""
     wr, avg_r = _stats(outcomes)
 
-    # Correlation: composite confidence vs outcomes
+    # Confidence vs outcomes
     conf_vals = [o["confidence"] for o in outcomes]
     win_vals = [1.0 if o["result"] == "WIN" else 0.0 for o in outcomes]
     r_vals = [o["r_achieved"] for o in outcomes]
-    conf_win_r = _pearson(conf_vals, win_vals)
-    conf_r_r = _pearson(conf_vals, r_vals)
 
-    # Per-component correlations (only for signals with component data)
+    # Per-component correlations
     component_names = ["score_base", "score_alignment", "score_strength",
                        "score_proximity", "score_confluence"]
     component_correlations = {}
@@ -182,17 +165,45 @@ def run_calibration(
         rwr, ravg = _stats(r_rows)
         by_btc_regime.append((regime, len(r_rows), rwr, ravg))
 
+    return {
+        "overall_wr": wr, "overall_avg_r": avg_r,
+        "conf_win_r": _pearson(conf_vals, win_vals),
+        "conf_r_r": _pearson(conf_vals, r_vals),
+        "component_correlations": component_correlations,
+        "quartiles": quartiles,
+        "per_type": per_type,
+        "by_btc_regime": by_btc_regime,
+    }
+
+
+def run_calibration(
+    conn: sqlite3.Connection,
+    days: int = 30,
+    timeout_bars: int = 72,
+) -> CalibrationResult:
+    """Run full calibration analysis on signals from the last N days."""
+    signals = conn.execute(
+        f"""SELECT * FROM signals
+        WHERE datetime(timestamp) > datetime('now', '-{days} days')
+        ORDER BY confidence DESC""",
+    ).fetchall()
+
+    outcomes = _resolve_calibration_signals(signals, conn, timeout_bars)
+
+    if not outcomes:
+        return CalibrationResult(
+            n_signals=len(signals), n_resolved=0,
+            overall_wr=0, overall_avg_r=0,
+            conf_win_r=0, conf_r_r=0,
+            component_correlations={}, quartiles=[], per_type=[],
+            by_btc_regime=[],
+        )
+
+    analysis = _analyze_outcomes(outcomes)
     return CalibrationResult(
         n_signals=len(signals),
         n_resolved=len(outcomes),
-        overall_wr=wr,
-        overall_avg_r=avg_r,
-        conf_win_r=conf_win_r,
-        conf_r_r=conf_r_r,
-        component_correlations=component_correlations,
-        quartiles=quartiles,
-        per_type=per_type,
-        by_btc_regime=by_btc_regime,
+        **analysis,
     )
 
 
