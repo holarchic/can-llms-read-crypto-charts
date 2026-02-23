@@ -280,7 +280,8 @@ def cmd_sweep(args):
                     from ..backtest.resolver import resolve_signal
                     outcome = resolve_signal(setup, candles, 72, 0.00035)
                     best_outcomes.append(outcome)
-                except Exception:
+                except (ValueError, KeyError, IndexError, OSError) as e:
+                    print(f"  DSR resolve {setup.coin}: {e}", file=sys.stderr)
                     continue
 
             n_trials = len(results)
@@ -467,9 +468,8 @@ def cmd_backfill(args):
             total_cached += n
             if args.verbose:
                 print(f"  [{i+1}/{len(coins)}] {coin}: {n} candles")
-        except Exception as e:
-            if args.verbose:
-                print(f"  [{i+1}/{len(coins)}] {coin}: error — {e}")
+        except (ValueError, KeyError, OSError) as e:
+            print(f"  [{i+1}/{len(coins)}] {coin}: error — {e}", file=sys.stderr)
         time.sleep(config.api_sleep_ms / 1000)
 
     conn.close()

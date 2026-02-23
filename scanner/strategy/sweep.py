@@ -77,7 +77,8 @@ def sweep_resolution(
                     slippage_rate=slippage_rate,
                 )
                 outcomes.append(outcome)
-            except Exception:
+            except (ValueError, KeyError, IndexError, OSError) as e:
+                print(f"  Resolve {setup.coin}: {e}", file=sys.stderr)
                 continue
 
         if outcomes:
@@ -262,7 +263,8 @@ def walk_forward_sweep(
                     slippage_rate=slippage_rate,
                 )
                 oos_outcomes.append(outcome)
-            except Exception:
+            except (ValueError, KeyError, IndexError, OSError) as e:
+                print(f"  OOS resolve {setup.coin}: {e}", file=sys.stderr)
                 continue
 
         oos_metrics = compute_metrics(oos_outcomes, f"fold-{fold_idx + 1}-oos")

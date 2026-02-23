@@ -103,9 +103,8 @@ def resolve_signals(
                 slippage_rate=slippage_rate,
             )
             outcomes.append(outcome)
-        except Exception as e:
-            if verbose:
-                print(f"  Resolve {setup.coin} {setup.setup_type}: {e}")
+        except (ValueError, KeyError, IndexError, OSError) as e:
+            print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
 
         if (i + 1) % 50 == 0 or i + 1 == n:
             print(f"  Resolving signals: {i + 1}/{n} ({len(outcomes)} resolved)", file=sys.stderr)
@@ -144,9 +143,8 @@ def resolve_llm_scans(
                 slippage_rate=slippage_rate,
             )
             outcomes.append(outcome)
-        except Exception as e:
-            if verbose:
-                print(f"  Resolve LLM {setup.coin}: {e}")
+        except (ValueError, KeyError, IndexError, OSError) as e:
+            print(f"  Resolve LLM {setup.coin}: {e}", file=sys.stderr)
 
     return outcomes
 

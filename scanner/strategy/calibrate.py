@@ -5,6 +5,7 @@ Designed to accumulate data across market regimes for eventual scoring redesign.
 """
 
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
@@ -95,7 +96,8 @@ def run_calibration(
                 conn,
                 exchange=exchange,
             )
-        except Exception:
+        except (ValueError, KeyError, IndexError, OSError) as e:
+            print(f"  Candle fetch {sig['coin']}: {e}", file=sys.stderr)
             continue
 
         if candles is None or candles.empty:

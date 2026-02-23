@@ -1,6 +1,7 @@
 """Replay engine — re-run screener on cached 4H candles for any strategy config."""
 
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -141,9 +142,8 @@ def replay(
                 )
                 for sig in signals:
                     all_pairs.append((sig, timestamp))
-            except Exception as e:
-                if verbose:
-                    print(f"  {coin}@{timestamp}: error: {e}")
+            except (ValueError, KeyError, IndexError) as e:
+                print(f"  {coin}@{timestamp}: {e}", file=sys.stderr)
 
         if verbose and (ts_idx + 1) % 10 == 0:
             print(f"  Processed {ts_idx + 1}/{len(ts_groups)} timestamps, "
@@ -209,9 +209,8 @@ def replay(
                 )
                 outcome = resolve_signal(setup, candles, timeout_bars, fee_rate)
                 outcomes.append(outcome)
-            except Exception as e:
-                if verbose:
-                    print(f"  Resolve {setup.coin} {setup.setup_type}: {e}")
+            except (ValueError, KeyError, IndexError, OSError) as e:
+                print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
 
             if verbose and (i + 1) % 20 == 0:
                 print(f"  Resolved {i + 1}/{len(all_pairs)}")
