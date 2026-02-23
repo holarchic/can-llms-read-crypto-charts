@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 
 from ..storage import get_connection
-from ..backtest.candles import cache_candles, fetch_and_cache
+from ..backtest.candles import fetch_and_cache
 from ..backtest.report import format_summary
 from .models import Strategy
 from .store import (

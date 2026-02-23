@@ -4,10 +4,9 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
-from .config import ScannerConfig, CHARTS_DIR, get_exchange_meta
+from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_pairs_with_volume, fetch_candles, fetch_candles_batch, get_max_leverage
 from .indicators import build_context
 from .screener import detect_all_setups

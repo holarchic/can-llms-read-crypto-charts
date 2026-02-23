@@ -7,7 +7,7 @@ import requests
 from pathlib import Path
 
 from .config import ScannerConfig
-from .models import ScanResult, SETUP_NAMES, Direction
+from .models import ScanResult, SETUP_NAMES
 
 
 # Discord embed color

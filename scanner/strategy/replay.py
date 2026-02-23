@@ -10,7 +10,7 @@ import pandas as pd
 from ..indicators import build_context
 from ..screener import detect_all_setups
 from ..models import SetupSignal, SETUP_NAMES
-from ..backtest.candles import get_cached_candles, fetch_and_cache
+from ..backtest.candles import fetch_and_cache
 from ..backtest.resolver import build_screener_setup, resolve_signal, TradeOutcome
 from ..backtest.metrics import compute_metrics, MetricsReport
 from .models import Strategy
