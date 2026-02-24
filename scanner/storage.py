@@ -220,6 +220,9 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "scans", "llm_confidence", "INTEGER", "NULL")
     _ensure_column(conn, "scans", "machine_block", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
+    # Execution orders table
+    from .execution.storage import ensure_orders_table
+    ensure_orders_table(conn)
     conn.commit()
     return conn
 

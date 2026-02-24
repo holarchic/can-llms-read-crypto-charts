@@ -1,0 +1,186 @@
+"""Tests for orders table CRUD operations."""
+
+import sqlite3
+import pytest
+
+from scanner.execution.storage import (
+    ensure_orders_table,
+    new_order_id,
+    save_order,
+    get_order,
+    get_orders_for_scan,
+    update_order_status,
+    get_open_entry_orders,
+    count_open_positions,
+    has_open_position,
+    count_open_longs,
+    sum_open_notional,
+)
+
+
+@pytest.fixture
+def conn():
+    """In-memory DB with orders table."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    ensure_orders_table(c)
+    return c
+
+
+def _make_order(scan_id="scan1", coin="BTC", direction="LONG", order_type="entry", **kwargs):
+    """Helper to build an order dict with defaults."""
+    base = {
+        "order_id": new_order_id(),
+        "scan_id": scan_id,
+        "coin": coin,
+        "direction": direction,
+        "order_type": order_type,
+        "status": "PENDING",
+        "exchange": "hyperliquid",
+        "execution_mode": "testnet",
+        "created_at": "2026-02-24T00:00:00+00:00",
+    }
+    base.update(kwargs)
+    return base
+
+
+class TestEnsureOrdersTable:
+    def test_table_created(self, conn):
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='orders'"
+        ).fetchone()
+        assert tables is not None
+
+    def test_idempotent(self, conn):
+        ensure_orders_table(conn)  # second call doesn't crash
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='orders'"
+        ).fetchone()
+        assert tables is not None
+
+
+class TestSaveAndGet:
+    def test_round_trip(self, conn):
+        order = _make_order(entry_price=62000, quantity=0.1, leverage=5)
+        save_order(order, conn)
+        result = get_order(order["order_id"], conn)
+        assert result is not None
+        assert result["coin"] == "BTC"
+        assert result["entry_price"] == 62000
+        assert result["quantity"] == 0.1
+
+    def test_get_missing_returns_none(self, conn):
+        assert get_order("nonexistent", conn) is None
+
+    def test_orders_for_scan(self, conn):
+        o1 = _make_order(scan_id="scanA", order_type="entry")
+        o2 = _make_order(scan_id="scanA", order_type="stop_loss")
+        o3 = _make_order(scan_id="scanB", order_type="entry")
+        for o in [o1, o2, o3]:
+            save_order(o, conn)
+
+        orders = get_orders_for_scan("scanA", conn)
+        assert len(orders) == 2
+        assert all(o["scan_id"] == "scanA" for o in orders)
+
+
+class TestUpdateOrderStatus:
+    def test_status_update(self, conn):
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "PLACED"
+
+    def test_update_with_fill(self, conn):
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(
+            order["order_id"], "FILLED", conn,
+            fill_price=62100, exchange_order_id="exch123",
+        )
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "FILLED"
+        assert result["fill_price"] == 62100
+        assert result["exchange_order_id"] == "exch123"
+        assert result["filled_at"] is not None
+
+    def test_cancelled_sets_timestamp(self, conn):
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "CANCELLED", conn)
+        result = get_order(order["order_id"], conn)
+        assert result["cancelled_at"] is not None
+
+    def test_update_with_pnl(self, conn):
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(
+            order["order_id"], "FILLED", conn,
+            realized_pnl=150.50, funding_paid=-2.30,
+        )
+        result = get_order(order["order_id"], conn)
+        assert result["realized_pnl"] == 150.50
+        assert result["funding_paid"] == -2.30
+
+
+class TestPositionQueries:
+    def _setup_open_position(self, conn, coin="BTC", direction="LONG", scan_id="scan1",
+                             entry_price=62000, quantity=0.1):
+        """Create a filled entry order (open position)."""
+        entry = _make_order(
+            scan_id=scan_id, coin=coin, direction=direction,
+            order_type="entry", status="FILLED",
+            entry_price=entry_price, quantity=quantity,
+        )
+        save_order(entry, conn)
+        return entry
+
+    def _close_position(self, conn, scan_id="scan1", order_type="stop_loss"):
+        """Create a filled exit order to close a position."""
+        exit_order = _make_order(
+            scan_id=scan_id, order_type=order_type, status="FILLED",
+        )
+        save_order(exit_order, conn)
+
+    def test_count_open_positions(self, conn):
+        self._setup_open_position(conn, scan_id="s1")
+        self._setup_open_position(conn, coin="ETH", scan_id="s2")
+        assert count_open_positions(conn) == 2
+
+    def test_closed_position_not_counted(self, conn):
+        self._setup_open_position(conn, scan_id="s1")
+        self._close_position(conn, scan_id="s1")
+        assert count_open_positions(conn) == 0
+
+    def test_cancelled_exit_still_open(self, conn):
+        self._setup_open_position(conn, scan_id="s1")
+        exit_order = _make_order(scan_id="s1", order_type="stop_loss", status="CANCELLED")
+        save_order(exit_order, conn)
+        assert count_open_positions(conn) == 1
+
+    def test_has_open_position(self, conn):
+        self._setup_open_position(conn, coin="BTC", direction="LONG")
+        assert has_open_position("BTC", "LONG", conn) is True
+        assert has_open_position("BTC", "SHORT", conn) is False
+        assert has_open_position("ETH", "LONG", conn) is False
+
+    def test_count_open_longs(self, conn):
+        self._setup_open_position(conn, direction="LONG", scan_id="s1")
+        self._setup_open_position(conn, direction="SHORT", scan_id="s2")
+        assert count_open_longs(conn) == 1
+
+    def test_sum_open_notional(self, conn):
+        self._setup_open_position(conn, scan_id="s1", entry_price=60000, quantity=0.1)
+        self._setup_open_position(conn, scan_id="s2", coin="ETH", entry_price=3000, quantity=1.0)
+        # 60000 * 0.1 + 3000 * 1.0 = 6000 + 3000 = 9000
+        assert sum_open_notional(conn) == 9000.0
+
+    def test_get_open_entry_orders(self, conn):
+        self._setup_open_position(conn, scan_id="s1")
+        self._setup_open_position(conn, scan_id="s2", coin="ETH")
+        self._close_position(conn, scan_id="s2")
+
+        open_entries = get_open_entry_orders(conn)
+        assert len(open_entries) == 1
+        assert open_entries[0]["scan_id"] == "s1"
