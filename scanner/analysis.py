@@ -11,6 +11,7 @@ from chart_analyzer.analyzer import (
     encode_image,
     load_strategy,
     parse_decision_block,
+    parse_machine_block,
 )
 from .config import ScannerConfig
 from .models import ScanResult, SetupSignal
@@ -102,7 +103,22 @@ def analyze_for_scanner(
         "Include these fields in the decision block:\n"
         "- **Expected Hold:** How long this trade should take (e.g. '1-2 days', '3-5 days')\n"
         "- **Time Invalidation:** When to abandon if neither SL nor TP hit "
-        "(e.g. '4 days' = 2x expected hold). Stale trades lose their edge."
+        "(e.g. '4 days' = 2x expected hold). Stale trades lose their edge.\n\n"
+        "## MACHINE-READABLE OUTPUT (CONFIRM only)\n"
+        "After the decision block, include a JSON machine block for automated parsing.\n"
+        "Use this exact format — HTML comment wrapper, one line of JSON, no markdown:\n\n"
+        '<!-- MACHINE_BLOCK\n'
+        '{"entry_low": 61500.0, "entry_high": 62000.0, "stop_loss": 59800.0, '
+        '"tp1": 65000.0, "tp1_exit_pct": 50, "tp2": 68000.0, "tp2_exit_pct": 50, '
+        '"direction": "LONG", "confidence": 7, "leverage": 5}\n'
+        "MACHINE_BLOCK -->\n\n"
+        "Rules:\n"
+        "- Include ONLY for CONFIRM decisions\n"
+        "- All prices as plain numbers (no $ signs, no commas)\n"
+        "- entry_low/entry_high: if single price, set both equal\n"
+        "- tp1_exit_pct: 30-70 (percentage to close at TP1)\n"
+        "- tp2/tp2_exit_pct: include when multi-target appropriate; tp2_exit_pct is remainder\n"
+        "- If any target is a trailing stop (no fixed price), omit machine block entirely"
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure)
     messages = [{"role": "user", "content": user_content}]
@@ -139,14 +155,20 @@ def analyze_for_scanner(
     parsed = parse_decision_block(analysis_text)
     cost = _estimate_cost(response.usage, cfg.model)
 
-    # Extract LLM confidence integer from parsed field
-    llm_confidence = None
-    raw_conf = parsed.get("llm_confidence")
-    if raw_conf:
-        import re as _re
-        m = _re.search(r"(\d+)", raw_conf)
-        if m:
-            llm_confidence = max(1, min(10, int(m.group(1))))
+    # Try machine block first (more reliable than regex on free text)
+    machine_block = parse_machine_block(analysis_text)
+
+    if machine_block and "confidence" in machine_block:
+        llm_confidence = max(1, min(10, int(machine_block["confidence"])))
+    else:
+        # Fall back to regex confidence extraction
+        llm_confidence = None
+        raw_conf = parsed.get("llm_confidence")
+        if raw_conf:
+            import re as _re
+            m = _re.search(r"(\d+)", raw_conf)
+            if m:
+                llm_confidence = max(1, min(10, int(m.group(1))))
 
     return ScanResult(
         scan_id=str(uuid.uuid4())[:8],
@@ -160,4 +182,5 @@ def analyze_for_scanner(
         chart_paths=[str(p) for p in chart_paths],
         cost_usd=cost,
         llm_confidence=llm_confidence,
+        machine_block=machine_block,
     )

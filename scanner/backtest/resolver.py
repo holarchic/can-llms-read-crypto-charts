@@ -295,14 +295,62 @@ def build_screener_setup(
     )
 
 
+def _build_llm_setup_from_machine_block(row: dict, mb: dict) -> TradeSetup | None:
+    """Build a TradeSetup from a machine block dict. Returns None on invalid data."""
+    entry = (mb["entry_low"] + mb["entry_high"]) / 2
+    stop = mb["stop_loss"]
+    target = mb["tp1"]  # Backtest resolves against TP1
+    direction = mb["direction"].upper()
+
+    if direction not in ("LONG", "SHORT"):
+        return None
+    if abs(entry - stop) < 1e-10:
+        return None
+    if direction == "LONG" and target <= entry:
+        return None
+    if direction == "SHORT" and target >= entry:
+        return None
+
+    return TradeSetup(
+        coin=row.get("coin", ""),
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        target=target,
+        timestamp=row.get("timestamp", ""),
+        setup_type=row.get("setup_type", ""),
+        confidence=row.get("screener_confidence", 0.0),
+        structure="",
+        sent_to_llm=True,
+        source="llm",
+        llm_confidence=row.get("llm_confidence") or 0,
+    )
+
+
 def build_llm_setup(row: dict) -> TradeSetup | None:
     """Build a TradeSetup from a scans table row (CONFIRM only).
 
-    Parses entry_zone, stop_loss, take_profit from LLM text.
+    Tries machine_block JSON first (structured, deterministic).
+    Falls back to parsing entry_zone, stop_loss, take_profit from LLM text.
     Direction is inferred from entry vs stop (not from screener's direction field,
     since the LLM may classify the trade differently).
     """
-    # Strip TP1/TP2 prefixes that confuse the price parser
+    # Try machine block first
+    mb_raw = row.get("machine_block")
+    if mb_raw:
+        try:
+            import json
+            mb = json.loads(mb_raw) if isinstance(mb_raw, str) else mb_raw
+            if isinstance(mb, dict):
+                required = ("entry_low", "entry_high", "stop_loss", "tp1", "direction")
+                if all(k in mb for k in required):
+                    setup = _build_llm_setup_from_machine_block(row, mb)
+                    if setup:
+                        return setup
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass  # Fall through to text parsing
+
+    # Fall back to text parsing
     tp_text = row.get("take_profit", "")
     if tp_text:
         tp_text = re.sub(r"(?:TP|tp)\d+\s*:\s*", "", tp_text)

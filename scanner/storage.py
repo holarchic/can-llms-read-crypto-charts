@@ -1,5 +1,6 @@
 """SQLite storage for scan results — deduplication, cost tracking, stats."""
 
+import json as _json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -217,6 +218,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "scans", "exchange", "TEXT", "'hyperliquid'")
     _ensure_column(conn, "scan_universe", "exchange", "TEXT", "'hyperliquid'")
     _ensure_column(conn, "scans", "llm_confidence", "INTEGER", "NULL")
+    _ensure_column(conn, "scans", "machine_block", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     conn.commit()
     return conn
@@ -243,8 +245,9 @@ def save_result(
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
          strategy_id, analysis_text, leverage, exchange, llm_confidence,
+         machine_block,
          created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.scan_id,
             result.coin,
@@ -267,6 +270,7 @@ def save_result(
             parsed.get("leverage"),
             exchange,
             result.llm_confidence,
+            _json.dumps(result.machine_block) if result.machine_block else None,
             datetime.now(timezone.utc).isoformat(),
         ),
     )

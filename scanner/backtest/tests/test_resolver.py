@@ -1,9 +1,11 @@
 """Tests for walk-forward trade resolution."""
 
+import json
+
 import pandas as pd
 import pytest
 
-from scanner.backtest.resolver import TradeSetup, resolve_signal, estimate_slippage
+from scanner.backtest.resolver import TradeSetup, resolve_signal, estimate_slippage, build_llm_setup
 from .conftest import make_candles, make_candles_from_hlc
 
 
@@ -278,3 +280,60 @@ class TestSlippage:
 
         assert outcome.result == "WIN"
         assert outcome.r_achieved == pytest.approx(2.0 - 0.06, abs=0.001)
+
+
+class TestBuildLlmSetupMachineBlock:
+    """Machine block integration in build_llm_setup."""
+
+    def _row(self, machine_block=None, **overrides):
+        base = {
+            "coin": "BTC",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "setup_type": "C",
+            "screener_confidence": 0.7,
+            "entry_zone": "$61,500 - $62,000",
+            "stop_loss": "$59,800",
+            "take_profit": "$65,000",
+            "llm_confidence": 7,
+        }
+        if machine_block is not None:
+            base["machine_block"] = json.dumps(machine_block) if isinstance(machine_block, dict) else machine_block
+        base.update(overrides)
+        return base
+
+    def test_uses_machine_block_when_present(self):
+        mb = {
+            "entry_low": 61500.0, "entry_high": 62000.0,
+            "stop_loss": 59800.0, "tp1": 65000.0, "tp1_exit_pct": 50,
+            "direction": "LONG", "confidence": 7, "leverage": 5,
+        }
+        setup = build_llm_setup(self._row(machine_block=mb))
+        assert setup is not None
+        assert setup.entry == pytest.approx(61750.0)  # midpoint
+        assert setup.stop == 59800.0
+        assert setup.target == 65000.0  # TP1
+        assert setup.direction == "LONG"
+
+    def test_falls_back_when_absent(self):
+        setup = build_llm_setup(self._row())
+        assert setup is not None
+        # Text parsing: entry midpoint of $61,500 - $62,000
+        assert setup.entry == pytest.approx(61750.0)
+        assert setup.stop == 59800.0
+
+    def test_falls_back_on_malformed(self):
+        setup = build_llm_setup(self._row(machine_block="not json"))
+        assert setup is not None
+        # Should fall through to text parsing
+        assert setup.entry == pytest.approx(61750.0)
+
+    def test_uses_tp1_as_target(self):
+        mb = {
+            "entry_low": 100.0, "entry_high": 100.0,
+            "stop_loss": 95.0, "tp1": 110.0, "tp1_exit_pct": 50,
+            "tp2": 120.0, "tp2_exit_pct": 50,
+            "direction": "LONG", "confidence": 8, "leverage": 3,
+        }
+        setup = build_llm_setup(self._row(machine_block=mb))
+        assert setup is not None
+        assert setup.target == 110.0  # TP1, not TP2

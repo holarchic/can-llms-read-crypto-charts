@@ -46,13 +46,26 @@ def _build_embed(result: ScanResult, exchange_label: str = "HyperLiquid") -> dic
         title = title[:253] + "..."
 
     fields = []
+    mb = result.machine_block
 
-    if parsed.get("entry_zone"):
-        fields.append({"name": "Entry Zone", "value": parsed["entry_zone"], "inline": True})
-    if parsed.get("stop_loss"):
-        fields.append({"name": "Stop Loss", "value": parsed["stop_loss"], "inline": True})
-    if parsed.get("take_profit"):
-        fields.append({"name": "Take Profit", "value": parsed["take_profit"], "inline": True})
+    if mb:
+        # Structured fields from machine block
+        if mb["entry_low"] == mb["entry_high"]:
+            fields.append({"name": "Entry", "value": f"${mb['entry_low']:,.2f}", "inline": True})
+        else:
+            fields.append({"name": "Entry Zone", "value": f"${mb['entry_low']:,.2f} – ${mb['entry_high']:,.2f}", "inline": True})
+        fields.append({"name": "Stop Loss", "value": f"${mb['stop_loss']:,.2f}", "inline": True})
+        tp_parts = [f"TP1: ${mb['tp1']:,.2f} ({mb['tp1_exit_pct']:.0f}%)"]
+        if mb.get("tp2"):
+            tp_parts.append(f"TP2: ${mb['tp2']:,.2f} ({mb.get('tp2_exit_pct', 0):.0f}%)")
+        fields.append({"name": "Take Profit", "value": " | ".join(tp_parts), "inline": True})
+    else:
+        if parsed.get("entry_zone"):
+            fields.append({"name": "Entry Zone", "value": parsed["entry_zone"], "inline": True})
+        if parsed.get("stop_loss"):
+            fields.append({"name": "Stop Loss", "value": parsed["stop_loss"], "inline": True})
+        if parsed.get("take_profit"):
+            fields.append({"name": "Take Profit", "value": parsed["take_profit"], "inline": True})
     if result.confluence_score:
         fields.append({"name": "Confluence", "value": result.confluence_score, "inline": True})
     if result.llm_confidence is not None:
