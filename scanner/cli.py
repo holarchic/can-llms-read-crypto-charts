@@ -41,6 +41,13 @@ Examples:
     parser.add_argument("--cleanup-candles", action="store_true", help="Delete old candles per retention policy (15m: 180 days)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output")
 
+    # Execution flags
+    parser.add_argument("--execute", action="store_true", help="Enable trade execution for this run")
+    parser.add_argument("--no-execute", action="store_true", help="Disable trade execution for this run")
+    parser.add_argument("--execution-mode", choices=["testnet", "live"], help="Override execution mode")
+    parser.add_argument("--dry-execute", action="store_true",
+                        help="Run execution pipeline (validate, sanity, sizing) without placing orders")
+
     args = parser.parse_args()
 
     if args.cleanup_candles:
@@ -125,6 +132,19 @@ Examples:
 
     candle_exchanges = args.candle_exchanges if args.candle_exchanges is not None else ["hyperliquid", "bybit", "binance"]
     config = ScannerConfig(exchange=args.exchange, candle_exchanges=candle_exchanges)
+
+    # Build execution config with CLI overrides
+    exec_config = None
+    if args.execute or args.dry_execute:
+        from .execution.config import load_execution_config
+        exec_config = load_execution_config()
+        if args.execute:
+            exec_config.enabled = True
+        if args.no_execute:
+            exec_config.enabled = False
+        if args.execution_mode:
+            exec_config.mode = args.execution_mode
+
     try:
         run_scan(
             config=config,
@@ -132,6 +152,8 @@ Examples:
             dry_run=args.dry_run,
             skip_discord=args.no_discord,
             verbose=not args.quiet,
+            exec_config=exec_config,
+            dry_execute=args.dry_execute,
         )
     except Exception as e:
         traceback.print_exc()

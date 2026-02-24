@@ -322,6 +322,49 @@ def stage3_alert(
     return alerted_count
 
 
+def stage4_execute(
+    confirms: list[ScanResult],
+    scanner_config: ScannerConfig,
+    exec_config,
+    verbose: bool = True,
+):
+    """Stage 4: Execute trades for CONFIRMs with valid machine blocks.
+
+    Each CONFIRM attempted independently. Errors caught — NEVER crashes scanner.
+    Returns list of ExecutionResult.
+    """
+    from .execution.executor import execute_trade, ExecutionResult
+
+    if not exec_config.enabled:
+        return []
+
+    conn = get_connection()
+    results = []
+
+    for confirm in confirms:
+        try:
+            er = execute_trade(confirm, exec_config, scanner_config, conn)
+            results.append(er)
+            if verbose:
+                if er.executed:
+                    print(f"  {confirm.coin} {er.direction}: EXECUTED "
+                          f"(entry={er.entry_order_id}, sl={er.sl_order_id})")
+                elif er.skip_reason:
+                    print(f"  {confirm.coin} {er.direction}: SKIPPED — {er.skip_reason}")
+        except Exception as exc:
+            if verbose:
+                print(f"  {confirm.coin}: execution error — {exc}")
+            results.append(ExecutionResult(
+                scan_id=confirm.scan_id,
+                coin=confirm.coin,
+                skip_reason="exception",
+                error=str(exc),
+            ))
+
+    conn.close()
+    return results
+
+
 def run_scan(
     config: ScannerConfig | None = None,
     coin: str | None = None,
@@ -329,6 +372,8 @@ def run_scan(
     skip_discord: bool = False,
     verbose: bool = True,
     strategy_id: str = "v0",
+    exec_config=None,
+    dry_execute: bool = False,
 ) -> dict:
     """Full 3-stage scan pipeline. Returns summary dict."""
     cfg = config or ScannerConfig()
@@ -362,8 +407,47 @@ def run_scan(
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)
 
+    # Stage 4: Execution (if enabled)
+    confirms = [r for r in results if r.decision == "CONFIRM"]
+    exec_results = []
+
+    if dry_execute and confirms:
+        if verbose:
+            print(f"\nStage 4 (dry-execute): {len(confirms)} CONFIRMs")
+        from .execution.sanity import check_price_sanity, is_price_in_entry_zone
+        from .execution.sizing import calculate_position
+        from .execution.executor import validate_execution_params
+        for c in confirms:
+            mb = c.machine_block
+            if not mb:
+                if verbose:
+                    print(f"  {c.coin}: SKIPPED — no machine_block")
+                continue
+            errors = validate_execution_params(mb)
+            if errors:
+                if verbose:
+                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — {'; '.join(errors)}")
+                continue
+            entry_mid = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
+            pos = calculate_position(mb, 10000, 1.0)
+            if pos:
+                if verbose:
+                    print(f"  {c.coin} {mb.get('direction','?')}: WOULD EXECUTE — "
+                          f"{pos.quantity:.6f} units @ ${entry_mid:,.2f}, "
+                          f"SL ${mb.get('stop_loss',0):,.2f}, TP ${mb.get('tp1',0):,.2f}")
+            else:
+                if verbose:
+                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — sizing failed")
+
+    elif exec_config and exec_config.enabled and confirms:
+        if verbose:
+            print(f"\nStage 4: Executing {len(confirms)} CONFIRMs")
+        exec_results = stage4_execute(confirms, cfg, exec_config, verbose=verbose)
+
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     total_cost = sum(r.cost_usd for r in results)
+
+    n_executed = sum(1 for er in exec_results if er.executed) if exec_results else 0
 
     summary = {
         "signals": len(signals),
@@ -372,6 +456,7 @@ def run_scan(
         "rejects": sum(1 for r in results if r.decision == "REJECT"),
         "waits": sum(1 for r in results if r.decision == "WAIT"),
         "alerted": alerted,
+        "executed": n_executed,
         "cost_usd": round(total_cost, 4),
         "elapsed_sec": round(elapsed, 1),
     }
