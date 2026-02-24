@@ -1,0 +1,97 @@
+"""Pre-execution price sanity checks."""
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class SanityResult:
+    passed: bool
+    errors: list[str] = field(default_factory=list)
+
+
+def is_price_in_entry_zone(current_price: float, entry_low: float, entry_high: float) -> bool:
+    """Check if current price falls within the entry zone bounds."""
+    return entry_low <= current_price <= entry_high
+
+
+def check_price_sanity(
+    machine_block: dict,
+    current_price: float,
+    atr: float,
+    config,
+) -> SanityResult:
+    """Run all pre-execution sanity checks on machine_block values.
+
+    Checks: entry zone proximity, stop distance vs ATR, R:R bounds,
+    all prices within max deviation of current price.
+    """
+    errors = []
+
+    entry_low = machine_block.get("entry_low", 0)
+    entry_high = machine_block.get("entry_high", 0)
+    stop_loss = machine_block.get("stop_loss", 0)
+    tp1 = machine_block.get("tp1")
+    tp2 = machine_block.get("tp2")
+    direction = machine_block.get("direction", "").upper()
+
+    if not entry_low or not entry_high or not stop_loss:
+        errors.append("Missing required price fields (entry_low, entry_high, stop_loss)")
+        return SanityResult(passed=False, errors=errors)
+
+    entry_mid = (entry_low + entry_high) / 2
+
+    # 1. Entry zone proximity — entry_mid within tolerance of current price
+    entry_deviation_pct = abs(entry_mid - current_price) / current_price * 100
+    if entry_deviation_pct > config.entry_price_tolerance_pct:
+        errors.append(
+            f"Entry zone midpoint {entry_mid:.2f} is {entry_deviation_pct:.1f}% from "
+            f"current price {current_price:.2f} (max {config.entry_price_tolerance_pct}%)"
+        )
+
+    # 2. Stop distance vs ATR
+    if atr > 0:
+        stop_distance = abs(entry_mid - stop_loss)
+        atr_mult = stop_distance / atr
+        if atr_mult < config.min_atr_stop_mult:
+            errors.append(
+                f"Stop distance {stop_distance:.2f} is {atr_mult:.2f}x ATR "
+                f"(min {config.min_atr_stop_mult}x)"
+            )
+        if atr_mult > config.max_atr_stop_mult:
+            errors.append(
+                f"Stop distance {stop_distance:.2f} is {atr_mult:.2f}x ATR "
+                f"(max {config.max_atr_stop_mult}x)"
+            )
+
+    # 3. R:R ratio
+    stop_distance = abs(entry_mid - stop_loss)
+    if stop_distance > 0:
+        # Use TP1 for R:R check (primary target)
+        tp_price = tp1 or tp2
+        if tp_price:
+            if direction == "LONG":
+                reward = tp_price - entry_mid
+            else:
+                reward = entry_mid - tp_price
+            rr = reward / stop_distance
+            if rr < config.min_rr_ratio:
+                errors.append(f"R:R ratio {rr:.2f} below minimum {config.min_rr_ratio}")
+            if rr > config.max_rr_ratio:
+                errors.append(f"R:R ratio {rr:.2f} above maximum {config.max_rr_ratio}")
+
+    # 4. All prices within max deviation of current price
+    price_fields = {"entry_low": entry_low, "entry_high": entry_high, "stop_loss": stop_loss}
+    if tp1:
+        price_fields["tp1"] = tp1
+    if tp2:
+        price_fields["tp2"] = tp2
+
+    for name, price in price_fields.items():
+        deviation_pct = abs(price - current_price) / current_price * 100
+        if deviation_pct > config.max_price_deviation_pct:
+            errors.append(
+                f"{name} ({price:.2f}) is {deviation_pct:.1f}% from current price "
+                f"(max {config.max_price_deviation_pct}%)"
+            )
+
+    return SanityResult(passed=len(errors) == 0, errors=errors)
