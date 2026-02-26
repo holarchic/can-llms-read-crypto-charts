@@ -80,6 +80,28 @@ class TestLongResolution:
 
         assert outcome.result == "EXPIRED"
 
+    def test_unresolved_when_insufficient_bars(self):
+        # Only 5 bars of forward data with timeout=72 — not enough to resolve
+        candles = make_candles_from_hlc(
+            [(101, 99, 100)] * 5
+        )
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, timeout_bars=72, fee_rate=0.0)
+
+        assert outcome.result == "UNRESOLVED"
+        assert outcome.r_achieved == 0.0
+
+    def test_win_still_resolves_with_few_bars(self):
+        # Target hit on bar 2 — should still be WIN even with few total bars
+        candles = make_candles_from_hlc([
+            (101, 99, 100),
+            (111, 100, 110),  # hits target
+        ])
+        setup = _setup()
+        outcome = resolve_signal(setup, candles, timeout_bars=72, fee_rate=0.0)
+
+        assert outcome.result == "WIN"
+
     def test_mae_tracks_worst_drawdown(self):
         candles = make_candles_from_hlc([
             (101, 96, 100),   # bar 1 — dips to 96, adverse = (100-96)/5 = 0.8R

@@ -167,16 +167,21 @@ def main():
 
     conn.close()
 
-    if not outcomes:
-        print("No outcomes resolved (all fetches failed?)")
+    # Separate unresolved (insufficient forward data) from resolved
+    unresolved = [o for o in outcomes if o.result == "UNRESOLVED"]
+    resolved = [o for o in outcomes if o.result != "UNRESOLVED"]
+
+    if not resolved:
+        print(f"No outcomes resolved ({len(unresolved)} unresolved — insufficient forward data)")
         sys.exit(0)
 
     # Compute metrics
-    overall = compute_metrics(outcomes, "Overall", run_permutation=args.permutation)
-    sliced = slice_metrics(outcomes)
+    overall = compute_metrics(resolved, "Overall", run_permutation=args.permutation)
+    sliced = slice_metrics(resolved)
 
     report_text = format_full_report(overall, sliced, args.mode)
-    footer = f"\n  Coins: {len(coins_seen)} | Signals: {len(setups)} | Resolved: {len(outcomes)}"
+    unresolved_note = f" | Unresolved: {len(unresolved)}" if unresolved else ""
+    footer = f"\n  Coins: {len(coins_seen)} | Signals: {len(setups)} | Resolved: {len(resolved)}{unresolved_note}"
 
     print()
     print(report_text)

@@ -34,7 +34,7 @@ class TradeSetup:
 class TradeOutcome:
     """Result of walking forward through price data."""
 
-    result: str  # WIN, LOSS, EXPIRED
+    result: str  # WIN, LOSS, EXPIRED, UNRESOLVED
     r_achieved: float = 0.0
     bars_to_exit: int = 0
     exit_price: float = 0.0
@@ -189,12 +189,17 @@ def resolve_signal(
                 setup=setup,
             )
 
+    # Not enough forward data to resolve — signal still live
+    bars_available = len(future)
+    if bars_available < timeout_bars:
+        return TradeOutcome(result="UNRESOLVED", setup=setup)
+
     # EXPIRED — close at last available bar
-    bars_held = min(timeout_bars, len(future))
+    bars_held = timeout_bars
     funding_r = (funding_rate_8h * (bars_held / 8) * setup.entry) / risk if funding_rate_8h else 0.0
     total_cost_r = fee_r + funding_r
 
-    last_close = future.iloc[min(timeout_bars - 1, len(future) - 1)]["Close"]
+    last_close = future.iloc[timeout_bars - 1]["Close"]
     if is_long:
         unrealized_r = (last_close - setup.entry) / risk
     else:
