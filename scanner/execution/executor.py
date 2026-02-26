@@ -78,6 +78,14 @@ def execute_trade(
     """
     er = ExecutionResult(scan_id=result.scan_id, coin=result.coin)
 
+    # 0. Staleness guard — reject signals older than 30 minutes
+    age_seconds = (datetime.now(timezone.utc) - result.timestamp).total_seconds()
+    if age_seconds > 1800:
+        er.skip_reason = "stale_signal"
+        er.error = f"Signal age {age_seconds / 60:.0f}m exceeds 30m limit"
+        log.warning("%s: stale signal (%.0fm old) — skipping", result.coin, age_seconds / 60)
+        return er
+
     # 1. Check machine_block exists
     mb = result.machine_block
     if not mb:

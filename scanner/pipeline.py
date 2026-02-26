@@ -345,15 +345,15 @@ def stage4_execute(
         try:
             er = execute_trade(confirm, exec_config, scanner_config, conn)
             results.append(er)
-            if verbose:
-                if er.executed:
-                    print(f"  {confirm.coin} {er.direction}: EXECUTED "
-                          f"(entry={er.entry_order_id}, sl={er.sl_order_id})")
-                elif er.skip_reason:
-                    print(f"  {confirm.coin} {er.direction}: SKIPPED — {er.skip_reason}")
+            # Always print execution outcomes — critical ops info, never silenced by -q
+            if er.executed:
+                print(f"  {confirm.coin} {er.direction}: EXECUTED "
+                      f"(entry={er.entry_order_id}, sl={er.sl_order_id})")
+            elif er.skip_reason:
+                print(f"  {confirm.coin} {er.direction}: SKIPPED — {er.skip_reason}"
+                      f"{f' ({er.error})' if er.error else ''}")
         except Exception as exc:
-            if verbose:
-                print(f"  {confirm.coin}: execution error — {exc}")
+            print(f"  {confirm.coin}: execution error — {exc}")
             results.append(ExecutionResult(
                 scan_id=confirm.scan_id,
                 coin=confirm.coin,
@@ -440,8 +440,8 @@ def run_scan(
                     print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — sizing failed")
 
     elif exec_config and exec_config.enabled and confirms:
-        if verbose:
-            print(f"\nStage 4: Executing {len(confirms)} CONFIRMs")
+        # Always print — execution status is critical ops info
+        print(f"\nStage 4: Executing {len(confirms)} CONFIRMs")
         exec_results = stage4_execute(confirms, cfg, exec_config, verbose=verbose)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()

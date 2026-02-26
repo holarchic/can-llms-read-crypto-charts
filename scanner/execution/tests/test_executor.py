@@ -169,6 +169,22 @@ class TestExecuteTrade:
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is True
 
+    def test_skip_stale_signal(self, conn, exec_config, scanner_config):
+        from datetime import timedelta
+        old_timestamp = datetime.now(timezone.utc) - timedelta(minutes=35)
+        sr = _make_scan_result(timestamp=old_timestamp)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "stale_signal"
+
+    def test_fresh_signal_passes_staleness(self, conn, exec_config, scanner_config):
+        from datetime import timedelta
+        fresh_timestamp = datetime.now(timezone.utc) - timedelta(minutes=10)
+        sr = _make_scan_result(timestamp=fresh_timestamp, machine_block=None)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        # Should pass staleness but fail on no_machine_block (next check)
+        assert result.skip_reason == "no_machine_block"
+
     def test_skip_no_machine_block(self, conn, exec_config, scanner_config):
         sr = _make_scan_result(machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)

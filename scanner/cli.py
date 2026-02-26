@@ -1,6 +1,7 @@
 """CLI entry point for the scanner. Run with: python -m scanner.cli"""
 
 import argparse
+import logging
 import sys
 import traceback
 
@@ -49,6 +50,17 @@ Examples:
                         help="Run execution pipeline (validate, sanity, sizing) without placing orders")
 
     args = parser.parse_args()
+
+    # Execution logging always visible (captured by cron 2>&1).
+    # Handler at INFO, root logger at WARNING (blocks noise from other modules),
+    # scanner.execution at INFO (so skip reasons + outcomes are visible).
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    logging.getLogger("scanner.execution").setLevel(logging.INFO)
 
     if args.cleanup_candles:
         deleted = cleanup_old_candles()
