@@ -27,6 +27,7 @@ class ExecutionConfig:
 
     # Sanity thresholds
     entry_price_tolerance_pct: float = 3.0
+    entry_zone_buffer_pct: float = 2.0  # direction-aware buffer beyond entry zone
     max_price_deviation_pct: float = 20.0
     min_rr_ratio: float = 0.5
     max_rr_ratio: float = 10.0

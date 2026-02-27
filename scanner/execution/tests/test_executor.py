@@ -205,12 +205,12 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "sanity_fail"
 
-    @patch("scanner.execution.executor.fetch_current_price", return_value=63000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=65000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_price_outside_zone(self, mock_killed, mock_price, conn, exec_config, scanner_config):
-        """Price within sanity range but outside entry zone [61800, 62200]."""
-        # Need to widen sanity tolerance so sanity passes but zone check fails
-        exec_config.entry_price_tolerance_pct = 5.0
+        """Price beyond entry zone + direction buffer [61800, 62200] + 2% LONG buffer."""
+        # 65000 is well above zone + buffer ceiling (~63440), so should still skip
+        exec_config.entry_price_tolerance_pct = 10.0
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "price_outside_zone"

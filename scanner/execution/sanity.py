@@ -9,9 +9,36 @@ class SanityResult:
     errors: list[str] = field(default_factory=list)
 
 
-def is_price_in_entry_zone(current_price: float, entry_low: float, entry_high: float) -> bool:
-    """Check if current price falls within the entry zone bounds."""
-    return entry_low <= current_price <= entry_high
+def is_price_in_entry_zone(
+    current_price: float,
+    entry_low: float,
+    entry_high: float,
+    direction: str = "",
+    buffer_pct: float = 0.0,
+) -> bool:
+    """Check if current price falls within the entry zone bounds.
+
+    Direction-aware buffer: price that has moved *in the trade's favor* past
+    the zone is still accepted up to buffer_pct of the zone midpoint.
+    - LONG:  allow price up to buffer% above entry_high  (momentum entry)
+    - SHORT: allow price up to buffer% below entry_low   (momentum entry)
+    """
+    if entry_low <= current_price <= entry_high:
+        return True
+
+    if buffer_pct <= 0 or not direction:
+        return False
+
+    mid = (entry_low + entry_high) / 2
+    buffer = mid * buffer_pct / 100
+
+    direction = direction.upper()
+    if direction == "SHORT" and current_price < entry_low:
+        return current_price >= entry_low - buffer
+    if direction == "LONG" and current_price > entry_high:
+        return current_price <= entry_high + buffer
+
+    return False
 
 
 def check_price_sanity(

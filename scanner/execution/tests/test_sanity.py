@@ -56,6 +56,41 @@ class TestIsPriceInEntryZone:
     def test_outside_high(self):
         assert is_price_in_entry_zone(63000, 61800, 62200) is False
 
+    # Direction-aware buffer tests
+    def test_short_below_zone_within_buffer(self):
+        # SHORT: price dropped below entry_low — thesis confirming, should accept
+        # Zone [61800, 62200], mid=62000, 2% buffer = 1240 → floor = 60560
+        assert is_price_in_entry_zone(61000, 61800, 62200, direction="SHORT", buffer_pct=2.0) is True
+
+    def test_short_below_zone_beyond_buffer(self):
+        # Price dropped too far below (> 2% of midpoint below entry_low)
+        assert is_price_in_entry_zone(60000, 61800, 62200, direction="SHORT", buffer_pct=2.0) is False
+
+    def test_short_above_zone_no_buffer(self):
+        # SHORT: price above zone — wrong direction, buffer doesn't help
+        assert is_price_in_entry_zone(63000, 61800, 62200, direction="SHORT", buffer_pct=2.0) is False
+
+    def test_long_above_zone_within_buffer(self):
+        # LONG: price pushed above entry_high — thesis confirming, should accept
+        # Zone [61800, 62200], mid=62000, 2% buffer = 1240 → ceiling = 63440
+        assert is_price_in_entry_zone(63000, 61800, 62200, direction="LONG", buffer_pct=2.0) is True
+
+    def test_long_above_zone_beyond_buffer(self):
+        # Price pushed too far above
+        assert is_price_in_entry_zone(64000, 61800, 62200, direction="LONG", buffer_pct=2.0) is False
+
+    def test_long_below_zone_no_buffer(self):
+        # LONG: price below zone — wrong direction, buffer doesn't help
+        assert is_price_in_entry_zone(61000, 61800, 62200, direction="LONG", buffer_pct=2.0) is False
+
+    def test_no_buffer_backwards_compatible(self):
+        # Without buffer args, behavior is unchanged
+        assert is_price_in_entry_zone(61000, 61800, 62200) is False
+        assert is_price_in_entry_zone(63000, 61800, 62200) is False
+
+    def test_zero_buffer_no_extension(self):
+        assert is_price_in_entry_zone(61000, 61800, 62200, direction="SHORT", buffer_pct=0.0) is False
+
 
 class TestCheckPriceSanity:
     def test_valid_long(self, config):

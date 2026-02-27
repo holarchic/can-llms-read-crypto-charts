@@ -121,10 +121,13 @@ def execute_trade(
         log.warning("%s %s: sanity fail — %s", result.coin, er.direction, er.error)
         return er
 
-    # 5. Entry zone check
+    # 5. Entry zone check (direction-aware buffer for momentum entries)
     entry_low = mb["entry_low"]
     entry_high = mb["entry_high"]
-    if not is_price_in_entry_zone(current_price, entry_low, entry_high):
+    if not is_price_in_entry_zone(
+        current_price, entry_low, entry_high,
+        direction=er.direction, buffer_pct=exec_config.entry_zone_buffer_pct,
+    ):
         er.skip_reason = "price_outside_zone"
         er.error = f"Price {current_price} outside [{entry_low}, {entry_high}]"
         log.info("%s %s: price outside entry zone", result.coin, er.direction)
