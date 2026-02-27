@@ -167,6 +167,10 @@ class TestExecuteTrade:
         orders = get_orders_for_scan("test123", conn)
         assert len(orders) >= 2  # entry + SL at minimum
 
+        # entry_price should be actual fill price, not zone midpoint
+        entry_order = next(o for o in orders if o["order_type"] == "entry")
+        assert entry_order["entry_price"] == 62050  # from mock average, not (61800+62200)/2
+
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)

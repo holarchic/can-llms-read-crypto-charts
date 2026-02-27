@@ -212,7 +212,7 @@ def execute_trade(
             "order_type": "entry",
             "exchange_order_id": entry_resp.get("id", ""),
             "status": "FILLED",
-            "entry_price": mb.get("entry_low", 0) + (mb.get("entry_high", 0) - mb.get("entry_low", 0)) / 2,
+            "entry_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
             "fill_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
             "quantity": pos.quantity,
             "leverage": pos.leverage,
