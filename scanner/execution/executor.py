@@ -62,6 +62,15 @@ def validate_execution_params(machine_block: dict) -> list[str]:
     if leverage is not None and (not isinstance(leverage, (int, float)) or leverage < 1):
         errors.append(f"Invalid leverage: {leverage}")
 
+    tp1_pct = machine_block.get("tp1_exit_pct")
+    tp2_pct = machine_block.get("tp2_exit_pct", 0)
+    if tp1_pct is not None and tp1_pct <= 0:
+        errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
+    if tp2_pct < 0:
+        errors.append(f"tp2_exit_pct must be non-negative: {tp2_pct}")
+    if tp1_pct is not None and tp1_pct + tp2_pct > 100:
+        errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct}) > 100")
+
     return errors
 
 

@@ -65,13 +65,18 @@ def calculate_position(
     else:
         rr_ratio = 0
 
-    # TP quantity split
+    # TP quantity split — normalize to sum to 100% (LLM may produce 60+30=90 etc)
     tp1_exit_pct = machine_block.get("tp1_exit_pct", 50)
     tp2_exit_pct = machine_block.get("tp2_exit_pct", 50)
 
     if tp1 and tp2:
-        tp1_quantity = quantity * tp1_exit_pct / 100
-        tp2_quantity = quantity * tp2_exit_pct / 100
+        total_pct = tp1_exit_pct + tp2_exit_pct
+        if total_pct > 0:
+            tp1_quantity = quantity * tp1_exit_pct / total_pct
+            tp2_quantity = quantity - tp1_quantity  # remainder — no floating point gap
+        else:
+            tp1_quantity = quantity / 2
+            tp2_quantity = quantity / 2
     elif tp1:
         tp1_quantity = quantity
         tp2_quantity = 0

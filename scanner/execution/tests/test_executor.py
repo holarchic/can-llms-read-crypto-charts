@@ -127,6 +127,22 @@ class TestValidateExecutionParams:
         errors = validate_execution_params(_make_machine_block(leverage=-1))
         assert any("leverage" in e.lower() for e in errors)
 
+    def test_validates_exit_pcts_over_100(self):
+        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=70, tp2_exit_pct=50))
+        assert any("exit pcts sum" in e for e in errors)
+
+    def test_validates_exit_pct_negative(self):
+        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=-10))
+        assert any("tp1_exit_pct must be positive" in e for e in errors)
+
+    def test_validates_tp2_exit_pct_negative(self):
+        errors = validate_execution_params(_make_machine_block(tp2_exit_pct=-5))
+        assert any("tp2_exit_pct must be non-negative" in e for e in errors)
+
+    def test_valid_exit_pcts_no_errors(self):
+        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40))
+        assert errors == []
+
 
 class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")

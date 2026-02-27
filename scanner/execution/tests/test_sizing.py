@@ -121,3 +121,33 @@ class TestCalculatePosition:
         result = calculate_position(_long_block(tp1=None, tp2=None), balance=10000, risk_pct=1.0)
         assert result is not None
         assert result.rr_ratio == 0
+
+    def test_tp_split_normalizes_when_sum_under_100(self):
+        """60+30=90 should normalize to 2/3 and 1/3."""
+        result = calculate_position(
+            _long_block(tp1_exit_pct=60, tp2_exit_pct=30),
+            balance=10000, risk_pct=1.0,
+        )
+        assert result is not None
+        assert abs(result.tp1_quantity - result.quantity * 60 / 90) < 1e-10
+        assert abs(result.tp2_quantity - result.quantity * 30 / 90) < 1e-10
+
+    def test_tp_split_normalizes_when_sum_over_100(self):
+        """60+50=110 should normalize to 6/11 and 5/11."""
+        result = calculate_position(
+            _long_block(tp1_exit_pct=60, tp2_exit_pct=50),
+            balance=10000, risk_pct=1.0,
+        )
+        assert result is not None
+        assert abs(result.tp1_quantity - result.quantity * 60 / 110) < 1e-10
+        assert abs(result.tp2_quantity - result.quantity * 50 / 110) < 1e-10
+
+    def test_tp_split_quantities_sum_to_total(self):
+        """Normalized tp1+tp2 must equal total quantity exactly."""
+        for tp1_pct, tp2_pct in [(60, 30), (60, 50), (70, 70), (33, 33)]:
+            result = calculate_position(
+                _long_block(tp1_exit_pct=tp1_pct, tp2_exit_pct=tp2_pct),
+                balance=10000, risk_pct=1.0,
+            )
+            assert result is not None
+            assert result.tp1_quantity + result.tp2_quantity == result.quantity
