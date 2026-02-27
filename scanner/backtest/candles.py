@@ -77,6 +77,41 @@ def cache_candles(
     return len(rows)
 
 
+def _fetch_range(ccxt_exchange, symbol: str, interval: str, since_ms: int, until_ms: int, cfg: ScannerConfig) -> pd.DataFrame | None:
+    """Paginated ccxt fetch for a ms range. Returns DataFrame or None."""
+    all_raw = []
+    cursor = since_ms
+    while cursor < until_ms:
+        batch = ccxt_exchange.fetch_ohlcv(symbol, interval, since=cursor, limit=500)
+        time.sleep(cfg.api_sleep_ms / 1000)
+        if not batch:
+            break
+        all_raw.extend(batch)
+        last_ts = batch[-1][0]
+        if last_ts <= cursor:
+            break
+        cursor = last_ts + 1
+
+    if not all_raw:
+        return None
+
+    df = pd.DataFrame(all_raw, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df.set_index("timestamp", inplace=True)
+    return df
+
+
+def _merge_frames(*frames: pd.DataFrame | None) -> pd.DataFrame:
+    """Concat non-None frames, dedup, sort."""
+    parts = [f for f in frames if f is not None and not f.empty]
+    if not parts:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    merged = pd.concat(parts)
+    merged = merged[~merged.index.duplicated(keep="last")]
+    merged.sort_index(inplace=True)
+    return merged
+
+
 def fetch_and_cache(
     coin: str,
     interval: str,
@@ -94,7 +129,6 @@ def fetch_and_cache(
 
     cached = get_cached_candles(coin, interval, since, until, conn, exchange=exchange)
 
-    # Determine what we need to fetch
     cfg = config or ScannerConfig()
     meta = get_exchange_meta(exchange)
     ccxt_exchange = get_ccxt_exchange(exchange)
@@ -103,52 +137,33 @@ def fetch_and_cache(
     since_ms = int(pd.Timestamp(since).timestamp() * 1000)
     until_ms = int(pd.Timestamp(until).timestamp() * 1000)
 
-    # If we have cached data, only fetch from after the last cached candle
     if cached is not None and not cached.empty:
         last_cached_ms = int(cached.index[-1].timestamp() * 1000)
-        # If cache covers the full range, return it
         first_cached_ms = int(cached.index[0].timestamp() * 1000)
         if first_cached_ms <= since_ms and last_cached_ms >= until_ms:
             return cached
-        # Fetch from after last cached candle
-        fetch_since = last_cached_ms + 1
-    else:
-        fetch_since = since_ms
-        cached = None
 
-    # Paginate — ccxt returns max 500 candles per call
-    all_new = []
-    cursor = fetch_since
-    while cursor < until_ms:
-        batch = ccxt_exchange.fetch_ohlcv(symbol, interval, since=cursor, limit=500)
-        time.sleep(cfg.api_sleep_ms / 1000)
-        if not batch:
-            break
-        all_new.extend(batch)
-        last_ts = batch[-1][0]
-        if last_ts <= cursor:
-            break
-        cursor = last_ts + 1
+        # Fetch pre-cache gap if needed
+        pre_gap = None
+        if first_cached_ms > since_ms:
+            pre_gap = _fetch_range(ccxt_exchange, symbol, interval, since_ms, first_cached_ms - 1, cfg)
+            if pre_gap is not None:
+                pre_gap = pre_gap[pre_gap.index < cached.index[0]]
+                cache_candles(coin, interval, pre_gap, conn, exchange=exchange)
 
-    if all_new:
-        new_df = pd.DataFrame(all_new, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
-        new_df["timestamp"] = pd.to_datetime(new_df["timestamp"], unit="ms", utc=True)
-        new_df.set_index("timestamp", inplace=True)
-        # Filter to requested range
+        # Fetch post-cache gap
+        post_gap = _fetch_range(ccxt_exchange, symbol, interval, last_cached_ms + 1, until_ms, cfg)
+        if post_gap is not None:
+            post_gap = post_gap[post_gap.index <= pd.Timestamp(until, tz="UTC")]
+            cache_candles(coin, interval, post_gap, conn, exchange=exchange)
+
+        return _merge_frames(pre_gap, cached, post_gap)
+
+    # No cache — fetch entire range
+    new_df = _fetch_range(ccxt_exchange, symbol, interval, since_ms, until_ms, cfg)
+    if new_df is not None:
         new_df = new_df[new_df.index <= pd.Timestamp(until, tz="UTC")]
         cache_candles(coin, interval, new_df, conn, exchange=exchange)
-    else:
-        new_df = None
-
-    # Merge cached + new
-    if cached is not None and new_df is not None:
-        merged = pd.concat([cached, new_df])
-        merged = merged[~merged.index.duplicated(keep="last")]
-        merged.sort_index(inplace=True)
-        return merged
-    elif cached is not None:
-        return cached
-    elif new_df is not None:
         return new_df
-    else:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+    return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
