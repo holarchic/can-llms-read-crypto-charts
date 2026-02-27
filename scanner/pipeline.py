@@ -197,19 +197,23 @@ def stage1_screen(
     if verbose:
         print(f"Stage 1 complete: {len(capped)} signals (from {len(all_signals)} pre-cap)")
 
-    return capped, btc_structure
+    return capped, btc_structure, candle_map
 
 
 def _analyze_one(
     signal: SetupSignal,
     config: ScannerConfig,
     btc_structure: str | None = None,
+    prefetched_candles: dict | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
         candle_sets = {}
         for tf in ["1d", "4h", "1h"]:
-            candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
+            if tf == "4h" and prefetched_candles and signal.coin in prefetched_candles:
+                candle_sets[tf] = prefetched_candles[signal.coin]
+            else:
+                candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
 
         # Cache all timeframes for experiment replay (4H already cached in stage1)
         conn = get_connection()
@@ -230,12 +234,13 @@ def stage2_analyze(
     signals: list[SetupSignal],
     config: ScannerConfig,
     verbose: bool = True,
-    max_workers: int = 2,
     strategy_id: str = "v0",
     btc_structure: str | None = None,
+    prefetched_candles: dict | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
     conn = get_connection()
+    max_workers = config.analysis_max_workers
 
     # Check cost cap before starting
     cost_today = daily_cost(conn)
@@ -259,7 +264,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config, btc_structure): signal
+            executor.submit(_analyze_one, signal, config, btc_structure, prefetched_candles): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -385,7 +390,7 @@ def run_scan(
         print("=" * 60)
 
     # Stage 1
-    signals, btc_structure = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
+    signals, btc_structure, candle_map = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
 
     if dry_run:
         if verbose:
@@ -402,7 +407,8 @@ def run_scan(
         return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
 
     # Stage 2
-    results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id, btc_structure=btc_structure)
+    results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
+                                 btc_structure=btc_structure, prefetched_candles=candle_map)
 
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)

@@ -88,5 +88,8 @@ class ScannerConfig:
     # Storage
     dedup_hours: int = 12
 
+    # Analysis
+    analysis_max_workers: int = 4
+
     # Rate limiting
     api_sleep_ms: int = 100
