@@ -11,7 +11,7 @@ from .data import fetch_pairs_with_volume, fetch_candles, fetch_candles_batch, g
 from .indicators import build_context
 from .screener import detect_all_setups
 from .charts import generate_charts_for_signal, cleanup_charts
-from .analysis import analyze_for_scanner
+from .analysis import analyze_for_scanner, PROMPT_VERSION
 from .storage import get_connection, save_result, save_signals, save_scan_universe, is_duplicate, mark_alerted, daily_cost
 from .alerts import send_alert, format_alert_text, send_ops_log, COLOR_OK, COLOR_WARN
 from .models import SetupSignal, ScanResult
@@ -283,7 +283,8 @@ def stage2_analyze(
                     if not result.decision:
                         preview = (result.analysis_text or '')[:200].replace('\n', ' ')
                         print(f"    ⚠ Parse failed. Raw output: {preview}")
-                save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange)
+                save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange,
+                           prompt_version=PROMPT_VERSION)
                 results.append(result)
 
     conn.close()

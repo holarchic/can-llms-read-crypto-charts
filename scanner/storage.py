@@ -219,6 +219,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "scan_universe", "exchange", "TEXT", "'hyperliquid'")
     _ensure_column(conn, "scans", "llm_confidence", "INTEGER", "NULL")
     _ensure_column(conn, "scans", "machine_block", "TEXT", "NULL")
+    _ensure_column(conn, "scans", "prompt_version", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
     # Execution orders table
     from .execution.storage import ensure_orders_table
@@ -232,6 +233,7 @@ def save_result(
     conn: sqlite3.Connection | None = None,
     strategy_id: str = "v0",
     exchange: str = "hyperliquid",
+    prompt_version: str | None = None,
 ) -> None:
     """Save a scan result to the database."""
     own_conn = conn is None
@@ -248,9 +250,9 @@ def save_result(
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
          strategy_id, analysis_text, leverage, exchange, llm_confidence,
-         machine_block,
+         machine_block, prompt_version,
          created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             result.scan_id,
             result.coin,
@@ -274,6 +276,7 @@ def save_result(
             exchange,
             result.llm_confidence,
             _json.dumps(result.machine_block) if result.machine_block else None,
+            prompt_version,
             datetime.now(timezone.utc).isoformat(),
         ),
     )

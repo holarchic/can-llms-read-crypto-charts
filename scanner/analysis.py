@@ -1,5 +1,7 @@
 """LLM deep analysis — imports building blocks from chart_analyzer."""
 
+PROMPT_VERSION = "2"
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,6 +117,10 @@ def analyze_for_scanner(
         "Rules:\n"
         "- Include ONLY for CONFIRM decisions\n"
         "- All prices as plain numbers (no $ signs, no commas)\n"
+        "- entry_low/entry_high: the range where a MARKET ORDER should fill right now. "
+        "This must bracket the current price (right edge of chart). "
+        "Do NOT use ideal limit-order levels — the system executes immediately at market. "
+        "A narrow range around current price is correct (e.g. within 0.5% of last candle close).\n"
         "- entry_low/entry_high: if single price, set both equal\n"
         "- tp1_exit_pct: 30-70 (percentage to close at TP1)\n"
         "- tp2/tp2_exit_pct: include when multi-target appropriate; tp2_exit_pct is remainder\n"

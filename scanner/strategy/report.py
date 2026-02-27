@@ -51,6 +51,7 @@ def load_llm_scans(
     until: str,
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
+    prompt_version: str | None = None,
 ) -> list[dict]:
     """Load LLM scan results from DB for a strategy in a date range."""
     clauses = ["strategy_id = ?", "timestamp >= ?", "timestamp <= ?"]
@@ -60,6 +61,9 @@ def load_llm_scans(
         placeholders = ",".join("?" for _ in coins)
         clauses.append(f"coin IN ({placeholders})")
         params.extend([c.upper() for c in coins])
+    if prompt_version:
+        clauses.append("prompt_version = ?")
+        params.append(prompt_version)
 
     where = " AND ".join(clauses)
     rows = conn.execute(

@@ -154,3 +154,15 @@ class TestScanUniverse:
 
     def test_empty_pairs_returns_zero(self, db_conn):
         assert save_scan_universe("batch1", [], "2026-02-20T12:00:00", db_conn) == 0
+
+
+class TestPromptVersion:
+    def test_prompt_version_roundtrips(self, db_conn, sample_result):
+        save_result(sample_result, db_conn, prompt_version="2")
+        row = db_conn.execute("SELECT prompt_version FROM scans WHERE scan_id = ?", ("test1234",)).fetchone()
+        assert row["prompt_version"] == "2"
+
+    def test_prompt_version_defaults_to_null(self, db_conn, sample_result):
+        save_result(sample_result, db_conn)
+        row = db_conn.execute("SELECT prompt_version FROM scans WHERE scan_id = ?", ("test1234",)).fetchone()
+        assert row["prompt_version"] is None

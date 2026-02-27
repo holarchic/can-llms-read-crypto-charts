@@ -42,7 +42,7 @@ def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
     return [dict(r) for r in rows]
 
 
-def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None):
+def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None, prompt_version=None):
     """Load CONFIRM scans from the scans table."""
     clauses = [
         "datetime(timestamp) > datetime('now', ? || ' days')",
@@ -59,6 +59,9 @@ def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None):
     if strategy_id:
         clauses.append("strategy_id = ?")
         params.append(strategy_id)
+    if prompt_version:
+        clauses.append("prompt_version = ?")
+        params.append(prompt_version)
 
     where = " AND ".join(clauses)
     rows = conn.execute(
@@ -89,6 +92,7 @@ def main():
     parser.add_argument("--slippage", type=float, default=0.0005, help="Slippage rate per side (default: 0.05%%)")
     parser.add_argument("--no-slippage", action="store_true", help="Disable slippage estimation")
     parser.add_argument("--strategy", type=str, default=None, help="Filter signals by strategy version")
+    parser.add_argument("--prompt-version", type=str, default=None, help="Filter LLM scans by prompt version (e.g. 2)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print per-signal details")
     parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     parser.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
@@ -105,7 +109,8 @@ def main():
         rows = _load_screener_signals(conn, args.days, args.coin, args.type, args.strategy)
         builder = lambda row: build_screener_setup(row, args.atr_stop, args.atr_target)
     else:
-        rows = _load_llm_signals(conn, args.days, args.coin, args.type, args.strategy)
+        rows = _load_llm_signals(conn, args.days, args.coin, args.type, args.strategy,
+                                  prompt_version=args.prompt_version)
         builder = build_llm_setup
 
     if not rows:
