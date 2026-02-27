@@ -58,18 +58,19 @@ def _select_with_diversity(
 def _collect_candles(
     coins: list[str],
     config: ScannerConfig,
-    conn,
     verbose: bool = True,
 ) -> None:
     """Collect candles across all configured exchanges and timeframes.
 
+    Runs exchanges in parallel via ThreadPoolExecutor — each gets its own
+    DB connection (SQLite WAL supports concurrent writers).
     Skips (primary exchange, 4H) since that's already fetched and cached by stage1.
     Errors per exchange are caught and logged — one failing doesn't block the rest.
     """
-    for eid in config.candle_exchanges:
+    def _collect_one_exchange(eid: str) -> None:
         label = get_exchange_meta(eid)["label"]
+        ex_conn = get_connection()
         for tf in config.collection_timeframes:
-            # Primary exchange 4H already cached above
             if eid == config.exchange and tf == "4h":
                 continue
             count = config.candle_counts.get(tf, 200)
@@ -82,12 +83,16 @@ def _collect_candles(
                 tf_cached = 0
                 for coin_name, df in tf_map.items():
                     if df is not None and not df.empty:
-                        tf_cached += cache_candles(coin_name, tf, df, conn, exchange=eid)
+                        tf_cached += cache_candles(coin_name, tf, df, ex_conn, exchange=eid)
                 if verbose:
                     print(f"  {label} {tf}: {len(tf_map)} pairs, {tf_cached} rows cached")
             except Exception as e:
                 if verbose:
                     print(f"  {label} {tf}: failed — {e}")
+        ex_conn.close()
+
+    with ThreadPoolExecutor(max_workers=len(config.candle_exchanges)) as executor:
+        list(executor.map(_collect_one_exchange, config.candle_exchanges))
 
 
 def stage1_screen(
@@ -136,7 +141,7 @@ def stage1_screen(
 
     # Collect candles across all configured exchanges and timeframes (data pipeline)
     if not coin_filter:
-        _collect_candles(coins, config, conn, verbose)
+        _collect_candles(coins, config, verbose)
 
     # Build leverage lookup from pairs data
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
