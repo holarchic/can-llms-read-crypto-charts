@@ -312,7 +312,7 @@ def cmd_report(args):
         overall, sliced = signal_quality_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
-            run_permutation=args.permutation,
+            run_sign_flip=args.sign_flip,
         )
         sections.append(format_signal_quality(overall, sliced))
         embeds.extend(build_signal_quality_embeds(overall, sliced))
@@ -375,7 +375,7 @@ def cmd_report(args):
             _, sliced = signal_quality_report(
                 strategy, args.since, args.until, conn,
                 coins=coins, verbose=args.verbose,
-                run_permutation=args.permutation,
+                run_sign_flip=args.sign_flip,
             )
         setup_type_reports = sliced.get("setup_type", [])
         suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
@@ -549,7 +549,7 @@ def main():
     p_report.add_argument("--resolution-drift", action="store_true", help="Time-to-resolution drift")
     p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for rolling reports (default: 2)")
     p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
-    p_report.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
+    p_report.add_argument("--sign-flip", action="store_true", help="Run Monte Carlo sign-flip test on expectancy")
     p_report.add_argument("-v", "--verbose", action="store_true")
     p_report.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     p_report.set_defaults(func=cmd_report)

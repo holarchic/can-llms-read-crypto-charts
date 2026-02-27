@@ -5,7 +5,7 @@ import pytest
 from scanner.backtest.resolver import TradeSetup, TradeOutcome
 from scanner.backtest.metrics import (
     compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI,
-    permutation_test, PermutationResult,
+    sign_flip_test, SignFlipResult,
     sharpe_ratio, deflated_sharpe_ratio, DSRResult,
 )
 
@@ -219,17 +219,17 @@ class TestRegimeSlicer:
         assert "unknown" in labels
 
 
-class TestPermutationTest:
-    """Monte Carlo permutation test on expectancy."""
+class TestSignFlipTest:
+    """Monte Carlo sign-flip test on expectancy."""
 
     def test_too_few_outcomes_returns_none(self):
         outcomes = [_outcome("WIN", 2.0) for _ in range(4)]
-        assert permutation_test(outcomes) is None
+        assert sign_flip_test(outcomes) is None
 
     def test_all_wins_low_p_value(self):
         outcomes = [_outcome("WIN", 2.0) for _ in range(20)]
-        result = permutation_test(outcomes, seed=42)
-        assert isinstance(result, PermutationResult)
+        result = sign_flip_test(outcomes, seed=42)
+        assert isinstance(result, SignFlipResult)
         assert result.p_value < 0.05
         assert result.is_significant is True
 
@@ -238,7 +238,7 @@ class TestPermutationTest:
             [_outcome("WIN", 1.0) for _ in range(10)]
             + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(10)]
         )
-        result = permutation_test(outcomes, seed=42)
+        result = sign_flip_test(outcomes, seed=42)
         # 50/50 win/loss at symmetric R → expectancy ~0, p should be high
         assert result.p_value > 0.1
 
@@ -247,20 +247,20 @@ class TestPermutationTest:
             [_outcome("WIN", 2.0) for _ in range(8)]
             + [_outcome("LOSS", -1.0, mae=1.0, mfe=0.5) for _ in range(4)]
         )
-        r1 = permutation_test(outcomes, seed=99)
-        r2 = permutation_test(outcomes, seed=99)
+        r1 = sign_flip_test(outcomes, seed=99)
+        r2 = sign_flip_test(outcomes, seed=99)
         assert r1.p_value == r2.p_value
 
-    def test_compute_metrics_with_permutation_flag(self):
+    def test_compute_metrics_with_sign_flip_flag(self):
         outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
-        report = compute_metrics(outcomes, "test", run_permutation=True)
-        assert report.permutation is not None
-        assert report.permutation.is_significant is True
+        report = compute_metrics(outcomes, "test", run_sign_flip=True)
+        assert report.sign_flip is not None
+        assert report.sign_flip.is_significant is True
 
-    def test_compute_metrics_no_permutation_by_default(self):
+    def test_compute_metrics_no_sign_flip_by_default(self):
         outcomes = [_outcome("WIN", 2.0) for _ in range(10)]
         report = compute_metrics(outcomes, "test")
-        assert report.permutation is None
+        assert report.sign_flip is None
 
 
 class TestSharpeRatio:

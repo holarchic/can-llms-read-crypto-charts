@@ -20,12 +20,12 @@ class BootstrapCI:
 
 
 @dataclass
-class PermutationResult:
-    """Monte Carlo permutation test on expectancy."""
+class SignFlipResult:
+    """Monte Carlo sign-flip test on expectancy."""
 
     observed_expectancy: float
     p_value: float
-    n_permutations: int
+    n_iterations: int
     is_significant: bool  # p < 0.05
 
 
@@ -41,15 +41,15 @@ class DSRResult:
     is_significant: bool  # p < 0.05
 
 
-def permutation_test(
+def sign_flip_test(
     outcomes: list[TradeOutcome],
-    n_permutations: int = 10_000,
+    n_iterations: int = 10_000,
     seed: int | None = None,
-) -> PermutationResult | None:
-    """Monte Carlo permutation test: is this edge real?
+) -> SignFlipResult | None:
+    """Monte Carlo sign-flip test: is this edge real?
 
-    Shuffles R-multiples n_permutations times, computes mean each time.
-    p-value = fraction of shuffled means >= observed mean.
+    Randomly flips signs of R-multiples n_iterations times, computes mean each time.
+    p-value = fraction of sign-flipped means >= observed mean.
     Returns None if fewer than 5 outcomes.
     """
     if len(outcomes) < 5:
@@ -60,20 +60,17 @@ def permutation_test(
     rng = random.Random(seed)
 
     count_ge = 0
-    for _ in range(n_permutations):
-        shuffled = r_values[:]
-        rng.shuffle(shuffled)
-        # Under null: random assignment of signs (negate random subset)
-        perm_mean = sum(v * rng.choice((-1, 1)) for v in shuffled) / len(shuffled)
-        if perm_mean >= observed:
+    for _ in range(n_iterations):
+        flipped_mean = sum(v * rng.choice((-1, 1)) for v in r_values) / len(r_values)
+        if flipped_mean >= observed:
             count_ge += 1
 
-    p_value = count_ge / n_permutations
+    p_value = count_ge / n_iterations
 
-    return PermutationResult(
+    return SignFlipResult(
         observed_expectancy=round(observed, 4),
         p_value=round(p_value, 4),
-        n_permutations=n_permutations,
+        n_iterations=n_iterations,
         is_significant=p_value < 0.05,
     )
 
@@ -209,10 +206,10 @@ class MetricsReport:
     avg_loss_r: float
     avg_funding_r: float = 0.0
     bootstrap_ci: BootstrapCI | None = None
-    permutation: PermutationResult | None = None
+    sign_flip: SignFlipResult | None = None
 
 
-def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_permutation: bool = False) -> MetricsReport:
+def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_sign_flip: bool = False) -> MetricsReport:
     """Compute aggregate metrics from a list of trade outcomes."""
     n = len(outcomes)
     if n == 0:
@@ -254,7 +251,7 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_permut
     avg_funding_r = sum(o.funding_paid for o in outcomes) / n
 
     ci = bootstrap_expectancy(outcomes) if n >= 5 else None
-    perm = permutation_test(outcomes) if (run_permutation and n >= 5) else None
+    sf = sign_flip_test(outcomes) if (run_sign_flip and n >= 5) else None
 
     return MetricsReport(
         label=label,
@@ -274,7 +271,7 @@ def compute_metrics(outcomes: list[TradeOutcome], label: str = "All", run_permut
         avg_loss_r=round(avg_loss_r, 4),
         avg_funding_r=round(avg_funding_r, 4),
         bootstrap_ci=ci,
-        permutation=perm,
+        sign_flip=sf,
     )
 
 

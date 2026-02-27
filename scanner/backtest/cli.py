@@ -95,7 +95,7 @@ def main():
     parser.add_argument("--prompt-version", type=str, default=None, help="Filter LLM scans by prompt version (e.g. 2)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print per-signal details")
     parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
-    parser.add_argument("--permutation", action="store_true", help="Run Monte Carlo permutation test on expectancy")
+    parser.add_argument("--sign-flip", action="store_true", help="Run Monte Carlo sign-flip test on expectancy")
     args = parser.parse_args()
 
     # Resolve fee rate: explicit --fee > exchange default
@@ -181,7 +181,7 @@ def main():
         sys.exit(0)
 
     # Compute metrics
-    overall = compute_metrics(resolved, "Overall", run_permutation=args.permutation)
+    overall = compute_metrics(resolved, "Overall", run_sign_flip=args.sign_flip)
     sliced = slice_metrics(resolved)
 
     report_text = format_full_report(overall, sliced, args.mode)

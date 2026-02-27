@@ -202,7 +202,7 @@ def signal_quality_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
-    run_permutation: bool = False,
+    run_sign_flip: bool = False,
 ) -> tuple[MetricsReport, dict[str, list[MetricsReport]]]:
     """Per-setup-type breakdown. Which of A-G produce edge?
 
@@ -220,7 +220,7 @@ def signal_quality_report(
         conn, timeout_bars, fee_rate, verbose,
     )
 
-    overall = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}", run_permutation=run_permutation)
+    overall = compute_metrics(outcomes, f"strategy:{strategy.strategy_id}", run_sign_flip=run_sign_flip)
     sliced = slice_metrics(outcomes)
 
     return overall, sliced
