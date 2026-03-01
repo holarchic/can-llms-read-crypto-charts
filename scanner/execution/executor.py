@@ -186,9 +186,11 @@ def execute_trade(
     # 8. Calculate position size
     max_lev = result.setup_signal.max_leverage if result.setup_signal else None
     pos = calculate_position(mb, balance, exec_config.risk_pct, max_lev)
-    if pos is None:
+    if pos is None or pos.quantity <= 0:
         er.skip_reason = "sizing_fail"
-        log.warning("%s: position sizing failed", result.coin)
+        er.error = f"balance=${balance:.2f}" if balance <= 0 else "quantity=0"
+        log.warning("%s: position sizing failed (balance=$%.2f, qty=%s)",
+                    result.coin, balance, f"{pos.quantity}" if pos else "None")
         return er
 
     er.position_size = pos
@@ -307,6 +309,11 @@ def execute_trade(
     return er
 
 
+def _round_quantity(exchange, symbol: str, quantity: float) -> float:
+    """Round quantity to exchange's required precision (szDecimals)."""
+    return float(exchange.amount_to_precision(symbol, quantity))
+
+
 def _place_market_order(config, symbol: str, side: str, quantity: float, leverage: int) -> dict:
     """Set leverage + place market order.
 
@@ -315,6 +322,7 @@ def _place_market_order(config, symbol: str, side: str, quantity: float, leverag
     """
     exchange = get_auth_exchange(config)
     exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
+    quantity = _round_quantity(exchange, symbol, quantity)
     ticker = exchange.fetch_ticker(symbol)
     price = ticker["last"]
     return exchange.create_order(symbol, "market", side, quantity, price)
@@ -325,6 +333,7 @@ def _place_stop_loss(
 ) -> dict | None:
     """Place stop loss with retry + exponential backoff. Returns None if all retries fail."""
     exchange = get_auth_exchange(config)
+    quantity = _round_quantity(exchange, symbol, quantity)
     for attempt in range(max_retries):
         try:
             return exchange.create_order(
@@ -344,6 +353,7 @@ def _place_take_profit(
     """Place take profit. Returns None on failure (non-critical)."""
     try:
         exchange = get_auth_exchange(config)
+        quantity = _round_quantity(exchange, symbol, quantity)
         return exchange.create_order(
             symbol, "TAKE_PROFIT_MARKET", side, quantity, trigger_price,
             {"takeProfitPrice": trigger_price, "reduceOnly": True},

@@ -154,6 +154,7 @@ class TestExecuteTrade:
                              mock_auth, mock_discord, conn, exec_config, scanner_config):
         mock_exchange = MagicMock()
         mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
@@ -180,6 +181,7 @@ class TestExecuteTrade:
                               mock_auth, mock_discord, conn, exec_config, scanner_config):
         mock_exchange = MagicMock()
         mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
@@ -268,6 +270,7 @@ class TestExecuteTrade:
             _mock_exchange_success(),  # TP1
             _mock_exchange_success(),  # TP2
         ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
@@ -292,6 +295,7 @@ class TestExecuteTrade:
             _mock_exchange_success(),  # TP1
             _mock_exchange_success(),  # TP2
         ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
@@ -319,6 +323,7 @@ class TestExecuteTrade:
             Exception("TP failed"),    # TP1
             Exception("TP failed"),    # TP2
         ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
@@ -336,8 +341,26 @@ class TestExecuteTrade:
                                 mock_auth, mock_discord, conn, exec_config, scanner_config):
         mock_exchange = MagicMock()
         mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
         execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert mock_discord.called
+
+
+class TestRoundQuantity:
+    def test_rounds_via_exchange_precision(self):
+        from scanner.execution.executor import _round_quantity
+        mock_exchange = MagicMock()
+        mock_exchange.amount_to_precision.return_value = "0.66"
+        result = _round_quantity(mock_exchange, "HYPE/USDC:USDC", 0.6666666)
+        assert result == 0.66
+        mock_exchange.amount_to_precision.assert_called_once_with("HYPE/USDC:USDC", 0.6666666)
+
+    def test_passthrough_returns_float(self):
+        from scanner.execution.executor import _round_quantity
+        mock_exchange = MagicMock()
+        mock_exchange.amount_to_precision.return_value = "0.142"
+        result = _round_quantity(mock_exchange, "TAO/USDC:USDC", 0.14285714)
+        assert result == 0.142
