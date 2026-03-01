@@ -308,10 +308,16 @@ def execute_trade(
 
 
 def _place_market_order(config, symbol: str, side: str, quantity: float, leverage: int) -> dict:
-    """Set leverage + place market order."""
+    """Set leverage + place market order.
+
+    HyperLiquid has no native market orders — ccxt simulates via limit IOC
+    with 5% slippage. Requires current price as the base for slippage calc.
+    """
     exchange = get_auth_exchange(config)
     exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
-    return exchange.create_order(symbol, "market", side, quantity)
+    ticker = exchange.fetch_ticker(symbol)
+    price = ticker["last"]
+    return exchange.create_order(symbol, "market", side, quantity, price)
 
 
 def _place_stop_loss(
