@@ -2,16 +2,17 @@
 
 import json
 import sqlite3
+
 import pytest
 
 from scanner.execution.analytics import (
-    get_closed_trades,
-    compute_live_metrics,
-    compare_sim_vs_live,
-    rolling_expectancy,
     TradeRecord,
+    compare_sim_vs_live,
+    compute_live_metrics,
+    get_closed_trades,
+    rolling_expectancy,
 )
-from scanner.execution.storage import ensure_orders_table, save_order, new_order_id
+from scanner.execution.storage import ensure_orders_table, new_order_id, save_order
 
 
 @pytest.fixture

@@ -6,16 +6,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .config import ScannerConfig, get_exchange_meta
-from .data import fetch_pairs_with_volume, fetch_candles, fetch_candles_batch, get_max_leverage
-from .indicators import build_context
-from .screener import detect_all_setups
-from .charts import generate_charts_for_signal, cleanup_charts
-from .analysis import analyze_for_scanner, PROMPT_VERSION
-from .storage import get_connection, save_result, save_signals, save_scan_universe, is_duplicate, mark_alerted, daily_cost
-from .alerts import send_alert, format_alert_text, send_ops_log, COLOR_OK, COLOR_WARN
-from .models import SetupSignal, ScanResult
+from .alerts import COLOR_OK, COLOR_WARN, format_alert_text, send_alert, send_ops_log
+from .analysis import PROMPT_VERSION, analyze_for_scanner
 from .backtest.candles import cache_candles
+from .charts import cleanup_charts, generate_charts_for_signal
+from .config import ScannerConfig, get_exchange_meta
+from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
+from .indicators import build_context
+from .models import ScanResult, SetupSignal
+from .screener import detect_all_setups
+from .storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
 from .strategy.store import get_strategy
 
 
@@ -322,7 +322,7 @@ def stage3_alert(
                 if verbose:
                     print(f"  Discord alert FAILED for {result.coin}")
         elif verbose and not skip_discord:
-            print(f"  No Discord webhook configured — skipping alert")
+            print("  No Discord webhook configured — skipping alert")
 
     # Cleanup charts
     cleaned = cleanup_charts()
@@ -344,7 +344,7 @@ def stage4_execute(
     Each CONFIRM attempted independently. Errors caught — NEVER crashes scanner.
     Returns list of ExecutionResult.
     """
-    from .execution.executor import execute_trade, ExecutionResult
+    from .execution.executor import ExecutionResult, execute_trade
 
     if not exec_config.enabled:
         return []
@@ -426,9 +426,8 @@ def run_scan(
     if dry_execute and confirms:
         if verbose:
             print(f"\nStage 4 (dry-execute): {len(confirms)} CONFIRMs")
-        from .execution.sanity import check_price_sanity, is_price_in_entry_zone
-        from .execution.sizing import calculate_position
         from .execution.executor import validate_execution_params
+        from .execution.sizing import calculate_position
         for c in confirms:
             mb = c.machine_block
             if not mb:

@@ -1,19 +1,11 @@
 """Tests for multi-exchange support — config, metadata, data layer, storage."""
 
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scanner.config import EXCHANGE_META, get_exchange_meta, ScannerConfig
-from scanner.storage import get_connection, is_duplicate, save_result, save_signals, save_scan_universe
-from scanner.models import (
-    ScanResult, SetupSignal, SetupType, Direction,
-    MarketContext, Structure,
-)
-
+from scanner.config import EXCHANGE_META, ScannerConfig, get_exchange_meta
+from scanner.storage import get_connection, is_duplicate
 
 # --- Config / metadata ---
 

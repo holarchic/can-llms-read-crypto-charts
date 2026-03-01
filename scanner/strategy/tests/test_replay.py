@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.storage import get_connection
 from scanner.backtest.candles import cache_candles
+from scanner.storage import get_connection
 from scanner.strategy.models import Strategy
 from scanner.strategy.replay import (
-    replay,
     _get_replay_timestamps,
     _get_trailing_candles,
+    replay,
 )
 
 

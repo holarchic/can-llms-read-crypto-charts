@@ -1,8 +1,8 @@
 """Tests for scanner.alerts — ops logging and report embeds."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from scanner.alerts import send_ops_log, send_report_embeds, COLOR_OK, COLOR_WARN, COLOR_ERROR
+from scanner.alerts import COLOR_ERROR, COLOR_OK, send_ops_log, send_report_embeds
 from scanner.config import ScannerConfig
 
 

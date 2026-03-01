@@ -1,8 +1,9 @@
 """Tests for price sanity checks."""
 
 import pytest
-from scanner.execution.sanity import check_price_sanity, is_price_in_entry_zone, SanityResult
+
 from scanner.execution.config import ExecutionConfig
+from scanner.execution.sanity import check_price_sanity, is_price_in_entry_zone
 
 
 @pytest.fixture

@@ -21,26 +21,27 @@ Options:
 
 import argparse
 import json
-import random
 import sqlite3
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from scanner.config import ScannerConfig, DB_PATH
-from scanner.data import fetch_candles
+from scanner.analysis import analyze_for_scanner
 from scanner.backtest.candles import get_cached_candles
 from scanner.charts import generate_charts_for_signal
-from scanner.analysis import analyze_for_scanner
-from scanner.models import (
-    SetupSignal, SetupType, Direction, MarketContext,
-    Structure, SwingPoint, SRLevel, MSB, FibLevels, ScoreComponents,
-)
+from scanner.config import ScannerConfig
+from scanner.data import fetch_candles
 from scanner.indicators import build_context
+from scanner.models import (
+    Direction,
+    MarketContext,
+    SetupSignal,
+    SetupType,
+    Structure,
+)
 from scanner.storage import get_connection
 
 

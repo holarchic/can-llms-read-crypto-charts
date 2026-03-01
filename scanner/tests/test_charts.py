@@ -1,12 +1,11 @@
 """Tests for chart generation."""
 
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock
 
-from scanner.charts import generate_chart, cleanup_charts
+import pytest
+
+from scanner.charts import cleanup_charts, generate_chart
 from scanner.indicators import build_context
-from scanner.models import SetupType, Direction, SetupSignal
+from scanner.models import Direction, SetupSignal, SetupType
 
 
 @pytest.fixture

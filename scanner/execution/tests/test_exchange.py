@@ -1,17 +1,18 @@
 """Tests for authenticated exchange connection + queries."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from scanner.execution.exchange import (
-    get_auth_exchange,
-    reset_auth_exchange,
-    fetch_current_price,
-    fetch_balance,
-    get_open_positions,
-    cancel_order,
-)
 from scanner.execution.config import ExecutionConfig
+from scanner.execution.exchange import (
+    cancel_order,
+    fetch_balance,
+    fetch_current_price,
+    get_auth_exchange,
+    get_open_positions,
+    reset_auth_exchange,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +47,7 @@ class TestGetAuthExchange:
         mock_exchange = MagicMock()
         mock_ccxt.hyperliquid.return_value = mock_exchange
 
-        result = get_auth_exchange(testnet_config)
+        _result = get_auth_exchange(testnet_config)
         mock_exchange.set_sandbox_mode.assert_called_once_with(True)
         mock_exchange.load_markets.assert_called_once()
 
@@ -55,7 +56,7 @@ class TestGetAuthExchange:
         mock_exchange = MagicMock()
         mock_ccxt.hyperliquid.return_value = mock_exchange
 
-        result = get_auth_exchange(live_config)
+        _result = get_auth_exchange(live_config)
         mock_exchange.set_sandbox_mode.assert_not_called()
 
     @patch("scanner.execution.exchange.ccxt")

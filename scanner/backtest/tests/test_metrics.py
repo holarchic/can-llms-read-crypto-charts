@@ -2,12 +2,18 @@
 
 import pytest
 
-from scanner.backtest.resolver import TradeSetup, TradeOutcome
 from scanner.backtest.metrics import (
-    compute_metrics, slice_metrics, bootstrap_expectancy, BootstrapCI,
-    sign_flip_test, SignFlipResult,
-    sharpe_ratio, deflated_sharpe_ratio, DSRResult,
+    BootstrapCI,
+    DSRResult,
+    SignFlipResult,
+    bootstrap_expectancy,
+    compute_metrics,
+    deflated_sharpe_ratio,
+    sharpe_ratio,
+    sign_flip_test,
+    slice_metrics,
 )
+from scanner.backtest.resolver import TradeOutcome, TradeSetup
 
 
 def _outcome(result="WIN", r_achieved=2.0, bars=5, mae=0.3, mfe=2.5, setup_type="C", direction="LONG", confidence=0.7, regime=""):

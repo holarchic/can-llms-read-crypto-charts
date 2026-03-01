@@ -4,12 +4,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scanner.storage import get_connection, save_result
-from scanner.models import (
-    ScanResult, SetupSignal, SetupType, Direction,
-    MarketContext, Structure,
-)
 from scanner.backtest.cli import _load_llm_signals
+from scanner.models import (
+    Direction,
+    MarketContext,
+    ScanResult,
+    SetupSignal,
+    SetupType,
+    Structure,
+)
+from scanner.storage import get_connection, save_result
 
 
 @pytest.fixture

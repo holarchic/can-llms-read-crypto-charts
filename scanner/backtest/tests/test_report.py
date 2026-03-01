@@ -1,8 +1,8 @@
 """Tests for backtest report formatting — CLI and Discord embeds."""
 
-from scanner.backtest.resolver import TradeSetup, TradeOutcome
-from scanner.backtest.metrics import compute_metrics, slice_metrics, MetricsReport, BootstrapCI
-from scanner.backtest.report import build_backtest_embeds, _ci_verdict
+from scanner.backtest.metrics import BootstrapCI, MetricsReport, compute_metrics, slice_metrics
+from scanner.backtest.report import _ci_verdict, build_backtest_embeds
+from scanner.backtest.resolver import TradeOutcome, TradeSetup
 
 
 def _outcome(result="WIN", r_achieved=2.0, setup_type="C", direction="LONG"):

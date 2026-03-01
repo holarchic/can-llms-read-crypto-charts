@@ -1,20 +1,21 @@
 """Tests for orders table CRUD operations."""
 
 import sqlite3
+
 import pytest
 
 from scanner.execution.storage import (
+    count_open_longs,
+    count_open_positions,
     ensure_orders_table,
-    new_order_id,
-    save_order,
+    get_open_entry_orders,
     get_order,
     get_orders_for_scan,
-    update_order_status,
-    get_open_entry_orders,
-    count_open_positions,
     has_open_position,
-    count_open_longs,
+    new_order_id,
+    save_order,
     sum_open_notional,
+    update_order_status,
 )
 
 

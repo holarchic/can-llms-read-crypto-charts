@@ -1,17 +1,17 @@
 """Tests for position monitoring + order status sync."""
 
 import sqlite3
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scanner.execution.monitor import sync_order_status, check_positions
 from scanner.execution.config import ExecutionConfig
+from scanner.execution.monitor import check_positions, sync_order_status
 from scanner.execution.storage import (
     ensure_orders_table,
-    save_order,
     get_order,
     new_order_id,
+    save_order,
 )
 
 

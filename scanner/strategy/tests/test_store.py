@@ -1,15 +1,13 @@
 """Tests for strategy CRUD operations."""
 
-import pytest
 
-from scanner.strategy.models import Strategy
 from scanner.strategy.store import (
-    save_strategy,
-    get_strategy,
-    get_active_strategy,
-    list_strategies,
     activate_strategy,
     ensure_baseline,
+    get_active_strategy,
+    get_strategy,
+    list_strategies,
+    save_strategy,
 )
 
 

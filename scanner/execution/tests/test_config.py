@@ -1,6 +1,7 @@
 """Tests for ExecutionConfig dataclass + loader."""
 
 from unittest.mock import patch
+
 import pytest
 
 from scanner.execution.config import ExecutionConfig, load_execution_config

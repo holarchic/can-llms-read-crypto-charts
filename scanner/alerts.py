@@ -2,13 +2,12 @@
 
 import time
 from datetime import datetime, timezone
-
-import requests
 from pathlib import Path
 
-from .config import ScannerConfig
-from .models import ScanResult, SETUP_NAMES
+import requests
 
+from .config import ScannerConfig
+from .models import SETUP_NAMES, ScanResult
 
 # Discord embed color
 COLOR_LONG = 0x26A69A   # green

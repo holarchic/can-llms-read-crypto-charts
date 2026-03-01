@@ -1,6 +1,5 @@
 """Shared fixtures for backtest tests."""
 
-import sqlite3
 
 import pandas as pd
 import pytest

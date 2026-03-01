@@ -2,7 +2,7 @@
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
@@ -12,19 +12,19 @@ from scanner.models import ScanResult
 
 from .config import ExecutionConfig
 from .exchange import (
-    get_auth_exchange,
-    fetch_current_price,
     fetch_balance,
+    fetch_current_price,
+    get_auth_exchange,
 )
 from .kill_switch import is_killed
 from .sanity import check_price_sanity, is_price_in_entry_zone
-from .sizing import calculate_position, PositionSize
+from .sizing import PositionSize, calculate_position
 from .storage import (
-    new_order_id,
-    save_order,
+    count_open_longs,
     count_open_positions,
     has_open_position,
-    count_open_longs,
+    new_order_id,
+    save_order,
     sum_open_notional,
 )
 

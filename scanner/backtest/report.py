@@ -19,7 +19,7 @@ def format_summary(report: MetricsReport) -> str:
         marker = "edge" if ci.excludes_zero and ci.ci_low > 0 else "negative" if ci.excludes_zero else "inconclusive"
         lines.append(f"  95% CI:          [{ci.ci_low:+.4f}, {ci.ci_high:+.4f}]R  ({marker})")
     elif report.sample_size > 0:
-        lines.append(f"  95% CI:          insufficient data (n < 5)")
+        lines.append("  95% CI:          insufficient data (n < 5)")
 
     sf = report.sign_flip
     if sf:

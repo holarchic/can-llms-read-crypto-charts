@@ -1,9 +1,0 @@
-anthropic
-python-dotenv
-ccxt>=4.5.0
-mplfinance>=0.12.10b0
-pandas>=2.0.0
-pandas-ta>=0.3.14b
-scipy>=1.10.0
-requests>=2.28.0
-google-cloud-secret-manager>=2.20.0

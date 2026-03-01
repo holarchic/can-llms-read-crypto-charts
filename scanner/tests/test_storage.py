@@ -1,16 +1,18 @@
 """Tests for SQLite storage — CRUD, dedup, cost tracking."""
 
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
-from scanner.storage import get_connection, save_result, save_scan_universe, is_duplicate, mark_alerted, daily_cost, stats
 from scanner.models import (
-    ScanResult, SetupSignal, SetupType, Direction,
-    MarketContext, Structure, SRLevel, SwingPoint,
+    Direction,
+    MarketContext,
+    ScanResult,
+    SetupSignal,
+    SetupType,
+    Structure,
 )
+from scanner.storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, stats
 
 
 @pytest.fixture

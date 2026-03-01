@@ -5,41 +5,40 @@ import pandas as pd
 import pytest
 
 from scanner.backtest.candles import cache_candles
-from scanner.backtest.metrics import MetricsReport, compute_metrics
+from scanner.backtest.metrics import MetricsReport
 from scanner.backtest.resolver import TradeOutcome, TradeSetup
 from scanner.storage import get_connection
 from scanner.strategy.models import Strategy
-from scanner.strategy.store import save_strategy, get_strategy
 from scanner.strategy.report import (
-    load_strategy_signals,
+    COLOR_NEG,
+    COLOR_POS,
+    COLOR_WARN,
+    LLMAlphaDeltaWindow,
+    LLMFilterResult,
+    build_disable_embeds,
+    build_llm_filter_embeds,
+    build_signal_quality_embeds,
+    format_disable_suggestion,
+    format_llm_alpha_decay,
+    format_llm_filter,
+    format_regime_conditioned_decay,
+    format_regime_crosstab,
+    format_regime_decay,
+    format_resolution_drift,
+    format_signal_quality,
+    llm_alpha_decay_report,
+    llm_filter_report,
     load_llm_scans,
+    load_strategy_signals,
+    regime_conditioned_decay_report,
+    regime_crosstab_report,
+    regime_decay_report,
+    resolution_drift_report,
     resolve_signals,
     signal_quality_report,
-    llm_filter_report,
-    LLMFilterResult,
-    regime_decay_report,
-    regime_crosstab_report,
-    regime_conditioned_decay_report,
-    llm_alpha_decay_report,
-    resolution_drift_report,
-    LLMAlphaDeltaWindow,
     suggest_disabled_types,
-    format_signal_quality,
-    format_llm_filter,
-    format_regime_decay,
-    format_regime_crosstab,
-    format_regime_conditioned_decay,
-    format_llm_alpha_decay,
-    format_resolution_drift,
-    format_disable_suggestion,
-    build_signal_quality_embeds,
-    build_llm_filter_embeds,
-    build_disable_embeds,
-    COLOR_POS,
-    COLOR_NEG,
-    COLOR_WARN,
 )
-
+from scanner.strategy.store import get_strategy, save_strategy
 
 # --- Fixtures ---
 
@@ -568,8 +567,8 @@ class TestDisabledTypesStore:
 class TestDisabledTypesScreener:
     def test_detect_all_filters_disabled(self):
         """disabled_types removes matching setup types from results."""
-        from scanner.screener import detect_all_setups
         from scanner.indicators import build_context
+        from scanner.screener import detect_all_setups
 
         # Build synthetic ranging data to trigger setups
         np.random.seed(42)
@@ -604,8 +603,8 @@ class TestDisabledTypesScreener:
 
     def test_none_disabled_returns_all(self):
         """disabled_types=None doesn't filter anything."""
-        from scanner.screener import detect_all_setups
         from scanner.indicators import build_context
+        from scanner.screener import detect_all_setups
 
         np.random.seed(42)
         n = 200
@@ -756,8 +755,8 @@ class TestRegimeConditionedDecayReport:
 
     def test_missing_regime_becomes_unknown(self, db_conn, strategy):
         """Signals without regime column → 'unknown' bucket."""
-        from uuid import uuid4
         from datetime import datetime, timezone
+        from uuid import uuid4
 
         save_strategy(strategy, db_conn)
         df_1h = _make_1h_candles(base=100.0, n_bars=1200)

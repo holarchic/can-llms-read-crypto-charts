@@ -1,7 +1,8 @@
 """Tests for position sizing."""
 
 import pytest
-from scanner.execution.sizing import calculate_position, PositionSize
+
+from scanner.execution.sizing import calculate_position
 
 
 def _long_block(**overrides):

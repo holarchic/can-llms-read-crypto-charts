@@ -7,16 +7,14 @@ from dataclasses import dataclass
 import pandas as pd
 
 from ..backtest.metrics import MetricsReport, compute_metrics, slice_metrics
-from ..backtest.report import format_summary, format_slice_table
+from ..backtest.report import format_slice_table, format_summary
 from ..backtest.resolver import (
     TradeOutcome,
-    TradeSetup,
     build_llm_setup,
     build_screener_setup,
     fetch_and_resolve,
 )
 from .models import Strategy
-
 
 # --- Shared helpers ---
 
@@ -938,11 +936,11 @@ def build_llm_filter_embeds(result: "LLMFilterResult") -> list[dict]:
         return f"{label:<16} {r.sample_size:>3} trades | {r.win_rate:.0%} WR | {r.expectancy:+.2f}R"
 
     description = "\n".join([
-        f"```",
+        "```",
         _bucket_line("All signals:", result.screener_all),
         _bucket_line("Sent to LLM:", result.screener_sent),
         _bucket_line("LLM Confirmed:", result.llm_confirmed),
-        f"```",
+        "```",
     ])
 
     embed = {

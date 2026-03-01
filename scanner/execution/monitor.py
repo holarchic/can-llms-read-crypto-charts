@@ -1,16 +1,14 @@
 """Position monitoring — sync order status from exchange, health checks."""
 
 import logging
-from datetime import datetime, timezone
 
 from scanner.config import get_exchange_meta
 from scanner.storage import get_connection
 
 from .config import ExecutionConfig
-from .exchange import get_auth_exchange, get_open_positions, cancel_order
+from .exchange import cancel_order, get_auth_exchange
 from .storage import (
     get_open_entry_orders,
-    get_order,
     get_orders_for_scan,
     update_order_status,
 )

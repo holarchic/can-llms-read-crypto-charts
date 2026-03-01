@@ -2,7 +2,7 @@
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from scipy.stats import norm
 
@@ -296,7 +296,12 @@ DEFAULT_SLICERS = {
 }
 
 # Conditional slicer — only added when data exists (see slice_metrics)
-_LLM_CONFIDENCE_SLICER = lambda o: "high" if (o.setup and o.setup.llm_confidence >= 8) else "med" if (o.setup and o.setup.llm_confidence >= 5) else "low"
+def _llm_confidence_slicer(o):
+    if o.setup and o.setup.llm_confidence >= 8:
+        return "high"
+    if o.setup and o.setup.llm_confidence >= 5:
+        return "med"
+    return "low"
 
 
 def slice_metrics(
@@ -311,7 +316,7 @@ def slice_metrics(
         slicers = dict(DEFAULT_SLICERS)
         # Only add llm_confidence slicer when at least one outcome has data
         if any(o.setup and o.setup.llm_confidence > 0 for o in outcomes):
-            slicers["llm_confidence"] = _LLM_CONFIDENCE_SLICER
+            slicers["llm_confidence"] = _llm_confidence_slicer
 
     result = {}
     for dim_name, key_fn in slicers.items():

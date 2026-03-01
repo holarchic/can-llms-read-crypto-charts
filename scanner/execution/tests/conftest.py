@@ -1,6 +1,7 @@
 """Shared fixtures for execution tests."""
 
 import sqlite3
+
 import pytest
 
 from scanner.execution.config import ExecutionConfig

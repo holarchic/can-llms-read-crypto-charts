@@ -1,7 +1,6 @@
 """CLI for execution module. Run with: python -m scanner.execution"""
 
 import argparse
-import sys
 
 from .config import load_execution_config
 
@@ -44,8 +43,9 @@ Examples:
 
 
 def _cmd_monitor(config):
-    from .monitor import sync_order_status, check_positions
     from scanner.storage import get_connection
+
+    from .monitor import check_positions, sync_order_status
 
     conn = get_connection()
     updated = sync_order_status(config, conn)
@@ -105,7 +105,7 @@ def _cmd_orders(config, days):
 
 
 def _cmd_kill(config, active):
-    from .kill_switch import set_kill_switch, is_killed
+    from .kill_switch import is_killed, set_kill_switch
 
     set_kill_switch(active, config)
     status = is_killed(config)
@@ -113,11 +113,12 @@ def _cmd_kill(config, active):
 
 
 def _cmd_report(config, days, mode, discord):
-    from .analytics import get_closed_trades, compute_live_metrics, compare_sim_vs_live
-    from .report import format_execution_report, build_execution_embeds
+    import requests as req
+
     from scanner.storage import get_connection
 
-    import requests as req
+    from .analytics import compare_sim_vs_live, compute_live_metrics, get_closed_trades
+    from .report import build_execution_embeds, format_execution_report
 
     conn = get_connection()
     trades = get_closed_trades(conn, execution_mode=mode, days=days)

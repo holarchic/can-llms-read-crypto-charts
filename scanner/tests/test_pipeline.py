@@ -1,9 +1,12 @@
 """Tests for pipeline helpers (diversity selection)."""
 
-import pytest
 
 from scanner.models import (
-    SetupSignal, SetupType, Direction, Structure, MarketContext,
+    Direction,
+    MarketContext,
+    SetupSignal,
+    SetupType,
+    Structure,
 )
 from scanner.pipeline import _select_with_diversity
 
@@ -112,8 +115,8 @@ class TestSelectWithDiversity:
             + [_make_signal(coin=f"E{i}", setup_type=SetupType.E, confidence=0.5) for i in range(5)]
         )
         result = _select_with_diversity(signals, 10)
-        selected = result[:10]
-        remaining = result[10:]
+        _selected = result[:10]
+        _remaining = result[10:]
         # All signals accounted for, no duplicates
         assert len(result) == 20
         all_coins = [s.coin for s in result]

@@ -9,10 +9,8 @@ from .models import (
     MarketContext,
     SetupSignal,
     SetupType,
-    SETUP_NAMES,
     Structure,
 )
-
 
 # Weights for composite scoring
 W_BASE = 0.30
@@ -201,7 +199,10 @@ def detect_b_breakout(
                 confidence=0.5,
                 key_level=level.price,
                 context=ctx,
-                description=f"Setup B (Breakout) for {coin}. Price broke above ${level.price:,.2f} resistance (strength={level.strength}). Looking for continuation.",
+                description=(
+                    f"Setup B (Breakout) for {coin}. Price broke above ${level.price:,.2f} "
+                    f"resistance (strength={level.strength}). Looking for continuation."
+                ),
             ))
         elif was_above and (level.price - last_close) >= min_break:
             signals.append(SetupSignal(
@@ -211,7 +212,10 @@ def detect_b_breakout(
                 confidence=0.5,
                 key_level=level.price,
                 context=ctx,
-                description=f"Setup B (Breakdown) for {coin}. Price broke below ${level.price:,.2f} support (strength={level.strength}). Looking for continuation.",
+                description=(
+                    f"Setup B (Breakdown) for {coin}. Price broke below ${level.price:,.2f} "
+                    f"support (strength={level.strength}). Looking for continuation."
+                ),
             ))
 
     # Cap at best signal per direction (closest broken level)
@@ -358,7 +362,10 @@ def detect_f_deviation(
                 confidence=0.55,
                 key_level=level.price,
                 context=ctx,
-                description=f"Setup F (Deviation) for {coin}. Price wicked above ${level.price:,.2f} resistance but closed back below. Failed breakout — short.",
+                description=(
+                    f"Setup F (Deviation) for {coin}. Price wicked above ${level.price:,.2f} "
+                    "resistance but closed back below. Failed breakout — short."
+                ),
             ))
         elif max_wick_below >= min_pierce and closed_above:
             signals.append(SetupSignal(
@@ -368,7 +375,10 @@ def detect_f_deviation(
                 confidence=0.55,
                 key_level=level.price,
                 context=ctx,
-                description=f"Setup F (Deviation) for {coin}. Price wicked below ${level.price:,.2f} support but closed back above. Failed breakdown — long.",
+                description=(
+                    f"Setup F (Deviation) for {coin}. Price wicked below ${level.price:,.2f} "
+                    "support but closed back above. Failed breakdown — long."
+                ),
             ))
 
     # Cap at best signal per direction

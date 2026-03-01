@@ -4,7 +4,6 @@ import sqlite3
 from datetime import datetime, timezone
 from uuid import uuid4
 
-
 CREATE_ORDERS_TABLE = """
 CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT PRIMARY KEY,

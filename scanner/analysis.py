@@ -15,6 +15,7 @@ from chart_analyzer.analyzer import (
     parse_decision_block,
     parse_machine_block,
 )
+
 from .config import ScannerConfig
 from .models import ScanResult, SetupSignal
 

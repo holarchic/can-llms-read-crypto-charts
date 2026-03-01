@@ -2,19 +2,18 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from scanner.indicators import (
+    build_context,
+    calculate_fibs,
+    classify_regime,
+    classify_structure,
+    cluster_sr_levels,
     compute_atr,
     compute_atr_percentile,
     compute_efficiency_ratio,
-    classify_regime,
-    find_swing_points,
-    cluster_sr_levels,
-    classify_structure,
     detect_msbs,
-    calculate_fibs,
-    build_context,
+    find_swing_points,
 )
 from scanner.models import Structure
 
@@ -75,8 +74,9 @@ class TestClusterSRLevels:
 
     def test_degradation_flag(self):
         """3+ same-direction tests should mark level as degraded."""
-        from scanner.models import SwingPoint
         from datetime import datetime, timezone
+
+        from scanner.models import SwingPoint
         # 4 swing lows at the same level (4 tests from above)
         swings = [
             SwingPoint(i * 10, datetime(2026, 1, 1, tzinfo=timezone.utc), 100 + i * 0.1, "low", 100 + i * 0.1)

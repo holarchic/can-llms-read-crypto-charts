@@ -1,12 +1,10 @@
 """Technical indicators: swing detection, S/R, market structure, MSBs, fibs."""
 
-import numpy as np
 import pandas as pd
 
 from .models import (
-    Direction,
-    FibLevels,
     MSB,
+    FibLevels,
     MarketContext,
     SRLevel,
     Structure,

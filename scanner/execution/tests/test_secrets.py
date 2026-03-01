@@ -1,17 +1,20 @@
 """Tests for GCP Secret Manager + env var fallback."""
 
-from unittest.mock import patch, MagicMock, PropertyMock
-import pytest
+from unittest.mock import MagicMock, patch
 
 from scanner.execution import secrets
-from scanner.execution.secrets import get_secret, get_secret_or_env
+from scanner.execution.secrets import get_secret_or_env
 
 
 def _make_sm_mock(client_mock):
     """Build a mock google.cloud.secretmanager module with a given client."""
     sm = type("secretmanager", (), {"SecretManagerServiceClient": lambda: client_mock})
-    cloud = type("cloud", (), {"secretmanager": sm})
-    return {"google": MagicMock(), "google.cloud": MagicMock(secretmanager=sm), "google.cloud.secretmanager": MagicMock(SecretManagerServiceClient=lambda: client_mock)}
+    _cloud = type("cloud", (), {"secretmanager": sm})
+    return {
+        "google": MagicMock(),
+        "google.cloud": MagicMock(secretmanager=sm),
+        "google.cloud.secretmanager": MagicMock(SecretManagerServiceClient=lambda: client_mock),
+    }
 
 
 class TestGetSecret:

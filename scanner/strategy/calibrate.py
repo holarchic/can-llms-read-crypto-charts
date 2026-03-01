@@ -6,10 +6,8 @@ Designed to accumulate data across market regimes for eventual scoring redesign.
 
 import sqlite3
 import sys
-from datetime import datetime, timedelta
 from dataclasses import dataclass
-
-import pandas as pd
+from datetime import datetime
 
 from ..backtest.resolver import build_screener_setup, fetch_and_resolve
 

@@ -1,11 +1,10 @@
 """Tests for grid search sweep."""
 
+import pandas as pd
 import pytest
 
-import pandas as pd
-
 from scanner.backtest.candles import cache_candles
-from scanner.strategy.sweep import _parse_range, walk_forward_sweep, WalkForwardFold, WalkForwardResult
+from scanner.strategy.sweep import _parse_range, walk_forward_sweep
 
 
 def _make_signal_row(coin, timestamp, direction="LONG", key_level=100.0, atr=5.0,

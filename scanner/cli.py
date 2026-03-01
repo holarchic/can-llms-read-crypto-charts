@@ -5,10 +5,10 @@ import logging
 import sys
 import traceback
 
+from .alerts import COLOR_ERROR, send_ops_log
 from .config import ScannerConfig
 from .pipeline import run_scan
-from .storage import get_connection, stats, signal_history, signal_stats, cleanup_old_candles
-from .alerts import send_ops_log, COLOR_ERROR
+from .storage import cleanup_old_candles, get_connection, signal_history, signal_stats, stats
 
 
 def main():
@@ -81,14 +81,14 @@ Examples:
         print(f"  Scan batches:   {s['batches']}")
 
         if s["by_type"]:
-            print(f"\nBy setup type:")
+            print("\nBy setup type:")
             for t in s["by_type"]:
                 print(f"  {t['setup_type']}  {t['setup_name']:<28}  "
                       f"total={t['cnt']:>3}  sent={t['sent']:>3}  "
                       f"avg_conf={t['avg_conf']:.2f}")
 
         if s["top_coins"]:
-            print(f"\nTop coins:")
+            print("\nTop coins:")
             for c in s["top_coins"]:
                 print(f"  {c['coin']:>8}  total={c['cnt']:>3}  sent={c['sent']:>3}  "
                       f"avg_conf={c['avg_conf']:.2f}")
@@ -117,7 +117,7 @@ Examples:
                   f"conf={r['confidence']:.2f}  lvl=${r['key_level']:,.2f}  "
                   f"#{r['rank_in_batch']}/{r['total_in_batch']}  "
                   f"{r['timestamp'][:16]}")
-        print(f"\n  * = sent to LLM")
+        print("\n  * = sent to LLM")
         return
 
     if args.stats:
@@ -125,7 +125,7 @@ Examples:
         s = stats(conn)
         conn.close()
 
-        print(f"\nScanner Stats")
+        print("\nScanner Stats")
         print(f"{'=' * 40}")
         print(f"  Total scans:    {s['total_scans']}")
         print(f"  CONFIRMs:       {s['confirms']}")
@@ -136,7 +136,7 @@ Examples:
         print(f"  Today's cost:   ${s['today_cost_usd']:.4f}")
 
         if s["recent"]:
-            print(f"\nRecent scans:")
+            print("\nRecent scans:")
             for r in s["recent"]:
                 print(f"  {r['coin']:>6}  {r['setup_type']}  {r['direction']:>5}  "
                       f"{r['decision'] or 'N/A':>7}  ${r['cost_usd']:.4f}  {r['timestamp'][:16]}")

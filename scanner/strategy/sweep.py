@@ -5,12 +5,12 @@ import sys
 from dataclasses import dataclass
 from itertools import product
 
-from ..backtest.resolver import build_screener_setup, fetch_and_resolve, TradeOutcome
-from ..backtest.metrics import compute_metrics, MetricsReport
+import pandas as pd
+
+from ..backtest.metrics import MetricsReport, compute_metrics
+from ..backtest.resolver import TradeOutcome, build_screener_setup, fetch_and_resolve
 from .models import Strategy
 from .replay import replay
-
-import pandas as pd
 
 
 def _parse_range(spec: str) -> list[float]:

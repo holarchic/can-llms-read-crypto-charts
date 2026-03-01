@@ -2,21 +2,19 @@
 
 import argparse
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from ..config import get_exchange_meta
 from ..storage import get_connection
 from .candles import fetch_and_cache
-from .resolver import (
-    TradeSetup,
-    TradeOutcome,
-    resolve_signal,
-    build_screener_setup,
-    build_llm_setup,
-    estimate_slippage,
-)
 from .metrics import compute_metrics, slice_metrics
-from .report import format_full_report, build_backtest_embeds
+from .report import build_backtest_embeds, format_full_report
+from .resolver import (
+    TradeOutcome,
+    build_llm_setup,
+    build_screener_setup,
+    resolve_signal,
+)
 
 
 def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
@@ -107,7 +105,8 @@ def main():
     # Load signals
     if args.mode == "screener":
         rows = _load_screener_signals(conn, args.days, args.coin, args.type, args.strategy)
-        builder = lambda row: build_screener_setup(row, args.atr_stop, args.atr_target)
+        def builder(row):
+            return build_screener_setup(row, args.atr_stop, args.atr_target)
     else:
         rows = _load_llm_signals(conn, args.days, args.coin, args.type, args.strategy,
                                   prompt_version=args.prompt_version)

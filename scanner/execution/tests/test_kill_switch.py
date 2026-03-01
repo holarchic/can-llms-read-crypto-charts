@@ -1,10 +1,11 @@
 """Tests for remote kill switch."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from scanner.execution.kill_switch import is_killed, set_kill_switch
 from scanner.execution.config import ExecutionConfig
+from scanner.execution.kill_switch import is_killed, set_kill_switch
 
 
 @pytest.fixture

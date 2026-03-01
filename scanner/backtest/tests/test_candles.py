@@ -5,7 +5,8 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from scanner.backtest.candles import cache_candles, get_cached_candles, fetch_and_cache
+from scanner.backtest.candles import cache_candles, fetch_and_cache, get_cached_candles
+
 from .conftest import make_candles
 
 
@@ -125,7 +126,7 @@ class TestFetchAndCachePreGap:
         assert len(result) == 10  # 4 pre-gap + 6 cached
         # Should have fetched the pre-gap
         assert self.mock_exchange.fetch_ohlcv.call_count >= 1
-        first_call_since = self.mock_exchange.fetch_ohlcv.call_args_list[0][1].get(
+        _first_call_since = self.mock_exchange.fetch_ohlcv.call_args_list[0][1].get(
             "since", self.mock_exchange.fetch_ohlcv.call_args_list[0][0][2]
             if len(self.mock_exchange.fetch_ohlcv.call_args_list[0][0]) > 2 else None
         )

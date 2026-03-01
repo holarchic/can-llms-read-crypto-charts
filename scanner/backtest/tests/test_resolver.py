@@ -2,10 +2,10 @@
 
 import json
 
-import pandas as pd
 import pytest
 
-from scanner.backtest.resolver import TradeSetup, resolve_signal, estimate_slippage, build_llm_setup
+from scanner.backtest.resolver import TradeSetup, build_llm_setup, estimate_slippage, resolve_signal
+
 from .conftest import make_candles, make_candles_from_hlc
 
 

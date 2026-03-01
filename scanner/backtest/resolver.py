@@ -2,7 +2,7 @@
 
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pandas as pd
 

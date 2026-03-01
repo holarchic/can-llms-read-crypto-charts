@@ -2,48 +2,45 @@
 
 import argparse
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-import pandas as pd
-
-from ..storage import get_connection
 from ..backtest.candles import fetch_and_cache
+from ..backtest.metrics import deflated_sharpe_ratio
 from ..backtest.report import format_summary
+from ..storage import get_connection
+from .calibrate import build_calibration_embeds, format_calibration, run_calibration
+from .compare import format_comparison
 from .models import Strategy
+from .replay import replay
+from .report import (
+    build_disable_embeds,
+    build_llm_filter_embeds,
+    build_signal_quality_embeds,
+    format_disable_suggestion,
+    format_llm_alpha_decay,
+    format_llm_filter,
+    format_regime_conditioned_decay,
+    format_regime_crosstab,
+    format_regime_decay,
+    format_resolution_drift,
+    format_signal_quality,
+    llm_alpha_decay_report,
+    llm_filter_report,
+    regime_conditioned_decay_report,
+    regime_crosstab_report,
+    regime_decay_report,
+    resolution_drift_report,
+    signal_quality_report,
+    suggest_disabled_types,
+)
 from .store import (
-    save_strategy,
-    get_strategy,
-    list_strategies,
     activate_strategy,
     ensure_baseline,
+    get_strategy,
+    list_strategies,
+    save_strategy,
 )
-from .replay import replay
-from .compare import format_comparison
-from ..backtest.metrics import deflated_sharpe_ratio
-from .sweep import sweep_resolution, sweep_screener, _parse_range, walk_forward_sweep
-from .report import (
-    signal_quality_report,
-    llm_filter_report,
-    regime_decay_report,
-    regime_crosstab_report,
-    regime_conditioned_decay_report,
-    llm_alpha_decay_report,
-    resolution_drift_report,
-    LLMAlphaDeltaWindow,
-    suggest_disabled_types,
-    format_signal_quality,
-    format_llm_filter,
-    format_regime_decay,
-    format_regime_crosstab,
-    format_regime_conditioned_decay,
-    format_llm_alpha_decay,
-    format_resolution_drift,
-    format_disable_suggestion,
-    build_signal_quality_embeds,
-    build_llm_filter_embeds,
-    build_disable_embeds,
-)
-from .calibrate import run_calibration, format_calibration, build_calibration_embeds
+from .sweep import _parse_range, sweep_resolution, walk_forward_sweep
 
 
 def cmd_create(args):
@@ -435,9 +432,10 @@ def cmd_calibrate(args):
 
 
 def cmd_backfill(args):
-    from ..data import fetch_pairs_with_volume
-    from ..config import ScannerConfig, get_exchange_meta
     import time
+
+    from ..config import ScannerConfig, get_exchange_meta
+    from ..data import fetch_pairs_with_volume
 
     exchange_id = args.exchange
     meta = get_exchange_meta(exchange_id)

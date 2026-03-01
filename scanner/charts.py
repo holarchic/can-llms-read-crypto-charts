@@ -1,6 +1,7 @@
 """Chart generation via mplfinance — dark theme with S/R + indicator overlays."""
 
 import matplotlib
+
 matplotlib.use("agg")
 
 from pathlib import Path
@@ -9,8 +10,7 @@ import mplfinance as mpf
 import pandas as pd
 
 from .config import CHARTS_DIR
-from .models import MarketContext, SetupSignal, SETUP_NAMES
-
+from .models import SetupSignal
 
 # Dark theme matching TradingView
 STYLE = mpf.make_mpf_style(

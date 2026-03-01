@@ -2,20 +2,23 @@
 
 import sqlite3
 from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import (
     execute_trade,
     validate_execution_params,
-    ExecutionResult,
 )
-from scanner.execution.config import ExecutionConfig
 from scanner.execution.storage import ensure_orders_table, get_orders_for_scan
 from scanner.models import (
-    ScanResult, SetupSignal, SetupType, Direction,
-    MarketContext, Structure, SRLevel,
+    Direction,
+    MarketContext,
+    ScanResult,
+    SetupSignal,
+    SetupType,
+    Structure,
 )
 
 

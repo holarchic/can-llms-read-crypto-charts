@@ -1,26 +1,34 @@
 """Tests for setup screener A-G detection."""
 
-import numpy as np
-import pandas as pd
-import pytest
+
+from datetime import datetime, timezone
 
 from scanner.indicators import build_context
+from scanner.models import (
+    MSB,
+    Direction,
+    MarketContext,
+    SetupSignal,
+    SetupType,
+    SRLevel,
+    Structure,
+    SwingPoint,
+)
 from scanner.screener import (
-    detect_all_setups,
+    W_ALIGNMENT,
+    W_BASE,
+    W_CONFLUENCE,
+    W_PROXIMITY,
+    W_STRENGTH,
+    _structure_alignment,
     detect_a_same_way_level,
+    detect_all_setups,
     detect_b_breakout,
     detect_c_sr_flip,
     detect_f_deviation,
     detect_g_spike_sfp,
     score_signal,
-    _structure_alignment,
-    DETECTORS,
-    W_BASE, W_ALIGNMENT, W_STRENGTH, W_PROXIMITY, W_CONFLUENCE,
 )
-from scanner.models import (
-    SetupType, Direction, Structure, MarketContext, SetupSignal, SRLevel, SwingPoint, MSB,
-)
-from datetime import datetime, timezone
 
 
 class TestDetectAllSetups:

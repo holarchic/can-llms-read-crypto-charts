@@ -1,10 +1,10 @@
 """Scanner configuration — env loading + constants."""
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
-import os
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 

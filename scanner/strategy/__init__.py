@@ -2,12 +2,12 @@
 
 from .models import Strategy
 from .store import (
-    save_strategy,
-    get_strategy,
-    get_active_strategy,
-    list_strategies,
     activate_strategy,
     ensure_baseline,
+    get_active_strategy,
+    get_strategy,
+    list_strategies,
+    save_strategy,
 )
 
 __all__ = [

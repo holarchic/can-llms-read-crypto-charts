@@ -7,11 +7,11 @@ from uuid import uuid4
 
 import pandas as pd
 
+from ..backtest.metrics import MetricsReport, compute_metrics
+from ..backtest.resolver import TradeOutcome, build_screener_setup, fetch_and_resolve
 from ..indicators import build_context
+from ..models import SETUP_NAMES, SetupSignal
 from ..screener import detect_all_setups
-from ..models import SetupSignal, SETUP_NAMES
-from ..backtest.resolver import build_screener_setup, fetch_and_resolve, TradeOutcome
-from ..backtest.metrics import compute_metrics, MetricsReport
 from .models import Strategy
 
 

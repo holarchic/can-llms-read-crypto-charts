@@ -1,14 +1,17 @@
 """Tests for signal persistence — save_signals, signal_history, signal_stats."""
 
-from datetime import datetime, timezone
 
 import pytest
 
-from scanner.storage import get_connection, save_signals, signal_history, signal_stats
 from scanner.models import (
-    SetupSignal, SetupType, Direction,
-    MarketContext, Structure, FibLevels,
+    Direction,
+    FibLevels,
+    MarketContext,
+    SetupSignal,
+    SetupType,
+    Structure,
 )
+from scanner.storage import get_connection, save_signals, signal_history, signal_stats
 
 
 @pytest.fixture

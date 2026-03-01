@@ -7,8 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .config import DB_PATH
-from .models import ScanResult, SetupSignal, SETUP_NAMES
-
+from .models import SETUP_NAMES, ScanResult, SetupSignal
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS scans (
