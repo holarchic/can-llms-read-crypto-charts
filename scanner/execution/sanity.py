@@ -18,10 +18,12 @@ def is_price_in_entry_zone(
 ) -> bool:
     """Check if current price falls within the entry zone bounds.
 
-    Direction-aware buffer: price that has moved *in the trade's favor* past
-    the zone is still accepted up to buffer_pct of the zone midpoint.
+    Direction-aware buffer: price that has moved past the zone is still
+    accepted up to buffer_pct of the zone midpoint in either direction.
     - LONG:  allow price up to buffer% above entry_high  (momentum entry)
     - SHORT: allow price up to buffer% below entry_low   (momentum entry)
+    Both directions also accept price slightly past the zone on the favorable
+    side (SHORT above entry_high, LONG below entry_low).
     """
     if entry_low <= current_price <= entry_high:
         return True
@@ -33,10 +35,16 @@ def is_price_in_entry_zone(
     buffer = mid * buffer_pct / 100
 
     direction = direction.upper()
-    if direction == "SHORT" and current_price < entry_low:
-        return current_price >= entry_low - buffer
-    if direction == "LONG" and current_price > entry_high:
-        return current_price <= entry_high + buffer
+    if direction == "SHORT":
+        if current_price < entry_low:
+            return current_price >= entry_low - buffer
+        if current_price > entry_high:
+            return current_price <= entry_high + buffer
+    if direction == "LONG":
+        if current_price > entry_high:
+            return current_price <= entry_high + buffer
+        if current_price < entry_low:
+            return current_price >= entry_low - buffer
 
     return False
 

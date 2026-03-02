@@ -43,6 +43,9 @@ def calculate_position(
     if stop_distance == 0:
         return None
 
+    # Ensure integer leverage (LLM returns float like 5.0)
+    leverage = int(leverage)
+
     # Cap leverage
     if max_leverage is not None:
         leverage = min(leverage, max_leverage)
