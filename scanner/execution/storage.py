@@ -154,12 +154,14 @@ def update_order_status(
     conn.commit()
 
 
-def get_open_entry_orders(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> list[dict]:
+def get_open_entry_orders(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> list[dict]:
     """Get filled entry orders with remaining open quantity (partial or full)."""
     rows = conn.execute(
         """SELECT e.* FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
-        AND e.exchange = ?
+        AND e.exchange = ? AND e.execution_mode = ?
         AND e.quantity > COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
@@ -167,17 +169,19 @@ def get_open_entry_orders(conn: sqlite3.Connection, exchange: str = "hyperliquid
              AND x.status = 'FILLED'),
             0
         )""",
-        (exchange,),
+        (exchange, execution_mode),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def count_open_positions(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> int:
+def count_open_positions(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> int:
     """Count positions with remaining open quantity."""
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
-        AND e.exchange = ?
+        AND e.exchange = ? AND e.execution_mode = ?
         AND e.quantity > COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
@@ -185,19 +189,21 @@ def count_open_positions(conn: sqlite3.Connection, exchange: str = "hyperliquid"
              AND x.status = 'FILLED'),
             0
         )""",
-        (exchange,),
+        (exchange, execution_mode),
     ).fetchone()
     return row["cnt"]
 
 
 def has_open_position(
-    coin: str, direction: str, conn: sqlite3.Connection, exchange: str = "hyperliquid"
+    coin: str, direction: str, conn: sqlite3.Connection,
+    exchange: str = "hyperliquid", execution_mode: str = "testnet",
 ) -> bool:
     """Check if there's already an open position for this coin+direction."""
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.coin = ? AND e.direction = ? AND e.exchange = ?
+        AND e.execution_mode = ?
         AND e.quantity > COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
@@ -205,17 +211,20 @@ def has_open_position(
              AND x.status = 'FILLED'),
             0
         )""",
-        (coin, direction, exchange),
+        (coin, direction, exchange, execution_mode),
     ).fetchone()
     return row["cnt"] > 0
 
 
-def count_open_longs(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> int:
+def count_open_longs(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> int:
     """Count open LONG positions (for black swan cap)."""
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.direction = 'LONG' AND e.exchange = ?
+        AND e.execution_mode = ?
         AND e.quantity > COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
@@ -223,12 +232,14 @@ def count_open_longs(conn: sqlite3.Connection, exchange: str = "hyperliquid") ->
              AND x.status = 'FILLED'),
             0
         )""",
-        (exchange,),
+        (exchange, execution_mode),
     ).fetchone()
     return row["cnt"]
 
 
-def sum_open_notional(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> float:
+def sum_open_notional(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> float:
     """Total notional value of remaining open quantity (entry_price * remaining_qty)."""
     row = conn.execute(
         """SELECT COALESCE(SUM(e.entry_price * (
@@ -241,7 +252,7 @@ def sum_open_notional(conn: sqlite3.Connection, exchange: str = "hyperliquid") -
         )), 0) as total
         FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
-        AND e.exchange = ?
+        AND e.exchange = ? AND e.execution_mode = ?
         AND e.quantity > COALESCE(
             (SELECT SUM(x2.quantity) FROM orders x2
              WHERE x2.scan_id = e.scan_id
@@ -249,7 +260,7 @@ def sum_open_notional(conn: sqlite3.Connection, exchange: str = "hyperliquid") -
              AND x2.status = 'FILLED'),
             0
         )""",
-        (exchange,),
+        (exchange, execution_mode),
     ).fetchone()
     return float(row["total"])
 

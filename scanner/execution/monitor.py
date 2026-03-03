@@ -32,7 +32,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
     meta = get_exchange_meta(exec_config.exchange)
 
     # Check all open entries for position closure
-    open_entries = get_open_entry_orders(conn, exec_config.exchange)
+    open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
 
     for entry in open_entries:
         symbol = meta["symbol_template"].format(coin=entry["coin"])
@@ -180,7 +180,7 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
 
     issues = []
 
-    open_entries = get_open_entry_orders(conn, exec_config.exchange)
+    open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
 
     for entry in open_entries:
         scan_orders = get_orders_for_scan(entry["scan_id"], conn)

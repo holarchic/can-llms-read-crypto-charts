@@ -246,6 +246,33 @@ class TestPositionQueries:
         assert count_open_longs(conn) == 1
 
 
+class TestExecutionModeIsolation:
+    """Testnet and live orders must not cross-contaminate risk checks."""
+
+    def _setup_testnet_position(self, conn):
+        entry = _make_order(
+            scan_id="t1", coin="BTC", direction="LONG", status="FILLED",
+            entry_price=60000, quantity=0.1, execution_mode="testnet",
+        )
+        save_order(entry, conn)
+
+    def test_live_queries_ignore_testnet_orders(self, conn):
+        self._setup_testnet_position(conn)
+        assert count_open_positions(conn, execution_mode="live") == 0
+        assert has_open_position("BTC", "LONG", conn, execution_mode="live") is False
+        assert count_open_longs(conn, execution_mode="live") == 0
+        assert sum_open_notional(conn, execution_mode="live") == 0.0
+        assert get_open_entry_orders(conn, execution_mode="live") == []
+
+    def test_testnet_queries_see_testnet_orders(self, conn):
+        self._setup_testnet_position(conn)
+        assert count_open_positions(conn, execution_mode="testnet") == 1
+        assert has_open_position("BTC", "LONG", conn, execution_mode="testnet") is True
+        assert count_open_longs(conn, execution_mode="testnet") == 1
+        assert sum_open_notional(conn, execution_mode="testnet") == 6000.0
+        assert len(get_open_entry_orders(conn, execution_mode="testnet")) == 1
+
+
 class TestMakeCloid:
     def test_deterministic(self):
         assert make_cloid("abc123") == make_cloid("abc123")

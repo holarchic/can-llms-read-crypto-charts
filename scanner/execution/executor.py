@@ -151,18 +151,19 @@ def execute_trade(
 
     # 7. Position limits
     exchange = exec_config.exchange
+    mode = exec_config.mode
 
-    if count_open_positions(conn, exchange) >= exec_config.max_concurrent_positions:
+    if count_open_positions(conn, exchange, mode) >= exec_config.max_concurrent_positions:
         er.skip_reason = "position_limit"
         log.info("Position limit reached — skipping %s", result.coin)
         return er
 
-    if has_open_position(result.coin, er.direction, conn, exchange):
+    if has_open_position(result.coin, er.direction, conn, exchange, mode):
         er.skip_reason = "duplicate_position"
         log.info("Duplicate position %s %s — skipping", result.coin, er.direction)
         return er
 
-    if er.direction == "LONG" and count_open_longs(conn, exchange) >= exec_config.max_open_longs:
+    if er.direction == "LONG" and count_open_longs(conn, exchange, mode) >= exec_config.max_open_longs:
         er.skip_reason = "long_limit"
         log.info("Long limit reached — skipping %s", result.coin)
         return er
@@ -177,7 +178,7 @@ def execute_trade(
         return er
 
     if exec_config.max_portfolio_exposure_pct < 100:
-        open_notional = sum_open_notional(conn, exchange)
+        open_notional = sum_open_notional(conn, exchange, mode)
         exposure_pct = (open_notional / balance * 100) if balance > 0 else 0
         if exposure_pct >= exec_config.max_portfolio_exposure_pct:
             er.skip_reason = "exposure_limit"
