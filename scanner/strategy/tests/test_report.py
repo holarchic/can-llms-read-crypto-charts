@@ -218,6 +218,79 @@ class TestLoadLLMScans:
         assert 0 < len(rows) < 6
 
 
+class TestExchangeFilter:
+    """Exchange filtering on load_strategy_signals and load_llm_scans."""
+
+    def test_signals_filter_by_exchange(self, populated_db):
+        """Signals default to hyperliquid; filtering by bybit returns none."""
+        all_rows = load_strategy_signals("v0", "2026-01-01", "2026-01-20", populated_db)
+        assert len(all_rows) == 12
+
+        hl_rows = load_strategy_signals(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="hyperliquid",
+        )
+        assert len(hl_rows) == 12
+
+        bybit_rows = load_strategy_signals(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="bybit",
+        )
+        assert len(bybit_rows) == 0
+
+    def test_signals_filter_isolates_exchanges(self, populated_db):
+        """Insert a bybit signal; verify each exchange filter returns correct count."""
+        from uuid import uuid4
+
+        populated_db.execute(
+            """INSERT INTO signals
+            (signal_id, batch_id, coin, setup_type, setup_name, direction,
+             confidence, key_level, description, current_price, atr, structure,
+             range_low, range_high, fib_618, fib_786,
+             sent_to_llm, rank_in_batch, total_in_batch, timestamp, created_at,
+             strategy_id, regime, exchange)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                uuid4().hex[:8], "bb01", "ETH", "A", "Setup A", "LONG",
+                0.65, 100.0, "Test", 100.0, 3.0, "RANGING",
+                None, None, None, None,
+                0, 1, 1, "2026-01-10T00:00:00+00:00",
+                "2026-01-10T00:00:00+00:00", "v0", "ranging", "bybit",
+            ),
+        )
+        populated_db.commit()
+
+        # No filter → all 13
+        all_rows = load_strategy_signals("v0", "2026-01-01", "2026-01-20", populated_db)
+        assert len(all_rows) == 13
+
+        # Filter by exchange
+        hl_rows = load_strategy_signals(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="hyperliquid",
+        )
+        assert len(hl_rows) == 12
+
+        bybit_rows = load_strategy_signals(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="bybit",
+        )
+        assert len(bybit_rows) == 1
+
+    def test_scans_filter_by_exchange(self, populated_db):
+        """LLM scans default to hyperliquid; filtering by bybit returns none."""
+        _insert_test_scans(populated_db, "v0")
+
+        all_rows = load_llm_scans("v0", "2026-01-01", "2026-01-20", populated_db)
+        assert len(all_rows) == 6
+
+        hl_rows = load_llm_scans(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="hyperliquid",
+        )
+        assert len(hl_rows) == 6
+
+        bybit_rows = load_llm_scans(
+            "v0", "2026-01-01", "2026-01-20", populated_db, exchange="bybit",
+        )
+        assert len(bybit_rows) == 0
+
+
 class TestResolveSignals:
     def test_returns_outcomes(self, populated_db):
         rows = load_strategy_signals("v0", "2026-01-01", "2026-01-10", populated_db)

@@ -307,11 +307,14 @@ def cmd_report(args):
     sections: list[str] = []
     embeds: list[dict] = []
 
+    exchange = getattr(args, "exchange", None)
+
     if run_all or args.signal_quality:
         overall, sliced = signal_quality_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
             run_sign_flip=args.sign_flip,
+            exchange=exchange,
         )
         sections.append(format_signal_quality(overall, sliced))
         embeds.extend(build_signal_quality_embeds(overall, sliced))
@@ -320,6 +323,7 @@ def cmd_report(args):
         result = llm_filter_report(
             strategy, args.since, args.until, conn,
             coins=coins, verbose=args.verbose,
+            exchange=exchange,
         )
         sections.append(format_llm_filter(result))
         embeds.extend(build_llm_filter_embeds(result))
@@ -329,6 +333,7 @@ def cmd_report(args):
             strategy, args.since, args.until, conn,
             window_weeks=args.window_weeks,
             coins=coins, verbose=args.verbose,
+            exchange=exchange,
         )
         sections.append(format_regime_decay(windows))
 
@@ -336,6 +341,7 @@ def cmd_report(args):
         from .report import load_strategy_signals, resolve_signals
         signal_rows = load_strategy_signals(
             strategy.strategy_id, args.since, args.until, conn, coins,
+            exchange=exchange,
         )
         outcomes = resolve_signals(
             signal_rows, strategy.atr_stop_mult, strategy.atr_target_mult,
@@ -349,6 +355,7 @@ def cmd_report(args):
             strategy, args.since, args.until, conn,
             window_weeks=args.window_weeks,
             coins=coins, verbose=args.verbose,
+            exchange=exchange,
         )
         sections.append(format_regime_conditioned_decay(dc_windows))
 
@@ -357,6 +364,7 @@ def cmd_report(args):
             strategy, args.since, args.until, conn,
             window_weeks=args.window_weeks,
             coins=coins, verbose=args.verbose,
+            exchange=exchange,
         )
         sections.append(format_llm_alpha_decay(llm_windows))
 
@@ -365,6 +373,7 @@ def cmd_report(args):
             strategy, args.since, args.until, conn,
             window_weeks=args.window_weeks,
             coins=coins, verbose=args.verbose,
+            exchange=exchange,
         )
         sections.append(format_resolution_drift(rd_windows))
 
@@ -375,6 +384,7 @@ def cmd_report(args):
                 strategy, args.since, args.until, conn,
                 coins=coins, verbose=args.verbose,
                 run_sign_flip=args.sign_flip,
+                exchange=exchange,
             )
         setup_type_reports = sliced.get("setup_type", [])
         suggestions = suggest_disabled_types(setup_type_reports, args.min_sample)
@@ -550,6 +560,8 @@ def main():
     p_report.add_argument("--window-weeks", type=int, default=2, help="Window size for rolling reports (default: 2)")
     p_report.add_argument("--min-sample", type=int, default=10, help="Min sample for disable suggestions (default: 10)")
     p_report.add_argument("--sign-flip", action="store_true", help="Run Monte Carlo sign-flip test on expectancy")
+    p_report.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
+                          default=None, help="Filter by exchange (default: all)")
     p_report.add_argument("-v", "--verbose", action="store_true")
     p_report.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     p_report.set_defaults(func=cmd_report)

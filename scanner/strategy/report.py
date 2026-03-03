@@ -26,6 +26,7 @@ def load_strategy_signals(
     until: str,
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
+    exchange: str | None = None,
 ) -> list[dict]:
     """Load signals from DB for a strategy in a date range."""
     clauses = ["strategy_id = ?", "timestamp >= ?", "timestamp <= ?"]
@@ -35,6 +36,9 @@ def load_strategy_signals(
         placeholders = ",".join("?" for _ in coins)
         clauses.append(f"coin IN ({placeholders})")
         params.extend([c.upper() for c in coins])
+    if exchange:
+        clauses.append("exchange = ?")
+        params.append(exchange)
 
     where = " AND ".join(clauses)
     rows = conn.execute(
@@ -51,6 +55,7 @@ def load_llm_scans(
     conn: sqlite3.Connection,
     coins: list[str] | None = None,
     prompt_version: str | None = None,
+    exchange: str | None = None,
 ) -> list[dict]:
     """Load LLM scan results from DB for a strategy in a date range."""
     clauses = ["strategy_id = ?", "timestamp >= ?", "timestamp <= ?"]
@@ -63,6 +68,9 @@ def load_llm_scans(
     if prompt_version:
         clauses.append("prompt_version = ?")
         params.append(prompt_version)
+    if exchange:
+        clauses.append("exchange = ?")
+        params.append(exchange)
 
     where = " AND ".join(clauses)
     rows = conn.execute(
@@ -155,6 +163,7 @@ def _rolling_window_outcomes(
     coins: list[str] | None = None,
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
+    exchange: str | None = None,
 ) -> list[tuple[str, str, list[TradeOutcome]]]:
     """Iterate rolling windows, load signals, resolve each.
 
@@ -173,6 +182,7 @@ def _rolling_window_outcomes(
 
         signal_rows = load_strategy_signals(
             strategy.strategy_id, w_start, w_end, conn, coins,
+            exchange=exchange,
         )
 
         if signal_rows:
@@ -202,6 +212,7 @@ def signal_quality_report(
     fee_rate: float = 0.00035,
     verbose: bool = False,
     run_sign_flip: bool = False,
+    exchange: str | None = None,
 ) -> tuple[MetricsReport, dict[str, list[MetricsReport]]]:
     """Per-setup-type breakdown. Which of A-G produce edge?
 
@@ -209,6 +220,7 @@ def signal_quality_report(
     """
     signal_rows = load_strategy_signals(
         strategy.strategy_id, since, until, conn, coins,
+        exchange=exchange,
     )
 
     if verbose:
@@ -254,13 +266,16 @@ def llm_filter_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str | None = None,
 ) -> LLMFilterResult:
     """Is the LLM adding alpha? Compare all vs sent vs CONFIRM expectancy."""
     signal_rows = load_strategy_signals(
         strategy.strategy_id, since, until, conn, coins,
+        exchange=exchange,
     )
     scan_rows = load_llm_scans(
         strategy.strategy_id, since, until, conn, coins,
+        exchange=exchange,
     )
 
     if verbose:
@@ -326,6 +341,7 @@ def regime_decay_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str | None = None,
 ) -> list[tuple[str, MetricsReport]]:
     """Rolling N-week window expectancy trend.
 
@@ -345,6 +361,7 @@ def regime_decay_report(
 
         signal_rows = load_strategy_signals(
             strategy.strategy_id, w_start, w_end, conn, coins,
+            exchange=exchange,
         )
 
         if signal_rows:
@@ -380,6 +397,7 @@ def regime_conditioned_decay_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str | None = None,
 ) -> list[tuple[str, dict[str, MetricsReport]]]:
     """Rolling expectancy broken out by regime within each window.
 
@@ -389,6 +407,7 @@ def regime_conditioned_decay_report(
     """
     raw_windows = _rolling_window_outcomes(
         strategy, since, until, conn, window_weeks, coins, timeout_bars, fee_rate,
+        exchange=exchange,
     )
 
     result: list[tuple[str, dict[str, MetricsReport]]] = []
@@ -438,6 +457,7 @@ def llm_alpha_decay_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str | None = None,
 ) -> list[LLMAlphaDeltaWindow]:
     """Delta = E[CONFIRM] - E[all_signals] in rolling windows.
 
@@ -456,9 +476,11 @@ def llm_alpha_decay_report(
 
         signal_rows = load_strategy_signals(
             strategy.strategy_id, w_start, w_end, conn, coins,
+            exchange=exchange,
         )
         scan_rows = load_llm_scans(
             strategy.strategy_id, w_start, w_end, conn, coins,
+            exchange=exchange,
         )
 
         # All signals expectancy
@@ -514,6 +536,7 @@ def resolution_drift_report(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str | None = None,
 ) -> list[tuple[str, MetricsReport]]:
     """Track avg_bars_to_exit in rolling windows.
 
@@ -521,6 +544,7 @@ def resolution_drift_report(
     """
     raw_windows = _rolling_window_outcomes(
         strategy, since, until, conn, window_weeks, coins, timeout_bars, fee_rate,
+        exchange=exchange,
     )
 
     result: list[tuple[str, MetricsReport]] = []
