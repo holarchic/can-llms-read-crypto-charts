@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 
+import ccxt
 import pandas as pd
 
 from ..backtest.metrics import MetricsReport, compute_metrics, slice_metrics
@@ -100,7 +101,7 @@ def resolve_signals(
                 exchange=exchange,
             )
             outcomes.append(outcome)
-        except (ValueError, KeyError, IndexError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
 
         if (i + 1) % 50 == 0 or i + 1 == n:
@@ -136,7 +137,7 @@ def resolve_llm_scans(
                 exchange=exchange,
             )
             outcomes.append(outcome)
-        except (ValueError, KeyError, IndexError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  Resolve LLM {setup.coin}: {e}", file=sys.stderr)
 
     return outcomes

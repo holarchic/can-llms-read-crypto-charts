@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 
+import ccxt
+
 from ..backtest.resolver import build_screener_setup, fetch_and_resolve
 
 
@@ -79,7 +81,7 @@ def _resolve_calibration_signals(
             outcome = fetch_and_resolve(
                 setup, conn, timeout_bars, exchange=exchange,
             )
-        except (ValueError, KeyError, IndexError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  Resolve {sig['coin']}: {e}", file=sys.stderr)
             continue
 

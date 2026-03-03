@@ -4,6 +4,8 @@ import argparse
 import sys
 from datetime import datetime, timedelta, timezone
 
+import ccxt
+
 from ..backtest.candles import fetch_and_cache
 from ..backtest.metrics import deflated_sharpe_ratio
 from ..backtest.report import format_summary
@@ -271,7 +273,7 @@ def cmd_sweep(args):
                         exchange=exchange,
                     )
                     best_outcomes.append(outcome)
-                except (ValueError, KeyError, IndexError, OSError) as e:
+                except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
                     print(f"  DSR resolve {setup.coin}: {e}", file=sys.stderr)
                     continue
 
@@ -460,7 +462,7 @@ def cmd_backfill(args):
             total_cached += n
             if args.verbose:
                 print(f"  [{i+1}/{len(coins)}] {coin}: {n} candles")
-        except (ValueError, KeyError, OSError) as e:
+        except (ValueError, KeyError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  [{i+1}/{len(coins)}] {coin}: error — {e}", file=sys.stderr)
         time.sleep(config.api_sleep_ms / 1000)
 

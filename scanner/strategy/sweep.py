@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from itertools import product
 
+import ccxt
 import pandas as pd
 
 from ..backtest.metrics import MetricsReport, compute_metrics
@@ -67,7 +68,7 @@ def sweep_resolution(
                     exchange=exchange,
                 )
                 outcomes.append(outcome)
-            except (ValueError, KeyError, IndexError, OSError) as e:
+            except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
                 print(f"  Resolve {setup.coin}: {e}", file=sys.stderr)
                 continue
 
@@ -212,7 +213,7 @@ def _run_fold(
                 exchange=exchange,
             )
             oos_outcomes.append(outcome)
-        except (ValueError, KeyError, IndexError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  OOS resolve {setup.coin}: {e}", file=sys.stderr)
 
     oos_metrics = compute_metrics(oos_outcomes, f"fold-{fold_idx + 1}-oos")

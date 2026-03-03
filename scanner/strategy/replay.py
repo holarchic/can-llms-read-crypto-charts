@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import ccxt
 import pandas as pd
 
 from ..backtest.metrics import MetricsReport, compute_metrics
@@ -146,7 +147,7 @@ def _resolve_replay_signals(
                 setup, conn, timeout_bars, fee_rate,
             )
             outcomes.append(outcome)
-        except (ValueError, KeyError, IndexError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
             print(f"  Resolve {setup.coin} {setup.setup_type}: {e}", file=sys.stderr)
 
         if verbose and (i + 1) % 20 == 0:
