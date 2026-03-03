@@ -148,6 +148,9 @@ def _handle_tp1_fill(
                   old_exch_oid, entry["coin"])
         return
 
+    # DB reflects reality: old SL is gone from exchange
+    update_order_status(sl_order["order_id"], "CANCELLED", conn)
+
     # Place replacement SL at remaining quantity
     sl_trigger = sl_order.get("trigger_price")
     exit_side = "sell" if entry["direction"] == "LONG" else "buy"
@@ -161,6 +164,7 @@ def _handle_tp1_fill(
         )
         new_exch_oid = sl_resp.get("id", "")
         update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)
+        update_order_status(sl_order["order_id"], "PLACED", conn)
         log.info(
             "Replaced SL for %s: qty %s → %s (TP1 filled %s)",
             entry["coin"], entry["quantity"], remaining_qty, tp1_qty,

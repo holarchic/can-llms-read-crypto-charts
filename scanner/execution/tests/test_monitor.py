@@ -294,3 +294,36 @@ class TestPartialExitHandling:
         # SL cancelled (position fully closed)
         sl_result = get_order(sl["order_id"], conn)
         assert sl_result["status"] == "CANCELLED"
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp1_fill_replacement_sl_fails_marks_cancelled(self, mock_auth, mock_cancel, config, conn):
+        """TP1 fills → old SL cancel succeeds → replacement create_order raises → SL stays CANCELLED."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        # Replacement SL placement fails
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_exchange.create_order.side_effect = Exception("exchange timeout")
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL should be CANCELLED in DB — old one is gone, replacement failed
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"
+
+        # check_positions() should flag the missing SL
+        issues = check_positions(config, conn)
+        assert any(i["type"] == "missing_sl" and i["coin"] == "BTC" for i in issues)
