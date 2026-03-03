@@ -17,10 +17,10 @@ from .resolver import (
 )
 
 
-def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
+def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None, exchange="hyperliquid"):
     """Load signals from the signals table."""
-    clauses = ["datetime(timestamp) > datetime('now', ? || ' days')"]
-    params = [f"-{int(days)}"]
+    clauses = ["datetime(timestamp) > datetime('now', ? || ' days')", "exchange = ?"]
+    params = [f"-{int(days)}", exchange]
 
     if coin:
         clauses.append("coin = ?")
@@ -40,13 +40,15 @@ def _load_screener_signals(conn, days, coin, setup_type, strategy_id=None):
     return [dict(r) for r in rows]
 
 
-def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None, prompt_version=None):
+def _load_llm_signals(conn, days, coin, setup_type, strategy_id=None, prompt_version=None,
+                       exchange="hyperliquid"):
     """Load CONFIRM scans from the scans table."""
     clauses = [
         "datetime(timestamp) > datetime('now', ? || ' days')",
         "decision = 'CONFIRM'",
+        "exchange = ?",
     ]
-    params = [f"-{int(days)}"]
+    params = [f"-{int(days)}", exchange]
 
     if coin:
         clauses.append("coin = ?")
@@ -104,12 +106,13 @@ def main():
 
     # Load signals
     if args.mode == "screener":
-        rows = _load_screener_signals(conn, args.days, args.coin, args.type, args.strategy)
+        rows = _load_screener_signals(conn, args.days, args.coin, args.type, args.strategy,
+                                       exchange=args.exchange)
         def builder(row):
             return build_screener_setup(row, args.atr_stop, args.atr_target)
     else:
         rows = _load_llm_signals(conn, args.days, args.coin, args.type, args.strategy,
-                                  prompt_version=args.prompt_version)
+                                  prompt_version=args.prompt_version, exchange=args.exchange)
         builder = build_llm_setup
 
     if not rows:
