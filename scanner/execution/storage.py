@@ -101,7 +101,16 @@ def get_order(order_id: str, conn: sqlite3.Connection) -> dict | None:
 def get_orders_for_scan(scan_id: str, conn: sqlite3.Connection) -> list[dict]:
     """Fetch all orders related to a scan."""
     rows = conn.execute(
-        "SELECT * FROM orders WHERE scan_id = ? ORDER BY created_at", (scan_id,)
+        """SELECT * FROM orders WHERE scan_id = ?
+        ORDER BY created_at,
+          CASE order_type
+            WHEN 'entry' THEN 0
+            WHEN 'stop_loss' THEN 1
+            WHEN 'tp1' THEN 2
+            WHEN 'tp2' THEN 3
+            ELSE 4
+          END""",
+        (scan_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 

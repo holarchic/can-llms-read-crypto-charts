@@ -286,6 +286,25 @@ class TestMakeCloid:
         assert make_cloid("order-1") != make_cloid("order-2")
 
 
+class TestOrderScanOrdering:
+    """get_orders_for_scan returns deterministic entry→SL→TP1→TP2 order."""
+
+    def test_same_timestamp_returns_entry_sl_tp1_tp2(self, conn):
+        """Orders with identical created_at sort by type: entry→stop_loss→tp1→tp2."""
+        ts = "2026-02-24T00:00:00+00:00"
+        # Insert in reverse order to prove it's not insertion-order dependent
+        tp2 = _make_order(scan_id="s1", order_type="tp2", created_at=ts)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", created_at=ts)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", created_at=ts)
+        entry = _make_order(scan_id="s1", order_type="entry", created_at=ts)
+        for o in [tp2, tp1, sl, entry]:
+            save_order(o, conn)
+
+        orders = get_orders_for_scan("s1", conn)
+        types = [o["order_type"] for o in orders]
+        assert types == ["entry", "stop_loss", "tp1", "tp2"]
+
+
 class TestUpdateOrderQuantity:
     def test_updates_quantity_and_exchange_id(self, conn):
         order = _make_order(quantity=0.1, exchange_order_id="old_exch")

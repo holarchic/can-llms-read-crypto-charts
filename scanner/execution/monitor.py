@@ -69,6 +69,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                             order, entry, scan_orders,
                             symbol, exchange, exec_config, conn,
                         )
+                        break  # stale list — re-check next cycle
 
                 elif exch_status == "canceled":
                     update_order_status(order["order_id"], "CANCELLED", conn)
