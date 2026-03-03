@@ -243,7 +243,7 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
 
         entry_mid = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
         stop_loss = mb.get("stop_loss", 0)
-        tp1 = mb.get("tp1", 0)
+        tp_prices = {"TP1": mb.get("tp1", 0), "TP2": mb.get("tp2", 0)}
 
         if not entry_mid or not stop_loss:
             continue
@@ -252,16 +252,18 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
         if stop_dist == 0:
             continue
 
-        # Simulated R: what the machine_block predicted
+        # Simulated R: what the machine_block predicted for this exit type
         if trade.exit_type == "SL":
             sim_r = -1.0
-        elif tp1:
-            if trade.direction == "LONG":
-                sim_r = (tp1 - entry_mid) / stop_dist
-            else:
-                sim_r = (entry_mid - tp1) / stop_dist
         else:
-            sim_r = 0
+            tp_price = tp_prices.get(trade.exit_type, 0) or tp_prices.get("TP1", 0)
+            if tp_price:
+                if trade.direction == "LONG":
+                    sim_r = (tp_price - entry_mid) / stop_dist
+                else:
+                    sim_r = (entry_mid - tp_price) / stop_dist
+            else:
+                sim_r = 0
 
         comparisons.append({
             "scan_id": trade.scan_id,
