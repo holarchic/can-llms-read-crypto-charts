@@ -297,6 +297,92 @@ class TestPartialExitHandling:
 
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_closed_exit_uses_actual_fill_qty(self, mock_auth, mock_cancel, config, conn):
+        """TP1 quantity=0.05 but exchange filled=0.03 → SL replacement uses entry - 0.03."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000, "filled": 0.03} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.07"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # TP1 DB quantity updated to actual fill
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "FILLED"
+        assert tp1_result["quantity"] == 0.03
+
+        # SL replaced with remaining = 0.1 - 0.03 = 0.07
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["quantity"] == 0.07
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_canceled_with_partial_fill_treated_as_fill(self, mock_auth, mock_cancel, config, conn):
+        """SL canceled with filled=0.08/0.10 → DB shows FILLED qty=0.08, TPs cancelled."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "canceled", "filled": 0.08, "average": 59750} if oid == "sl_exch1"
+            else {"status": "open"}
+        )
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL should be FILLED with actual fill quantity
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "FILLED"
+        assert sl_result["quantity"] == 0.08
+        assert sl_result["fill_price"] == 59750
+
+        # TP1 should be cancelled (SL = full close path)
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "CANCELLED"
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_canceled_with_zero_fill_stays_cancelled(self, mock_auth, config, conn):
+        """SL canceled with filled=0 → DB shows CANCELLED. Existing behavior preserved."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)
+        assert updated == 1
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"
+        assert sl_result["fill_price"] is None
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_fill_replacement_sl_fails_marks_cancelled(self, mock_auth, mock_cancel, config, conn):
         """TP1 fills → old SL cancel succeeds → replacement create_order raises → SL stays CANCELLED."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)

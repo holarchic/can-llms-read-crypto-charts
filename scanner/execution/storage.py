@@ -124,6 +124,7 @@ def update_order_status(
     error_message: str | None = None,
     realized_pnl: float | None = None,
     funding_paid: float | None = None,
+    filled_quantity: float | None = None,
 ) -> None:
     """Update order status and optional fill/error fields."""
     now = datetime.now(timezone.utc).isoformat()
@@ -150,6 +151,10 @@ def update_order_status(
     if funding_paid is not None:
         updates.append("funding_paid = ?")
         params.append(funding_paid)
+
+    if filled_quantity is not None:
+        updates.append("quantity = ?")
+        params.append(filled_quantity)
 
     if status == "FILLED":
         updates.append("filled_at = ?")

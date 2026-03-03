@@ -53,14 +53,21 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
 
                 if exch_status == "closed":
                     fill_price = float(exch_order.get("average", exch_order.get("price", 0)))
+                    fill_qty = float(exch_order["filled"]) if exch_order.get("filled") else order["quantity"]
+                    if fill_qty < order["quantity"]:
+                        log.warning(
+                            "%s %s partial fill: expected %s, got %s",
+                            entry["coin"], order["order_type"], order["quantity"], fill_qty,
+                        )
                     update_order_status(
                         order["order_id"], "FILLED", conn,
                         fill_price=fill_price,
+                        filled_quantity=fill_qty,
                     )
                     updated += 1
                     log.info(
-                        "%s %s %s filled at %s",
-                        entry["coin"], order["order_type"], order["direction"], fill_price,
+                        "%s %s %s filled at %s (qty %s)",
+                        entry["coin"], order["order_type"], order["direction"], fill_price, fill_qty,
                     )
 
                     # Handle exit fill: route based on partial vs full close
@@ -68,12 +75,36 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         _handle_exit_fill(
                             order, entry, scan_orders,
                             symbol, exchange, exec_config, conn,
+                            fill_qty=fill_qty,
                         )
                         break  # stale list — re-check next cycle
 
                 elif exch_status == "canceled":
-                    update_order_status(order["order_id"], "CANCELLED", conn)
-                    updated += 1
+                    partial_fill = float(exch_order.get("filled", 0))
+                    if partial_fill > 0:
+                        # Partial fill before cancel — treat as fill for the filled amount
+                        fill_price = float(exch_order.get("average", exch_order.get("price", 0)))
+                        log.warning(
+                            "%s %s canceled with partial fill: %s of %s at %s",
+                            entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,
+                        )
+                        update_order_status(
+                            order["order_id"], "FILLED", conn,
+                            fill_price=fill_price,
+                            filled_quantity=partial_fill,
+                        )
+                        updated += 1
+
+                        if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                            _handle_exit_fill(
+                                order, entry, scan_orders,
+                                symbol, exchange, exec_config, conn,
+                                fill_qty=partial_fill,
+                            )
+                            break
+                    else:
+                        update_order_status(order["order_id"], "CANCELLED", conn)
+                        updated += 1
 
             except Exception as exc:
                 log.warning("Error checking order %s: %s", exch_oid, exc)
@@ -104,10 +135,12 @@ def _cancel_remaining_orders(
 def _handle_exit_fill(
     filled_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
+    fill_qty: float | None = None,
 ) -> None:
     """Route exit fill: TP1 → partial close (replace SL), SL/TP2 → full close."""
     if filled_order["order_type"] == "tp1":
-        _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn)
+        _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn,
+                         fill_qty=fill_qty)
     else:
         # SL or TP2 filled — position fully closed, cancel remaining
         _cancel_remaining_orders(
@@ -119,9 +152,10 @@ def _handle_exit_fill(
 def _handle_tp1_fill(
     tp1_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
+    fill_qty: float | None = None,
 ) -> None:
     """TP1 filled: cancel old SL, place replacement SL at remaining quantity, keep TP2."""
-    tp1_qty = tp1_order.get("quantity", 0)
+    tp1_qty = fill_qty if fill_qty is not None else tp1_order.get("quantity", 0)
     remaining_qty = entry.get("quantity", 0) - tp1_qty
 
     if remaining_qty <= 0:
