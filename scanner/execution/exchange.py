@@ -5,7 +5,6 @@ import logging
 import ccxt
 
 from scanner.config import get_exchange_meta
-from scanner.data import get_exchange as get_readonly_exchange
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +47,8 @@ def reset_auth_exchange():
 
 
 def fetch_current_price(coin: str, config) -> float:
-    """Get current price using read-only exchange (no auth needed)."""
-    exchange = get_readonly_exchange(config.exchange)
+    """Get current price using the auth exchange (sandbox-aware in testnet)."""
+    exchange = get_auth_exchange(config)
     meta = get_exchange_meta(config.exchange)
     symbol = meta["symbol_template"].format(coin=coin)
     ticker = exchange.fetch_ticker(symbol)

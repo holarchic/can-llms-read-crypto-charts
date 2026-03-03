@@ -81,11 +81,11 @@ class TestGetAuthExchange:
 
 
 class TestFetchCurrentPrice:
-    @patch("scanner.execution.exchange.get_readonly_exchange")
-    def test_returns_last_price(self, mock_get_exchange, testnet_config):
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_returns_last_price(self, mock_get_auth, testnet_config):
         mock_exchange = MagicMock()
         mock_exchange.fetch_ticker.return_value = {"last": 62150.5}
-        mock_get_exchange.return_value = mock_exchange
+        mock_get_auth.return_value = mock_exchange
 
         price = fetch_current_price("BTC", testnet_config)
         assert price == 62150.5
