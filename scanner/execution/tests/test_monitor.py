@@ -140,3 +140,84 @@ class TestCheckPositions:
         """No open positions -> no issues."""
         issues = check_positions(config, conn)
         assert len(issues) == 0
+
+
+class TestPartialExitHandling:
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp1_fill_adjusts_sl_keeps_tp2(self, mock_auth, mock_cancel, config, conn):
+        """TP1 fills → SL cancelled + replaced at reduced qty, TP2 stays PLACED."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        # TP1 reports as closed; others still open
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        # SL replacement succeeds
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # TP1 should be FILLED
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "FILLED"
+
+        # SL should have updated quantity and new exchange order ID
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["quantity"] == 0.05
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+        # TP2 should still be PLACED (not cancelled)
+        tp2_result = get_order(tp2["order_id"], conn)
+        assert tp2_result["status"] == "PLACED"
+
+        # Old SL should have been cancelled on exchange
+        mock_cancel.assert_called_once()
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp2_fill_cancels_sl(self, mock_auth, mock_cancel, config, conn):
+        """TP2 fills → SL cancelled (fully closed)."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        # TP1 already filled
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.05)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+        save_order(sl, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 68000} if oid == "tp2_exch1"
+            else {"status": "open"}
+        )
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # TP2 filled
+        tp2_result = get_order(tp2["order_id"], conn)
+        assert tp2_result["status"] == "FILLED"
+
+        # SL cancelled (position fully closed)
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"

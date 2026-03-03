@@ -15,6 +15,7 @@ from scanner.execution.storage import (
     new_order_id,
     save_order,
     sum_open_notional,
+    update_order_quantity,
     update_order_status,
 )
 
@@ -137,10 +138,19 @@ class TestPositionQueries:
         save_order(entry, conn)
         return entry
 
-    def _close_position(self, conn, scan_id="scan1", order_type="stop_loss"):
-        """Create a filled exit order to close a position."""
+    def _close_position(self, conn, scan_id="scan1", order_type="stop_loss", quantity=None):
+        """Create a filled exit order to close a position.
+
+        If quantity is None, looks up entry quantity for this scan (full close).
+        """
+        if quantity is None:
+            row = conn.execute(
+                "SELECT quantity FROM orders WHERE scan_id = ? AND order_type = 'entry'",
+                (scan_id,),
+            ).fetchone()
+            quantity = row["quantity"] if row else 0.1
         exit_order = _make_order(
-            scan_id=scan_id, order_type=order_type, status="FILLED",
+            scan_id=scan_id, order_type=order_type, status="FILLED", quantity=quantity,
         )
         save_order(exit_order, conn)
 
@@ -185,3 +195,61 @@ class TestPositionQueries:
         open_entries = get_open_entry_orders(conn)
         assert len(open_entries) == 1
         assert open_entries[0]["scan_id"] == "s1"
+
+    def test_partial_exit_still_open(self, conn):
+        """TP1 fills ~50% → position still counted as open."""
+        self._setup_open_position(conn, scan_id="s1", quantity=0.1)
+        # TP1 fills for half the quantity
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        assert count_open_positions(conn) == 1
+
+    def test_full_exit_tp1_tp2_closed(self, conn):
+        """TP1 + TP2 fill full quantity → position closed."""
+        self._setup_open_position(conn, scan_id="s1", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        save_order(tp2, conn)
+        assert count_open_positions(conn) == 0
+
+    def test_tp1_then_sl_closed(self, conn):
+        """TP1 fills half, SL fills remainder → position closed."""
+        self._setup_open_position(conn, scan_id="s1", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        save_order(sl, conn)
+        assert count_open_positions(conn) == 0
+
+    def test_has_open_position_partial(self, conn):
+        """Partial exit still blocks duplicate entry for same coin+direction."""
+        self._setup_open_position(conn, scan_id="s1", coin="BTC", direction="LONG", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        assert has_open_position("BTC", "LONG", conn) is True
+
+    def test_sum_open_notional_partial(self, conn):
+        """Notional reflects remaining quantity after partial exit."""
+        self._setup_open_position(conn, scan_id="s1", entry_price=60000, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        # Remaining: 60000 * 0.05 = 3000
+        assert sum_open_notional(conn) == 3000.0
+
+    def test_count_open_longs_partial(self, conn):
+        """Partial LONG exit → still counted as open long."""
+        self._setup_open_position(conn, scan_id="s1", direction="LONG", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+        assert count_open_longs(conn) == 1
+
+
+class TestUpdateOrderQuantity:
+    def test_updates_quantity_and_exchange_id(self, conn):
+        order = _make_order(quantity=0.1, exchange_order_id="old_exch")
+        save_order(order, conn)
+        update_order_quantity(order["order_id"], 0.05, "new_exch", conn)
+        result = get_order(order["order_id"], conn)
+        assert result["quantity"] == 0.05
+        assert result["exchange_order_id"] == "new_exch"

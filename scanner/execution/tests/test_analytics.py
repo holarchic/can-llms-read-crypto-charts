@@ -156,6 +156,121 @@ class TestGetClosedTrades:
         assert abs(trades[0].realized_r - (-1.0)) < 0.01
 
 
+    def test_multi_exit_pnl(self, conn):
+        """TP1 + TP2 blended PnL: sum across both exit legs."""
+        entry_oid = new_order_id()
+        # Entry: LONG 0.1 BTC at 62000
+        save_order({
+            "order_id": entry_oid, "scan_id": "s_multi", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 62000, "fill_price": 62000, "quantity": 0.1,
+            "leverage": 5, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "placed_at": "2026-02-24T00:00:00+00:00",
+            "filled_at": "2026-02-24T00:00:01+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # SL order (cancelled — both TPs hit)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_multi", "coin": "BTC",
+            "direction": "LONG", "order_type": "stop_loss", "status": "CANCELLED",
+            "trigger_price": 59800, "quantity": 0.1,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # TP1: 0.05 at 65000
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_multi", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp1", "status": "FILLED",
+            "trigger_price": 65000, "fill_price": 65000, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T06:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # TP2: 0.05 at 68000
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_multi", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp2", "status": "FILLED",
+            "trigger_price": 68000, "fill_price": 68000, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T12:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+
+        trades = get_closed_trades(conn)
+        assert len(trades) == 1
+        # PnL = (65000-62000)*0.05 + (68000-62000)*0.05 = 150 + 300 = 450
+        assert abs(trades[0].realized_pnl - 450) < 0.01
+        assert trades[0].exit_type == "TP2"  # Last exit determines label
+
+    def test_tp1_then_sl_pnl(self, conn):
+        """TP1 wins, SL loses on remainder → net PnL."""
+        entry_oid = new_order_id()
+        save_order({
+            "order_id": entry_oid, "scan_id": "s_mixed", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 62000, "fill_price": 62000, "quantity": 0.1,
+            "leverage": 5, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "placed_at": "2026-02-24T00:00:00+00:00",
+            "filled_at": "2026-02-24T00:00:01+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # SL: fills remaining 0.05 at 59800
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_mixed", "coin": "BTC",
+            "direction": "LONG", "order_type": "stop_loss", "status": "FILLED",
+            "trigger_price": 59800, "fill_price": 59800, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T12:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # TP1: 0.05 at 65000
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_mixed", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp1", "status": "FILLED",
+            "trigger_price": 65000, "fill_price": 65000, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T06:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+
+        trades = get_closed_trades(conn)
+        assert len(trades) == 1
+        # PnL = (65000-62000)*0.05 + (59800-62000)*0.05 = 150 + (-110) = 40
+        assert abs(trades[0].realized_pnl - 40) < 0.01
+        assert trades[0].exit_type == "SL"  # Last exit by filled_at
+
+    def test_partial_exit_not_in_closed_trades(self, conn):
+        """Position with only TP1 filled (partial) should NOT appear in closed trades."""
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_partial", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 62000, "fill_price": 62000, "quantity": 0.1,
+            "leverage": 5, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T00:00:01+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # Only TP1 filled (half)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_partial", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp1", "status": "FILLED",
+            "trigger_price": 65000, "fill_price": 65000, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T06:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # SL still placed (not filled)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_partial", "coin": "BTC",
+            "direction": "LONG", "order_type": "stop_loss", "status": "PLACED",
+            "trigger_price": 59800, "quantity": 0.05,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+
+        trades = get_closed_trades(conn)
+        assert len(trades) == 0
+
+
 class TestComputeLiveMetrics:
     def test_basic_metrics(self):
         trades = [

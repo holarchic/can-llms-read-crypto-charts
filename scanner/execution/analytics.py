@@ -49,28 +49,40 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
     trades = []
     for entry in entries:
         entry = dict(entry)
-        # Find the filled exit for this scan
+        # Find ALL filled exits for this scan
         exits = conn.execute(
             """SELECT * FROM orders
             WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
             AND status = 'FILLED'
-            ORDER BY filled_at LIMIT 1""",
+            ORDER BY filled_at""",
             (entry["scan_id"],),
         ).fetchall()
 
         if not exits:
             continue  # Still open
 
-        exit_order = dict(exits[0])
+        exits = [dict(x) for x in exits]
         entry_fill = entry.get("fill_price") or entry.get("entry_price") or 0
-        exit_fill = exit_order.get("fill_price") or exit_order.get("trigger_price") or 0
-        quantity = entry.get("quantity", 0)
+        entry_qty = entry.get("quantity", 0)
+        filled_exit_qty = sum(x.get("quantity", 0) for x in exits)
 
-        # Calculate realized PnL
-        if entry["direction"] == "LONG":
-            realized_pnl = (exit_fill - entry_fill) * quantity
-        else:
-            realized_pnl = (entry_fill - exit_fill) * quantity
+        # Skip partially open positions (not fully closed yet)
+        if filled_exit_qty < entry_qty:
+            continue
+
+        # Sum PnL across all exit legs
+        realized_pnl = 0
+        for exit_order in exits:
+            exit_fill = exit_order.get("fill_price") or exit_order.get("trigger_price") or 0
+            exit_qty = exit_order.get("quantity", 0)
+            if entry["direction"] == "LONG":
+                realized_pnl += (exit_fill - entry_fill) * exit_qty
+            else:
+                realized_pnl += (entry_fill - exit_fill) * exit_qty
+
+        # Use last exit for labels and holding hours
+        last_exit = exits[-1]
+        last_exit_fill = last_exit.get("fill_price") or last_exit.get("trigger_price") or 0
 
         # Funding paid (sum across all orders for this scan)
         funding_row = conn.execute(
@@ -79,21 +91,21 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         ).fetchone()
         funding_paid = float(funding_row["total"])
 
-        # Risk amount: entry_price * quantity * (stop_distance / entry_price)
+        # Risk amount: uses full entry quantity (that was the original risk)
         stop_order = conn.execute(
             "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' LIMIT 1",
             (entry["scan_id"],),
         ).fetchone()
         stop_price = float(stop_order["trigger_price"]) if stop_order else 0
         stop_distance = abs(entry_fill - stop_price)
-        risk_amount = stop_distance * quantity if stop_distance > 0 else 0
+        risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
 
         # Realized R
         realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0
 
-        # Holding hours
+        # Holding hours (entry to last exit)
         entry_time = entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at")
-        exit_time = exit_order.get("filled_at") or exit_order.get("created_at")
+        exit_time = last_exit.get("filled_at") or last_exit.get("created_at")
         holding_hours = 0
         if entry_time and exit_time:
             try:
@@ -104,18 +116,18 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
                 pass
 
         # Slippage: compare actual fill to machine_block expected
-        slippage_r = _calculate_slippage_r(entry, exit_order, entry_fill, exit_fill, risk_amount, conn)
+        slippage_r = _calculate_slippage_r(entry, last_exit, entry_fill, last_exit_fill, risk_amount, conn)
 
-        # Map order_type to exit_type label
+        # Map order_type to exit_type label (last exit determines label)
         exit_type_map = {"stop_loss": "SL", "tp1": "TP1", "tp2": "TP2"}
-        exit_type = exit_type_map.get(exit_order["order_type"], exit_order["order_type"])
+        exit_type = exit_type_map.get(last_exit["order_type"], last_exit["order_type"])
 
         trades.append(TradeRecord(
             scan_id=entry["scan_id"],
             coin=entry["coin"],
             direction=entry["direction"],
             entry_fill=entry_fill,
-            exit_fill=exit_fill,
+            exit_fill=last_exit_fill,
             exit_type=exit_type,
             realized_pnl=realized_pnl,
             realized_r=realized_r,

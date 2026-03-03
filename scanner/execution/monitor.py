@@ -10,6 +10,7 @@ from .exchange import cancel_order, get_auth_exchange
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
+    update_order_quantity,
     update_order_status,
 )
 
@@ -61,11 +62,11 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         entry["coin"], order["order_type"], order["direction"], fill_price,
                     )
 
-                    # If SL or TP filled, cancel remaining orders for this scan
+                    # Handle exit fill: route based on partial vs full close
                     if order["order_type"] in ("stop_loss", "tp1", "tp2"):
-                        _cancel_remaining_orders(
-                            entry["scan_id"], order["order_id"],
-                            symbol, exec_config, conn,
+                        _handle_exit_fill(
+                            order, entry, scan_orders,
+                            symbol, exchange, exec_config, conn,
                         )
 
                 elif exch_status == "canceled":
@@ -96,6 +97,74 @@ def _cancel_remaining_orders(
             if cancel_order(exch_oid, symbol, config):
                 update_order_status(order["order_id"], "CANCELLED", conn)
                 log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
+
+
+def _handle_exit_fill(
+    filled_order: dict, entry: dict, scan_orders: list[dict],
+    symbol: str, exchange, config: ExecutionConfig, conn,
+) -> None:
+    """Route exit fill: TP1 → partial close (replace SL), SL/TP2 → full close."""
+    if filled_order["order_type"] == "tp1":
+        _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn)
+    else:
+        # SL or TP2 filled — position fully closed, cancel remaining
+        _cancel_remaining_orders(
+            entry["scan_id"], filled_order["order_id"],
+            symbol, config, conn,
+        )
+
+
+def _handle_tp1_fill(
+    tp1_order: dict, entry: dict, scan_orders: list[dict],
+    symbol: str, exchange, config: ExecutionConfig, conn,
+) -> None:
+    """TP1 filled: cancel old SL, place replacement SL at remaining quantity, keep TP2."""
+    tp1_qty = tp1_order.get("quantity", 0)
+    remaining_qty = entry.get("quantity", 0) - tp1_qty
+
+    if remaining_qty <= 0:
+        # TP1 was full size — treat as full close
+        _cancel_remaining_orders(
+            entry["scan_id"], tp1_order["order_id"],
+            symbol, config, conn,
+        )
+        return
+
+    # Find the current SL order
+    sl_order = next(
+        (o for o in scan_orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"),
+        None,
+    )
+    if not sl_order:
+        log.error("No active SL found for %s after TP1 fill — position unprotected", entry["coin"])
+        return
+
+    # Cancel old SL on exchange
+    old_exch_oid = sl_order.get("exchange_order_id")
+    if old_exch_oid and not cancel_order(old_exch_oid, symbol, config):
+        log.error("Failed to cancel old SL %s for %s — position may have duplicate SLs",
+                  old_exch_oid, entry["coin"])
+        return
+
+    # Place replacement SL at remaining quantity
+    sl_trigger = sl_order.get("trigger_price")
+    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
+
+    try:
+        rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
+        sl_resp = exchange.create_order(
+            symbol, "STOP_MARKET", exit_side, rounded_qty, sl_trigger,
+            {"stopLossPrice": sl_trigger, "reduceOnly": True},
+        )
+        new_exch_oid = sl_resp.get("id", "")
+        update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)
+        log.info(
+            "Replaced SL for %s: qty %s → %s (TP1 filled %s)",
+            entry["coin"], entry["quantity"], remaining_qty, tp1_qty,
+        )
+    except Exception as exc:
+        log.error("Failed to place replacement SL for %s: %s — position unprotected",
+                  entry["coin"], exc)
 
 
 def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None) -> list[dict]:

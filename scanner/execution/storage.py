@@ -146,16 +146,17 @@ def update_order_status(
 
 
 def get_open_entry_orders(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> list[dict]:
-    """Get filled entry orders that don't have a filled exit (open positions)."""
+    """Get filled entry orders with remaining open quantity (partial or full)."""
     rows = conn.execute(
         """SELECT e.* FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ?
-        AND NOT EXISTS (
-            SELECT 1 FROM orders x
-            WHERE x.scan_id = e.scan_id
-            AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND x.status = 'FILLED'
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x.quantity) FROM orders x
+             WHERE x.scan_id = e.scan_id
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x.status = 'FILLED'),
+            0
         )""",
         (exchange,),
     ).fetchall()
@@ -163,16 +164,17 @@ def get_open_entry_orders(conn: sqlite3.Connection, exchange: str = "hyperliquid
 
 
 def count_open_positions(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> int:
-    """Count positions with filled entries but no filled exits."""
+    """Count positions with remaining open quantity."""
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ?
-        AND NOT EXISTS (
-            SELECT 1 FROM orders x
-            WHERE x.scan_id = e.scan_id
-            AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND x.status = 'FILLED'
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x.quantity) FROM orders x
+             WHERE x.scan_id = e.scan_id
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x.status = 'FILLED'),
+            0
         )""",
         (exchange,),
     ).fetchone()
@@ -187,11 +189,12 @@ def has_open_position(
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.coin = ? AND e.direction = ? AND e.exchange = ?
-        AND NOT EXISTS (
-            SELECT 1 FROM orders x
-            WHERE x.scan_id = e.scan_id
-            AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND x.status = 'FILLED'
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x.quantity) FROM orders x
+             WHERE x.scan_id = e.scan_id
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x.status = 'FILLED'),
+            0
         )""",
         (coin, direction, exchange),
     ).fetchone()
@@ -204,11 +207,12 @@ def count_open_longs(conn: sqlite3.Connection, exchange: str = "hyperliquid") ->
         """SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.direction = 'LONG' AND e.exchange = ?
-        AND NOT EXISTS (
-            SELECT 1 FROM orders x
-            WHERE x.scan_id = e.scan_id
-            AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND x.status = 'FILLED'
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x.quantity) FROM orders x
+             WHERE x.scan_id = e.scan_id
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x.status = 'FILLED'),
+            0
         )""",
         (exchange,),
     ).fetchone()
@@ -216,18 +220,40 @@ def count_open_longs(conn: sqlite3.Connection, exchange: str = "hyperliquid") ->
 
 
 def sum_open_notional(conn: sqlite3.Connection, exchange: str = "hyperliquid") -> float:
-    """Total notional value of open positions (entry_price * quantity)."""
+    """Total notional value of remaining open quantity (entry_price * remaining_qty)."""
     row = conn.execute(
-        """SELECT COALESCE(SUM(e.entry_price * e.quantity), 0) as total
+        """SELECT COALESCE(SUM(e.entry_price * (
+            e.quantity - COALESCE(
+                (SELECT SUM(x.quantity) FROM orders x
+                 WHERE x.scan_id = e.scan_id
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+                 AND x.status = 'FILLED'),
+                0)
+        )), 0) as total
         FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ?
-        AND NOT EXISTS (
-            SELECT 1 FROM orders x
-            WHERE x.scan_id = e.scan_id
-            AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND x.status = 'FILLED'
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x2.quantity) FROM orders x2
+             WHERE x2.scan_id = e.scan_id
+             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x2.status = 'FILLED'),
+            0
         )""",
         (exchange,),
     ).fetchone()
     return float(row["total"])
+
+
+def update_order_quantity(
+    order_id: str,
+    new_quantity: float,
+    new_exchange_order_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Update order quantity and exchange order ID (for SL replacement after TP1 fill)."""
+    conn.execute(
+        "UPDATE orders SET quantity = ?, exchange_order_id = ? WHERE order_id = ?",
+        (new_quantity, new_exchange_order_id, order_id),
+    )
+    conn.commit()
