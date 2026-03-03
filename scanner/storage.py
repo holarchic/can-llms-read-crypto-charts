@@ -573,13 +573,18 @@ def signal_stats(
     if own_conn:
         conn = get_connection()
 
-    time_filter = f"datetime(timestamp) > datetime('now', '-{days} days')"
+    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
+    params: list = []
+    if exchange:
+        clauses.append("exchange = ?")
+        params.append(exchange)
+    where = " AND ".join(clauses)
 
     total = conn.execute(
-        f"SELECT COUNT(*) as cnt FROM signals WHERE {time_filter}"
+        f"SELECT COUNT(*) as cnt FROM signals WHERE {where}", params
     ).fetchone()["cnt"]
     sent = conn.execute(
-        f"SELECT COUNT(*) as cnt FROM signals WHERE {time_filter} AND sent_to_llm = 1"
+        f"SELECT COUNT(*) as cnt FROM signals WHERE {where} AND sent_to_llm = 1", params
     ).fetchone()["cnt"]
     filtered = total - sent
 
@@ -587,21 +592,21 @@ def signal_stats(
     by_type = conn.execute(
         f"""SELECT setup_type, setup_name, COUNT(*) as cnt,
             SUM(sent_to_llm) as sent, AVG(confidence) as avg_conf
-        FROM signals WHERE {time_filter}
-        GROUP BY setup_type ORDER BY cnt DESC"""
+        FROM signals WHERE {where}
+        GROUP BY setup_type ORDER BY cnt DESC""", params
     ).fetchall()
 
     # Top coins
     top_coins = conn.execute(
         f"""SELECT coin, COUNT(*) as cnt, SUM(sent_to_llm) as sent,
             AVG(confidence) as avg_conf
-        FROM signals WHERE {time_filter}
-        GROUP BY coin ORDER BY cnt DESC LIMIT 10"""
+        FROM signals WHERE {where}
+        GROUP BY coin ORDER BY cnt DESC LIMIT 10""", params
     ).fetchall()
 
     # Batch count
     batches = conn.execute(
-        f"SELECT COUNT(DISTINCT batch_id) as cnt FROM signals WHERE {time_filter}"
+        f"SELECT COUNT(DISTINCT batch_id) as cnt FROM signals WHERE {where}", params
     ).fetchone()["cnt"]
 
     if own_conn:
