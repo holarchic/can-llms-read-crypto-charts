@@ -131,8 +131,6 @@ def fetch_and_cache(
 
     cfg = config or ScannerConfig()
     meta = get_exchange_meta(exchange)
-    ccxt_exchange = get_ccxt_exchange(exchange)
-    symbol = meta["symbol_template"].format(coin=coin)
 
     since_ms = int(pd.Timestamp(since).timestamp() * 1000)
     until_ms = int(pd.Timestamp(until).timestamp() * 1000)
@@ -142,6 +140,10 @@ def fetch_and_cache(
         first_cached_ms = int(cached.index[0].timestamp() * 1000)
         if first_cached_ms <= since_ms and last_cached_ms >= until_ms:
             return cached
+
+        # Only init exchange when we actually need to fetch gaps
+        ccxt_exchange = get_ccxt_exchange(exchange)
+        symbol = meta["symbol_template"].format(coin=coin)
 
         # Fetch pre-cache gap if needed
         pre_gap = None
@@ -160,6 +162,8 @@ def fetch_and_cache(
         return _merge_frames(pre_gap, cached, post_gap)
 
     # No cache — fetch entire range
+    ccxt_exchange = get_ccxt_exchange(exchange)
+    symbol = meta["symbol_template"].format(coin=coin)
     new_df = _fetch_range(ccxt_exchange, symbol, interval, since_ms, until_ms, cfg)
     if new_df is not None:
         new_df = new_df[new_df.index <= pd.Timestamp(until, tz="UTC")]
