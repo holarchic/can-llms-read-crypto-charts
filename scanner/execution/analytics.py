@@ -252,18 +252,39 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
         if stop_dist == 0:
             continue
 
-        # Simulated R: what the machine_block predicted for this exit type
-        if trade.exit_type == "SL":
-            sim_r = -1.0
-        else:
-            tp_price = tp_prices.get(trade.exit_type, 0) or tp_prices.get("TP1", 0)
-            if tp_price:
-                if trade.direction == "LONG":
-                    sim_r = (tp_price - entry_mid) / stop_dist
-                else:
-                    sim_r = (entry_mid - tp_price) / stop_dist
+        # Fetch all filled exits for quantity-weighted sim_r
+        exits = conn.execute(
+            """SELECT order_type, quantity FROM orders
+            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
+            AND status = 'FILLED'""",
+            (trade.scan_id,),
+        ).fetchall()
+
+        if not exits:
+            continue
+
+        total_exit_qty = sum(e["quantity"] for e in exits)
+        if total_exit_qty <= 0:
+            continue
+
+        weighted_sim_r = 0
+        for ex in exits:
+            qty = ex["quantity"]
+            if ex["order_type"] == "stop_loss":
+                leg_r = -1.0
             else:
-                sim_r = 0
+                tp_key = "TP1" if ex["order_type"] == "tp1" else "TP2"
+                tp_price = tp_prices.get(tp_key, 0)
+                if tp_price:
+                    if trade.direction == "LONG":
+                        leg_r = (tp_price - entry_mid) / stop_dist
+                    else:
+                        leg_r = (entry_mid - tp_price) / stop_dist
+                else:
+                    leg_r = 0
+            weighted_sim_r += leg_r * qty
+
+        sim_r = weighted_sim_r / total_exit_qty
 
         comparisons.append({
             "scan_id": trade.scan_id,

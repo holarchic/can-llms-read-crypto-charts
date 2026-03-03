@@ -302,6 +302,56 @@ class TestComputeLiveMetrics:
         assert m["fill_rate"] == 0
 
 
+def _insert_multi_leg_trade(conn, scan_id, direction="LONG", entry_fill=62000,
+                            stop_price=59800, entry_qty=0.1,
+                            exit_legs=None, machine_block=None,
+                            execution_mode="testnet"):
+    """Insert a trade with multiple exit legs (TP1+SL, TP1+TP2, etc)."""
+    # Entry order
+    save_order({
+        "order_id": new_order_id(), "scan_id": scan_id, "coin": "BTC",
+        "direction": direction, "order_type": "entry", "status": "FILLED",
+        "entry_price": entry_fill, "fill_price": entry_fill, "quantity": entry_qty,
+        "leverage": 5, "exchange": "hyperliquid", "execution_mode": execution_mode,
+        "placed_at": "2026-02-24T00:00:00+00:00",
+        "filled_at": "2026-02-24T00:00:01+00:00",
+        "created_at": "2026-02-24T00:00:00+00:00",
+    }, conn)
+
+    # SL reference (CANCELLED unless it's in exit_legs as FILLED)
+    sl_in_legs = any(leg["order_type"] == "stop_loss" for leg in (exit_legs or []))
+    if not sl_in_legs:
+        save_order({
+            "order_id": new_order_id(), "scan_id": scan_id, "coin": "BTC",
+            "direction": direction, "order_type": "stop_loss", "status": "CANCELLED",
+            "trigger_price": stop_price, "quantity": entry_qty,
+            "exchange": "hyperliquid", "execution_mode": execution_mode,
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+
+    # Exit legs
+    hour = 6
+    for leg in (exit_legs or []):
+        save_order({
+            "order_id": new_order_id(), "scan_id": scan_id, "coin": "BTC",
+            "direction": direction, "order_type": leg["order_type"],
+            "status": "FILLED",
+            "trigger_price": leg["fill_price"], "fill_price": leg["fill_price"],
+            "quantity": leg["quantity"],
+            "exchange": "hyperliquid", "execution_mode": execution_mode,
+            "filled_at": f"2026-02-24T{hour:02d}:00:00+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        hour += 6
+
+    if machine_block:
+        conn.execute(
+            "INSERT OR REPLACE INTO scans (scan_id, machine_block) VALUES (?, ?)",
+            (scan_id, json.dumps(machine_block)),
+        )
+        conn.commit()
+
+
 class TestCompareSimVsLive:
     def test_matches_correctly(self, conn):
         mb = {
@@ -327,6 +377,53 @@ class TestCompareSimVsLive:
         trades = get_closed_trades(conn)
         comparisons = compare_sim_vs_live(trades, conn)
         assert len(comparisons) == 0
+
+    def test_sim_r_blended_tp1_plus_sl(self, conn):
+        """TP1 fills half, SL fills remainder → blended sim_r."""
+        mb = {
+            "direction": "LONG", "entry_low": 61800, "entry_high": 62200,
+            "stop_loss": 59800, "tp1": 65000, "leverage": 5,
+        }
+        _insert_multi_leg_trade(
+            conn, scan_id="s_blend_sl", entry_fill=62000, stop_price=59800,
+            entry_qty=0.1,
+            exit_legs=[
+                {"order_type": "tp1", "fill_price": 65000, "quantity": 0.05},
+                {"order_type": "stop_loss", "fill_price": 59800, "quantity": 0.05},
+            ],
+            machine_block=mb,
+        )
+        trades = get_closed_trades(conn)
+        comparisons = compare_sim_vs_live(trades, conn)
+        assert len(comparisons) == 1
+        # entry_mid=62000, stop_dist=2200
+        # TP1 leg_r = (65000-62000)/2200 = 1.3636
+        # SL  leg_r = -1.0
+        # sim_r = (0.05*1.3636 + 0.05*-1.0) / 0.1 = 0.1818
+        assert abs(comparisons[0]["sim_r"] - 0.1818) < 0.01
+
+    def test_sim_r_blended_tp1_plus_tp2(self, conn):
+        """TP1 + TP2 both fill → blended sim_r."""
+        mb = {
+            "direction": "LONG", "entry_low": 61800, "entry_high": 62200,
+            "stop_loss": 59800, "tp1": 65000, "tp2": 68000, "leverage": 5,
+        }
+        _insert_multi_leg_trade(
+            conn, scan_id="s_blend_tp", entry_fill=62000, stop_price=59800,
+            entry_qty=0.1,
+            exit_legs=[
+                {"order_type": "tp1", "fill_price": 65000, "quantity": 0.05},
+                {"order_type": "tp2", "fill_price": 68000, "quantity": 0.05},
+            ],
+            machine_block=mb,
+        )
+        trades = get_closed_trades(conn)
+        comparisons = compare_sim_vs_live(trades, conn)
+        assert len(comparisons) == 1
+        # TP1 leg_r = (65000-62000)/2200 = 1.3636
+        # TP2 leg_r = (68000-62000)/2200 = 2.7273
+        # sim_r = (0.05*1.3636 + 0.05*2.7273) / 0.1 = 2.0455
+        assert abs(comparisons[0]["sim_r"] - 2.0455) < 0.01
 
 
 class TestRollingExpectancy:
