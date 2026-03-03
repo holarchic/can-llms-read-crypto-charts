@@ -53,7 +53,11 @@ def cache_candles(
     conn: sqlite3.Connection,
     exchange: str = "hyperliquid",
 ) -> int:
-    """Insert candles into cache. Returns number of rows inserted (ignores duplicates)."""
+    """Insert candles into cache. Returns number of rows actually inserted.
+
+    Uses conn.total_changes delta to count net inserts — INSERT OR IGNORE
+    skips duplicates without incrementing total_changes.
+    """
     if df is None or df.empty:
         return 0
 
@@ -67,6 +71,7 @@ def cache_candles(
             exchange,
         ))
 
+    before = conn.total_changes
     conn.executemany(
         """INSERT OR IGNORE INTO candles
         (coin, interval, timestamp, open, high, low, close, volume, exchange)
@@ -74,7 +79,7 @@ def cache_candles(
         rows,
     )
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
 def _fetch_range(ccxt_exchange, symbol: str, interval: str, since_ms: int, until_ms: int, cfg: ScannerConfig) -> pd.DataFrame | None:

@@ -50,6 +50,14 @@ class TestCacheRoundtrip:
         )
         assert len(result) == 5
 
+    def test_duplicate_insert_returns_zero(self, db_conn):
+        """Second insert of same candles returns 0, not len(rows)."""
+        df = make_candles(n=5, start="2026-01-01", freq="1h")
+        first = cache_candles("BTC", "1h", df, db_conn)
+        assert first == 5
+        second = cache_candles("BTC", "1h", df, db_conn)
+        assert second == 0
+
     def test_range_filter(self, db_conn):
         df = make_candles(n=24, start="2026-01-01", freq="1h")
         cache_candles("BTC", "1h", df, db_conn)
