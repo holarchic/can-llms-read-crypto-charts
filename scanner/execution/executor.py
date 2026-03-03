@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
+from ccxt.base.errors import DuplicateOrderId
 
 from scanner.config import get_exchange_meta
 from scanner.models import ScanResult
@@ -409,6 +410,9 @@ def _place_stop_loss(
                 symbol, "STOP_MARKET", side, quantity, trigger_price,
                 params,
             )
+        except DuplicateOrderId:
+            log.info("SL cloid already exists for %s — prior attempt succeeded", symbol)
+            return {"id": "", "status": "duplicate_cloid"}
         except Exception as exc:
             log.warning("SL attempt %d/%d failed for %s: %s", attempt + 1, max_retries, symbol, exc)
             if attempt < max_retries - 1:
