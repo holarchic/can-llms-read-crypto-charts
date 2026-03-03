@@ -93,3 +93,17 @@ class ScannerConfig:
 
     # Rate limiting
     api_sleep_ms: int = 100
+
+    def __post_init__(self):
+        """Validate exchange identifiers against EXCHANGE_META."""
+        if self.exchange not in EXCHANGE_META:
+            raise ValueError(
+                f"Unknown exchange: '{self.exchange}'. "
+                f"Supported: {', '.join(EXCHANGE_META)}"
+            )
+        for ex in self.candle_exchanges:
+            if ex not in EXCHANGE_META:
+                raise ValueError(
+                    f"Unknown candle exchange: '{ex}'. "
+                    f"Supported: {', '.join(EXCHANGE_META)}"
+                )
