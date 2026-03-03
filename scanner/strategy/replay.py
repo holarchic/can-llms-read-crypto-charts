@@ -187,10 +187,10 @@ def replay(
     Returns:
         (signals_list, MetricsReport or None)
     """
-    # Dedup: clear any existing replay signals for this strategy
+    # Dedup: clear existing replay signals for this strategy within the replay window
     conn.execute(
-        "DELETE FROM signals WHERE strategy_id = ?",
-        (strategy.strategy_id,),
+        "DELETE FROM signals WHERE strategy_id = ? AND timestamp >= ? AND timestamp <= ?",
+        (strategy.strategy_id, since, until),
     )
     conn.commit()
 
