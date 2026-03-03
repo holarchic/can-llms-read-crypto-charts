@@ -126,7 +126,7 @@ def _cmd_report(config, days, mode, discord):
     sim_vs_live = compare_sim_vs_live(trades, conn)
     conn.close()
 
-    report_mode = mode or config.mode
+    report_mode = mode or "all"
     report = format_execution_report(metrics, sim_vs_live, report_mode)
     print(report)
 
