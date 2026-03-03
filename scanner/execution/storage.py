@@ -2,7 +2,7 @@
 
 import sqlite3
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_OID, uuid4, uuid5
 
 CREATE_ORDERS_TABLE = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -45,6 +45,15 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
 def new_order_id() -> str:
     """Generate a short unique order ID."""
     return uuid4().hex[:8]
+
+
+def make_cloid(order_id: str) -> str:
+    """Derive a deterministic 128-bit hex cloid from an internal order ID.
+
+    Same order_id always produces the same cloid, making retries idempotent
+    on HyperLiquid (which rejects duplicate cloids).
+    """
+    return "0x" + uuid5(NAMESPACE_OID, order_id).hex
 
 
 def save_order(order: dict, conn: sqlite3.Connection) -> None:

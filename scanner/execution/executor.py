@@ -23,6 +23,7 @@ from .storage import (
     count_open_longs,
     count_open_positions,
     has_open_position,
+    make_cloid,
     new_order_id,
     save_order,
     sum_open_notional,
@@ -203,8 +204,11 @@ def execute_trade(
 
     # 9. Market entry
     try:
-        entry_resp = _place_market_order(exec_config, symbol, side, pos.quantity, pos.leverage)
         entry_oid = new_order_id()
+        entry_resp = _place_market_order(
+            exec_config, symbol, side, pos.quantity, pos.leverage,
+            cloid=make_cloid(entry_oid),
+        )
         er.entry_order_id = entry_oid
         save_order({
             "order_id": entry_oid,
@@ -234,9 +238,12 @@ def execute_trade(
     # 10. Stop loss (3 retries — URGENT if all fail)
     exit_side = "sell" if er.direction == "LONG" else "buy"
     sl_price = mb["stop_loss"]
-    sl_resp = _place_stop_loss(exec_config, symbol, exit_side, pos.quantity, sl_price)
+    sl_oid = new_order_id()
+    sl_resp = _place_stop_loss(
+        exec_config, symbol, exit_side, pos.quantity, sl_price,
+        cloid=make_cloid(sl_oid),
+    )
     if sl_resp:
-        sl_oid = new_order_id()
         er.sl_order_id = sl_oid
         save_order({
             "order_id": sl_oid,
@@ -262,9 +269,12 @@ def execute_trade(
 
     # 11. Take profits (non-fatal)
     if mb.get("tp1") and pos.tp1_quantity > 0:
-        tp1_resp = _place_take_profit(exec_config, symbol, exit_side, pos.tp1_quantity, mb["tp1"])
+        tp1_oid = new_order_id()
+        tp1_resp = _place_take_profit(
+            exec_config, symbol, exit_side, pos.tp1_quantity, mb["tp1"],
+            cloid=make_cloid(tp1_oid),
+        )
         if tp1_resp:
-            tp1_oid = new_order_id()
             er.tp1_order_id = tp1_oid
             save_order({
                 "order_id": tp1_oid,
@@ -283,9 +293,12 @@ def execute_trade(
             }, conn)
 
     if mb.get("tp2") and pos.tp2_quantity > 0:
-        tp2_resp = _place_take_profit(exec_config, symbol, exit_side, pos.tp2_quantity, mb["tp2"])
+        tp2_oid = new_order_id()
+        tp2_resp = _place_take_profit(
+            exec_config, symbol, exit_side, pos.tp2_quantity, mb["tp2"],
+            cloid=make_cloid(tp2_oid),
+        )
         if tp2_resp:
-            tp2_oid = new_order_id()
             er.tp2_order_id = tp2_oid
             save_order({
                 "order_id": tp2_oid,
@@ -314,7 +327,10 @@ def _round_quantity(exchange, symbol: str, quantity: float) -> float:
     return float(exchange.amount_to_precision(symbol, quantity))
 
 
-def _place_market_order(config, symbol: str, side: str, quantity: float, leverage: int) -> dict:
+def _place_market_order(
+    config, symbol: str, side: str, quantity: float, leverage: int,
+    cloid: str | None = None,
+) -> dict:
     """Set leverage + place market order.
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
@@ -325,20 +341,27 @@ def _place_market_order(config, symbol: str, side: str, quantity: float, leverag
     quantity = _round_quantity(exchange, symbol, quantity)
     ticker = exchange.fetch_ticker(symbol)
     price = ticker["last"]
-    return exchange.create_order(symbol, "market", side, quantity, price)
+    params = {}
+    if cloid:
+        params["clientOrderId"] = cloid
+    return exchange.create_order(symbol, "market", side, quantity, price, params)
 
 
 def _place_stop_loss(
-    config, symbol: str, side: str, quantity: float, trigger_price: float, max_retries: int = 3
+    config, symbol: str, side: str, quantity: float, trigger_price: float,
+    max_retries: int = 3, cloid: str | None = None,
 ) -> dict | None:
     """Place stop loss with retry + exponential backoff. Returns None if all retries fail."""
     exchange = get_auth_exchange(config)
     quantity = _round_quantity(exchange, symbol, quantity)
+    params = {"stopLossPrice": trigger_price, "reduceOnly": True}
+    if cloid:
+        params["clientOrderId"] = cloid
     for attempt in range(max_retries):
         try:
             return exchange.create_order(
                 symbol, "STOP_MARKET", side, quantity, trigger_price,
-                {"stopLossPrice": trigger_price, "reduceOnly": True},
+                params,
             )
         except Exception as exc:
             log.warning("SL attempt %d/%d failed for %s: %s", attempt + 1, max_retries, symbol, exc)
@@ -349,14 +372,18 @@ def _place_stop_loss(
 
 def _place_take_profit(
     config, symbol: str, side: str, quantity: float, trigger_price: float,
+    cloid: str | None = None,
 ) -> dict | None:
     """Place take profit. Returns None on failure (non-critical)."""
     try:
         exchange = get_auth_exchange(config)
         quantity = _round_quantity(exchange, symbol, quantity)
+        params = {"takeProfitPrice": trigger_price, "reduceOnly": True}
+        if cloid:
+            params["clientOrderId"] = cloid
         return exchange.create_order(
             symbol, "TAKE_PROFIT_MARKET", side, quantity, trigger_price,
-            {"takeProfitPrice": trigger_price, "reduceOnly": True},
+            params,
         )
     except Exception as exc:
         log.warning("TP placement failed for %s: %s", symbol, exc)

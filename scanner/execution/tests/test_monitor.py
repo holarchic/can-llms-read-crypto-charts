@@ -190,6 +190,37 @@ class TestPartialExitHandling:
 
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sl_replacement_has_cloid(self, mock_auth, mock_cancel, config, conn):
+        """SL replacement create_order includes clientOrderId in params."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # Verify the SL replacement create_order got clientOrderId
+        assert mock_exchange.create_order.called
+        call_args = mock_exchange.create_order.call_args
+        params = call_args[0][-1]  # last positional arg is params dict
+        assert "clientOrderId" in params
+        assert params["clientOrderId"].startswith("0x")
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp2_fill_cancels_sl(self, mock_auth, mock_cancel, config, conn):
         """TP2 fills → SL cancelled (fully closed)."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)

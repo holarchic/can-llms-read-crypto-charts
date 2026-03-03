@@ -10,6 +10,7 @@ from .exchange import cancel_order, get_auth_exchange
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
+    make_cloid,
     update_order_quantity,
     update_order_status,
 )
@@ -152,9 +153,10 @@ def _handle_tp1_fill(
 
     try:
         rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
+        cloid = make_cloid(sl_order["order_id"] + ":replaced")
         sl_resp = exchange.create_order(
             symbol, "STOP_MARKET", exit_side, rounded_qty, sl_trigger,
-            {"stopLossPrice": sl_trigger, "reduceOnly": True},
+            {"stopLossPrice": sl_trigger, "reduceOnly": True, "clientOrderId": cloid},
         )
         new_exch_oid = sl_resp.get("id", "")
         update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)

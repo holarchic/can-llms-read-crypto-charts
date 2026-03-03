@@ -352,6 +352,31 @@ class TestExecuteTrade:
         assert mock_discord.called
 
 
+class TestClientOrderId:
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_cloid_passed_to_all_orders(self, mock_killed, mock_price, mock_balance,
+                                         mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """All create_order calls include clientOrderId in params."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        # Entry, SL, TP1, TP2 = 4 create_order calls
+        for call in mock_exchange.create_order.call_args_list:
+            params = call[0][-1] if len(call[0]) > 5 else call.kwargs.get("params", call[0][-1])
+            assert "clientOrderId" in params, f"Missing clientOrderId in {call}"
+            assert params["clientOrderId"].startswith("0x")
+
+
 class TestRoundQuantity:
     def test_rounds_via_exchange_precision(self):
         from scanner.execution.executor import _round_quantity

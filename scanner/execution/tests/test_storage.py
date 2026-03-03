@@ -12,6 +12,7 @@ from scanner.execution.storage import (
     get_order,
     get_orders_for_scan,
     has_open_position,
+    make_cloid,
     new_order_id,
     save_order,
     sum_open_notional,
@@ -243,6 +244,19 @@ class TestPositionQueries:
         tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
         save_order(tp1, conn)
         assert count_open_longs(conn) == 1
+
+
+class TestMakeCloid:
+    def test_deterministic(self):
+        assert make_cloid("abc123") == make_cloid("abc123")
+
+    def test_format(self):
+        cloid = make_cloid("test-order")
+        assert cloid.startswith("0x")
+        assert len(cloid) == 34  # 0x + 32 hex chars
+
+    def test_unique_inputs(self):
+        assert make_cloid("order-1") != make_cloid("order-2")
 
 
 class TestUpdateOrderQuantity:
