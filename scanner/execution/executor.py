@@ -210,6 +210,51 @@ def execute_trade(
             cloid=make_cloid(entry_oid),
         )
         er.entry_order_id = entry_oid
+
+        # Use confirmed fill quantity from exchange response (fall back to
+        # requested qty when field absent — defensive against non-ccxt mocks)
+        raw_filled = entry_resp.get("filled")
+        filled_qty = float(raw_filled) if raw_filled is not None else pos.quantity
+
+        # Zero fill — IOC got nothing
+        if filled_qty <= 0:
+            save_order({
+                "order_id": entry_oid,
+                "scan_id": result.scan_id,
+                "coin": result.coin,
+                "direction": er.direction,
+                "order_type": "entry",
+                "exchange_order_id": entry_resp.get("id", ""),
+                "status": "CANCELLED",
+                "entry_price": 0,
+                "fill_price": 0,
+                "quantity": 0,
+                "leverage": pos.leverage,
+                "placed_at": now,
+                "exchange": exec_config.exchange,
+                "execution_mode": exec_config.mode,
+                "created_at": now,
+            }, conn)
+            er.skip_reason = "entry_unfilled"
+            log.warning("%s: entry order unfilled (IOC zero fill)", result.coin)
+            return er
+
+        # Partial fill — warn and alert
+        if filled_qty < pos.quantity:
+            log.warning(
+                "%s: partial fill %.6f / %.6f requested",
+                result.coin, filled_qty, pos.quantity,
+            )
+            _send_ops_alert(
+                f"Partial fill {result.coin}: {filled_qty:.6f} / {pos.quantity:.6f}",
+                exec_config,
+            )
+
+        # Rescale TP quantities proportionally to actual fill
+        fill_ratio = filled_qty / pos.quantity
+        actual_tp1_qty = pos.tp1_quantity * fill_ratio
+        actual_tp2_qty = filled_qty - actual_tp1_qty
+
         save_order({
             "order_id": entry_oid,
             "scan_id": result.scan_id,
@@ -220,7 +265,7 @@ def execute_trade(
             "status": "FILLED",
             "entry_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
             "fill_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
-            "quantity": pos.quantity,
+            "quantity": filled_qty,
             "leverage": pos.leverage,
             "placed_at": now,
             "filled_at": now,
@@ -240,7 +285,7 @@ def execute_trade(
     sl_price = mb["stop_loss"]
     sl_oid = new_order_id()
     sl_resp = _place_stop_loss(
-        exec_config, symbol, exit_side, pos.quantity, sl_price,
+        exec_config, symbol, exit_side, filled_qty, sl_price,
         cloid=make_cloid(sl_oid),
     )
     if sl_resp:
@@ -254,7 +299,7 @@ def execute_trade(
             "exchange_order_id": sl_resp.get("id", ""),
             "status": "PLACED",
             "trigger_price": sl_price,
-            "quantity": pos.quantity,
+            "quantity": filled_qty,
             "exchange": exec_config.exchange,
             "execution_mode": exec_config.mode,
             "placed_at": now,
@@ -268,10 +313,10 @@ def execute_trade(
         )
 
     # 11. Take profits (non-fatal)
-    if mb.get("tp1") and pos.tp1_quantity > 0:
+    if mb.get("tp1") and actual_tp1_qty > 0:
         tp1_oid = new_order_id()
         tp1_resp = _place_take_profit(
-            exec_config, symbol, exit_side, pos.tp1_quantity, mb["tp1"],
+            exec_config, symbol, exit_side, actual_tp1_qty, mb["tp1"],
             cloid=make_cloid(tp1_oid),
         )
         if tp1_resp:
@@ -285,17 +330,17 @@ def execute_trade(
                 "exchange_order_id": tp1_resp.get("id", ""),
                 "status": "PLACED",
                 "trigger_price": mb["tp1"],
-                "quantity": pos.tp1_quantity,
+                "quantity": actual_tp1_qty,
                 "exchange": exec_config.exchange,
                 "execution_mode": exec_config.mode,
                 "placed_at": now,
                 "created_at": now,
             }, conn)
 
-    if mb.get("tp2") and pos.tp2_quantity > 0:
+    if mb.get("tp2") and actual_tp2_qty > 0:
         tp2_oid = new_order_id()
         tp2_resp = _place_take_profit(
-            exec_config, symbol, exit_side, pos.tp2_quantity, mb["tp2"],
+            exec_config, symbol, exit_side, actual_tp2_qty, mb["tp2"],
             cloid=make_cloid(tp2_oid),
         )
         if tp2_resp:
@@ -309,7 +354,7 @@ def execute_trade(
                 "exchange_order_id": tp2_resp.get("id", ""),
                 "status": "PLACED",
                 "trigger_price": mb["tp2"],
-                "quantity": pos.tp2_quantity,
+                "quantity": actual_tp2_qty,
                 "exchange": exec_config.exchange,
                 "execution_mode": exec_config.mode,
                 "placed_at": now,

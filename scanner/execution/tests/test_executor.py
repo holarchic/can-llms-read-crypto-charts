@@ -102,14 +102,17 @@ def _make_scan_result(machine_block=_UNSET, coin="BTC", **overrides):
     return ScanResult(**defaults)
 
 
-def _mock_exchange_success():
+def _mock_exchange_success(filled=None):
     """Return mock responses for entry, SL, TP orders."""
-    return {
+    resp = {
         "id": "exch_order_123",
         "average": 62050,
         "price": 62050,
         "status": "closed",
     }
+    if filled is not None:
+        resp["filled"] = filled
+    return resp
 
 
 class TestValidateExecutionParams:
@@ -350,6 +353,102 @@ class TestExecuteTrade:
 
         execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert mock_discord.called
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_zero_fill_aborts(self, mock_killed, mock_price, mock_balance,
+                              mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """Zero fill from IOC → CANCELLED entry, no SL/TP placed."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success(filled=0)
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is False
+        assert result.skip_reason == "entry_unfilled"
+        assert result.sl_order_id == ""
+        assert result.tp1_order_id == ""
+        # Entry saved as CANCELLED
+        orders = get_orders_for_scan("test123", conn)
+        assert len(orders) == 1
+        assert orders[0]["status"] == "CANCELLED"
+        assert orders[0]["quantity"] == 0
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_partial_fill_scales_sl_tp(self, mock_killed, mock_price, mock_balance,
+                                       mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """Partial fill scales SL and TP quantities proportionally."""
+        mock_exchange = MagicMock()
+        # Entry returns half fill; SL, TP1, TP2 succeed
+        # quantity ≈ 0.04545; we say exchange filled 0.02 (partial)
+        filled = 0.02
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(filled=filled),  # entry
+            _mock_exchange_success(),  # SL
+            _mock_exchange_success(),  # TP1
+            _mock_exchange_success(),  # TP2
+        ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        orders = get_orders_for_scan("test123", conn)
+        entry = next(o for o in orders if o["order_type"] == "entry")
+        sl = next(o for o in orders if o["order_type"] == "stop_loss")
+        tp1 = next(o for o in orders if o["order_type"] == "tp1")
+        tp2 = next(o for o in orders if o["order_type"] == "tp2")
+
+        # Entry and SL use filled_qty
+        assert entry["quantity"] == filled
+        assert sl["quantity"] == filled
+        # TP1 + TP2 = filled_qty (50/50 split)
+        assert abs(tp1["quantity"] + tp2["quantity"] - filled) < 1e-10
+        assert abs(tp1["quantity"] - tp2["quantity"]) < 1e-10  # equal split
+
+        # Ops alert sent for partial fill
+        ops_calls = [c for c in mock_discord.call_args_list
+                     if "Partial fill" in str(c)]
+        assert len(ops_calls) > 0
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_full_fill_uses_confirmed_qty(self, mock_killed, mock_price, mock_balance,
+                                          mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """Full fill uses confirmed quantity from exchange, not requested."""
+        mock_exchange = MagicMock()
+        # Sizing gives ≈0.04545; exchange confirms exact same (full fill)
+        # We compute expected qty from sizing: risk=100, stop_dist=2200
+        expected_qty = 100.0 / 2200.0
+        mock_exchange.create_order.return_value = _mock_exchange_success(filled=expected_qty)
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        orders = get_orders_for_scan("test123", conn)
+        entry = next(o for o in orders if o["order_type"] == "entry")
+        sl = next(o for o in orders if o["order_type"] == "stop_loss")
+
+        assert abs(entry["quantity"] - expected_qty) < 1e-10
+        assert abs(sl["quantity"] - expected_qty) < 1e-10
 
 
 class TestClientOrderId:
