@@ -9,7 +9,9 @@ from scanner.data import get_exchange as get_readonly_exchange
 
 log = logging.getLogger(__name__)
 
-# Singleton authenticated exchange — separate from data.py's read-only instance
+# Singleton authenticated exchange — separate from data.py's read-only instance.
+# WARNING: cached regardless of config. Safe while one mode/key per process (cron).
+# If moving to multi-mode (testnet+live in same process), key by (mode, wallet_address).
 _auth_exchange = None
 
 
