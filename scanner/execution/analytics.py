@@ -20,6 +20,7 @@ class TradeRecord:
     funding_paid: float
     slippage_r: float
     execution_mode: str
+    exchange: str = "hyperliquid"
 
 
 def get_closed_trades(conn, execution_mode: str | None = None, days: int | None = None) -> list[TradeRecord]:
@@ -54,8 +55,9 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
             """SELECT * FROM orders
             WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
             AND status = 'FILLED'
+            AND execution_mode = ? AND exchange = ?
             ORDER BY filled_at""",
-            (entry["scan_id"],),
+            (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
         ).fetchall()
 
         if not exits:
@@ -86,15 +88,19 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
 
         # Funding paid (sum across all orders for this scan)
         funding_row = conn.execute(
-            "SELECT COALESCE(SUM(funding_paid), 0) as total FROM orders WHERE scan_id = ?",
-            (entry["scan_id"],),
+            """SELECT COALESCE(SUM(funding_paid), 0) as total FROM orders
+            WHERE scan_id = ? AND execution_mode = ? AND exchange = ?""",
+            (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
         ).fetchone()
         funding_paid = float(funding_row["total"])
 
         # Risk amount: uses full entry quantity (that was the original risk)
         stop_order = conn.execute(
-            "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' LIMIT 1",
-            (entry["scan_id"],),
+            """SELECT trigger_price FROM orders
+            WHERE scan_id = ? AND order_type = 'stop_loss'
+            AND execution_mode = ? AND exchange = ?
+            LIMIT 1""",
+            (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
         ).fetchone()
         stop_price = float(stop_order["trigger_price"]) if stop_order else 0
         stop_distance = abs(entry_fill - stop_price)
@@ -136,6 +142,7 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
             funding_paid=funding_paid,
             slippage_r=slippage_r,
             execution_mode=entry.get("execution_mode", "testnet"),
+            exchange=entry.get("exchange", "hyperliquid"),
         ))
 
     return trades
@@ -256,8 +263,9 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
         exits = conn.execute(
             """SELECT order_type, quantity FROM orders
             WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
-            AND status = 'FILLED'""",
-            (trade.scan_id,),
+            AND status = 'FILLED'
+            AND execution_mode = ? AND exchange = ?""",
+            (trade.scan_id, trade.execution_mode, trade.exchange),
         ).fetchall()
 
         if not exits:
