@@ -28,7 +28,7 @@ Examples:
     )
     parser.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
                         default="hyperliquid", help="Exchange to scan (default: hyperliquid)")
-    parser.add_argument("--candle-exchanges", nargs="*",
+    parser.add_argument("--candle-exchanges", nargs="+",
                         help="Exchanges to collect candles from (default: all three)")
     parser.add_argument("--dry-run", action="store_true", help="Run screener only, skip LLM + alerts")
     parser.add_argument("--coin", help="Scan a single coin (e.g. BTC, ETH, SOL)")
