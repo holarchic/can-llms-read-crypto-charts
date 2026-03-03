@@ -91,6 +91,8 @@ def _collect_candles(
                     print(f"  {label} {tf}: failed — {e}")
         ex_conn.close()
 
+    if not config.candle_exchanges:
+        return
     with ThreadPoolExecutor(max_workers=len(config.candle_exchanges)) as executor:
         list(executor.map(_collect_one_exchange, config.candle_exchanges))
 

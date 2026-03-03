@@ -1,6 +1,7 @@
-"""Tests for pipeline helpers (diversity selection)."""
+"""Tests for pipeline helpers (diversity selection, candle collection)."""
 
 
+from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
     MarketContext,
@@ -8,7 +9,12 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.pipeline import _select_with_diversity
+from scanner.pipeline import _collect_candles, _select_with_diversity
+
+
+def test_collect_candles_empty_exchanges():
+    config = ScannerConfig(candle_exchanges=[])
+    _collect_candles([], config)  # should not raise
 
 
 def _make_signal(
