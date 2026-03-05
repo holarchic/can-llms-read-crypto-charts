@@ -232,6 +232,23 @@ def classify_structure(swings: list[SwingPoint]) -> tuple[Structure, tuple[float
     if highs_bearish and lows_bearish:
         return Structure.BEARISH, None
 
+    # Tie-break: one side agrees unanimously + latest swing on tied side confirms
+    highs_tied = hh_count == lh_count and hh_count > 0
+    lows_tied = hl_count == ll_count and hl_count > 0
+
+    if highs_tied and lows_bullish:
+        if recent_highs[-1].body_price >= max(s.body_price for s in recent_highs):
+            return Structure.BULLISH, None
+    if highs_tied and lows_bearish:
+        if recent_highs[-1].body_price <= min(s.body_price for s in recent_highs):
+            return Structure.BEARISH, None
+    if lows_tied and highs_bullish:
+        if recent_lows[-1].body_price >= max(s.body_price for s in recent_lows):
+            return Structure.BULLISH, None
+    if lows_tied and highs_bearish:
+        if recent_lows[-1].body_price <= min(s.body_price for s in recent_lows):
+            return Structure.BEARISH, None
+
     # RANGING — compute bounds from recent swings
     all_recent = recent_highs + recent_lows
     range_low = min(s.body_price for s in all_recent)

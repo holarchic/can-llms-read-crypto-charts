@@ -177,14 +177,19 @@ def stage1_screen(
             if verbose:
                 print(f"  {coin} — error: {e}")
 
-    # Compute BTC 4H structure for market context (used in LLM prompts + stored per signal)
+    # Compute BTC Daily structure for market context (Daily = filter TF for 4H execution)
     btc_structure = None
-    btc_df = candle_map.get("BTC")
-    if btc_df is not None and len(btc_df) >= 50:
-        btc_ctx = build_context(btc_df, config.swing_lookback, config.sr_cluster_pct)
-        btc_structure = btc_ctx.structure.value
+    btc_context = None
+    try:
+        btc_daily_df = fetch_candles("BTC", "1d", config.candle_counts["1d"], config)
+        if btc_daily_df is not None and len(btc_daily_df) >= 50:
+            btc_context = build_context(btc_daily_df, config.swing_lookback, config.sr_cluster_pct)
+            btc_structure = btc_context.structure.value
+            if verbose:
+                print(f"BTC Daily structure: {btc_structure}")
+    except Exception as e:
         if verbose:
-            print(f"BTC 4H structure: {btc_structure}")
+            print(f"BTC Daily fetch failed: {e}")
 
     # Shuffle for unbiased LLM selection (confidence is anti-predictive — see calibration analysis)
     random.shuffle(all_signals)
@@ -204,13 +209,14 @@ def stage1_screen(
     if verbose:
         print(f"Stage 1 complete: {len(capped)} signals (from {len(all_signals)} pre-cap)")
 
-    return capped, btc_structure, candle_map
+    return capped, btc_structure, btc_context, candle_map
 
 
 def _analyze_one(
     signal: SetupSignal,
     config: ScannerConfig,
     btc_structure: str | None = None,
+    btc_context=None,
     prefetched_candles: dict | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
@@ -230,7 +236,7 @@ def _analyze_one(
         conn.close()
 
         chart_paths = generate_charts_for_signal(signal, candle_sets)
-        result = analyze_for_scanner(signal, chart_paths, config, btc_structure)
+        result = analyze_for_scanner(signal, chart_paths, config, btc_structure, btc_context)
         return result
     except Exception as e:
         print(f"  Error analyzing {signal.coin}: {e}")
@@ -243,6 +249,7 @@ def stage2_analyze(
     verbose: bool = True,
     strategy_id: str = "v0",
     btc_structure: str | None = None,
+    btc_context=None,
     prefetched_candles: dict | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
@@ -271,7 +278,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config, btc_structure, prefetched_candles): signal
+            executor.submit(_analyze_one, signal, config, btc_structure, btc_context, prefetched_candles): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -398,7 +405,7 @@ def run_scan(
         print("=" * 60)
 
     # Stage 1
-    signals, btc_structure, candle_map = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
+    signals, btc_structure, btc_context, candle_map = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
 
     if dry_run:
         if verbose:
@@ -416,7 +423,8 @@ def run_scan(
 
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
-                                 btc_structure=btc_structure, prefetched_candles=candle_map)
+                                 btc_structure=btc_structure, btc_context=btc_context,
+                                 prefetched_candles=candle_map)
 
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)

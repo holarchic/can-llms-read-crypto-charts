@@ -109,6 +109,68 @@ class TestClassifyStructure:
             assert bounds[0] < bounds[1]
 
 
+class TestClassifyStructureTieBreak:
+    """Tie-break logic: one side tied + other side unanimous + latest swing confirms."""
+
+    def _swing(self, idx, price, typ):
+        from datetime import datetime, timezone
+
+        from scanner.models import SwingPoint
+        return SwingPoint(idx, datetime(2026, 1, 1, tzinfo=timezone.utc), price, typ, price)
+
+    def test_tie_break_bullish(self):
+        """Highs tied (HH then LH) + lows unanimously HL + latest high is highest → BULLISH."""
+        swings = [
+            self._swing(0, 100, "high"),  # H1
+            self._swing(1, 90, "low"),    # L1
+            self._swing(2, 95, "high"),   # H2 (LH vs H1)
+            self._swing(3, 92, "low"),    # L2 (HL vs L1)
+            self._swing(4, 105, "high"),  # H3 (HH vs H2) — tied 1 HH, 1 LH; latest is highest
+            self._swing(5, 94, "low"),    # L3 (HL vs L2) — lows: 2 HL, 0 LL
+        ]
+        structure, bounds = classify_structure(swings)
+        assert structure == Structure.BULLISH
+
+    def test_tie_break_bearish(self):
+        """Highs tied + lows unanimously bearish + latest high is lowest → BEARISH."""
+        swings = [
+            self._swing(0, 100, "high"),  # H1
+            self._swing(1, 90, "low"),    # L1
+            self._swing(2, 105, "high"),  # H2 (HH vs H1)
+            self._swing(3, 85, "low"),    # L2 (LL vs L1)
+            self._swing(4, 98, "high"),   # H3 (LH vs H2) — tied 1 HH, 1 LH; latest is lowest
+            self._swing(5, 80, "low"),    # L3 (LL vs L2) — lows: 2 LL, 0 HL
+        ]
+        structure, bounds = classify_structure(swings)
+        assert structure == Structure.BEARISH
+
+    def test_tie_no_confirmation_stays_ranging(self):
+        """Highs tied + lows bullish but latest high is NOT highest → RANGING."""
+        swings = [
+            self._swing(0, 100, "high"),  # H1
+            self._swing(1, 90, "low"),    # L1
+            self._swing(2, 110, "high"),  # H2 (HH vs H1)
+            self._swing(3, 92, "low"),    # L2 (HL vs L1)
+            self._swing(4, 105, "high"),  # H3 (LH vs H2) — tied 1 HH, 1 LH; latest 105 < max 110
+            self._swing(5, 94, "low"),    # L3 (HL vs L2) — lows: 2 HL, 0 LL
+        ]
+        structure, bounds = classify_structure(swings)
+        assert structure == Structure.RANGING
+
+    def test_both_tied_stays_ranging(self):
+        """Both highs and lows tied → RANGING."""
+        swings = [
+            self._swing(0, 100, "high"),  # H1
+            self._swing(1, 90, "low"),    # L1
+            self._swing(2, 105, "high"),  # H2 (HH)
+            self._swing(3, 85, "low"),    # L2 (LL)
+            self._swing(4, 98, "high"),   # H3 (LH) — highs tied 1 HH, 1 LH
+            self._swing(5, 88, "low"),    # L3 (HL) — lows tied 1 LL, 1 HL
+        ]
+        structure, bounds = classify_structure(swings)
+        assert structure == Structure.RANGING
+
+
 class TestDetectMSBs:
     def test_finds_msbs_in_data(self, uptrend_df):
         swings = find_swing_points(uptrend_df, lookback=5)

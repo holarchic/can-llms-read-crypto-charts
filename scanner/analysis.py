@@ -1,6 +1,6 @@
 """LLM deep analysis — imports building blocks from chart_analyzer."""
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 import uuid
 from datetime import datetime, timezone
@@ -17,13 +17,45 @@ from chart_analyzer.analyzer import (
 )
 
 from .config import ScannerConfig
-from .models import ScanResult, SetupSignal
+from .models import MarketContext, ScanResult, SetupSignal
+
+
+def _build_btc_context(btc_ctx: MarketContext) -> str:
+    """Build multi-line BTC context block for LLM prompt."""
+    structure = btc_ctx.structure.value.lower()
+    price = btc_ctx.current_price
+
+    # Position within range (if ranging)
+    position = ""
+    if btc_ctx.range_bounds:
+        lo, hi = btc_ctx.range_bounds
+        if hi > lo:
+            pct = (price - lo) / (hi - lo) * 100
+            if pct < 30:
+                position = f"Near range lows ({lo:,.0f}–{hi:,.0f})."
+            elif pct > 70:
+                position = f"Near range highs ({lo:,.0f}–{hi:,.0f})."
+            else:
+                position = f"Mid-range ({lo:,.0f}–{hi:,.0f})."
+
+    # Last swing low for reference
+    recent_lows = [s for s in btc_ctx.swings if s.type == "low"]
+    last_low = f"Last swing low: ${recent_lows[-1].body_price:,.0f}." if recent_lows else ""
+
+    lines = [
+        "Market context — BTC:",
+        f"- Daily structure: {structure.capitalize()}. {position} {last_low}".strip(),
+        f"- Volatility: ATR percentile {btc_ctx.vol_percentile:.0f}%.",
+        "BTC declines propagate to alts with 1.5–3x amplification. Weight bearish BTC context more heavily than bullish.",
+    ]
+    return "\n".join(lines)
 
 
 def _build_scanner_content(
     chart_paths: list[Path],
     signal: SetupSignal,
     btc_structure: str | None = None,
+    btc_context: MarketContext | None = None,
 ) -> list[dict]:
     """Build user content blocks with chart images. No screener context — LLM analyzes blind."""
     content = []
@@ -50,8 +82,12 @@ def _build_scanner_content(
         constraint = f"\n\nExchange constraint: Maximum leverage for this pair is {signal.max_leverage}x. Do not recommend leverage above this."
 
     market_ctx = ""
-    if btc_structure and signal.coin != "BTC":
-        market_ctx = f"\n\nMarket context: BTC 4H structure is {btc_structure}. Factor this into your directional bias and invalidation conditions."
+    if btc_context and signal.coin != "BTC":
+        market_ctx = "\n\n" + _build_btc_context(btc_context)
+    elif btc_structure and signal.coin != "BTC":
+        # Fallback to simple string if full context unavailable
+        market_ctx = (f"\n\nMarket context: BTC Daily structure is {btc_structure}."
+                      " Factor this into your directional bias and invalidation conditions.")
 
     content.append({
         "type": "text",
@@ -82,6 +118,7 @@ def analyze_for_scanner(
     chart_paths: list[Path],
     config: ScannerConfig | None = None,
     btc_structure: str | None = None,
+    btc_context: MarketContext | None = None,
 ) -> ScanResult:
     """Run LLM deep analysis on a screener signal. Returns ScanResult."""
     cfg = config or ScannerConfig()
@@ -127,7 +164,7 @@ def analyze_for_scanner(
         "- tp2/tp2_exit_pct: include when multi-target appropriate; tp2_exit_pct is remainder\n"
         "- If any target is a trailing stop (no fixed price), omit machine block entirely"
     )
-    user_content = _build_scanner_content(chart_paths, signal, btc_structure)
+    user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
 
     client = anthropic.Anthropic()
