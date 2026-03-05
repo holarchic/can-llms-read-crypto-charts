@@ -24,11 +24,11 @@ from .sizing import PositionSize, calculate_position
 from .storage import (
     count_open_longs,
     count_open_positions,
+    get_open_position_coins,
     has_open_position,
     make_cloid,
     new_order_id,
     save_order,
-    sum_open_notional,
 )
 
 log = logging.getLogger(__name__)
@@ -75,6 +75,29 @@ def validate_execution_params(machine_block: dict) -> list[str]:
         errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct}) > 100")
 
     return errors
+
+
+def current_open_notional(exec_config: ExecutionConfig, conn) -> float:
+    """Sum notional of open positions using current exchange prices.
+
+    Falls back to entry_price if price fetch fails for any position.
+    """
+    positions = get_open_position_coins(conn, exec_config.exchange, exec_config.mode)
+    if not positions:
+        return 0.0
+
+    exchange = get_auth_exchange(exec_config)
+    meta = get_exchange_meta(exec_config.exchange)
+    total = 0.0
+    for pos in positions:
+        try:
+            symbol = meta["symbol_template"].format(coin=pos["coin"])
+            ticker = exchange.fetch_ticker(symbol)
+            price = float(ticker["last"])
+        except Exception:
+            price = pos["entry_price"]  # fallback
+        total += price * pos["remaining_qty"]
+    return total
 
 
 def execute_trade(
@@ -232,7 +255,7 @@ def execute_trade(
         return er
 
     if exec_config.max_portfolio_exposure_pct < 100:
-        open_notional = sum_open_notional(conn, exchange, mode)
+        open_notional = current_open_notional(exec_config, conn)
         exposure_pct = (open_notional / balance * 100) if balance > 0 else 0
         if exposure_pct >= exec_config.max_portfolio_exposure_pct:
             er.skip_reason = "exposure_limit"

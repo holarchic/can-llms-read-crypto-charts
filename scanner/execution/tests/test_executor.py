@@ -10,10 +10,11 @@ from ccxt.base.errors import DuplicateOrderId
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import (
+    current_open_notional,
     execute_trade,
     validate_execution_params,
 )
-from scanner.execution.storage import ensure_orders_table, get_orders_for_scan
+from scanner.execution.storage import ensure_orders_table, get_orders_for_scan, save_order
 from scanner.models import (
     Direction,
     MarketContext,
@@ -665,3 +666,46 @@ class TestExchangeReconciliation:
         with caplog.at_level(logging.WARNING, logger="scanner.execution.executor"):
             execute_trade(sr, exec_config, scanner_config, conn)
         assert any("mismatch" in r.message.lower() for r in caplog.records)
+
+
+class TestCurrentOpenNotional:
+    @patch("scanner.execution.executor.get_auth_exchange")
+    def test_uses_live_price(self, mock_auth, conn, exec_config):
+        """Open position priced at current market → notional > entry-based."""
+        # Insert a filled entry at 62000, qty 0.1
+        save_order({
+            "order_id": "not1", "scan_id": "s1", "coin": "BTC", "direction": "LONG",
+            "order_type": "entry", "status": "FILLED", "entry_price": 62000,
+            "quantity": 0.1, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.return_value = {"last": 70000}
+        mock_auth.return_value = mock_exchange
+
+        result = current_open_notional(exec_config, conn)
+        # 70000 * 0.1 = 7000 (vs entry-based 62000 * 0.1 = 6200)
+        assert result == pytest.approx(7000.0)
+
+    @patch("scanner.execution.executor.get_auth_exchange")
+    def test_fallback_on_ticker_error(self, mock_auth, conn, exec_config):
+        """Ticker fetch fails → uses entry_price as fallback."""
+        save_order({
+            "order_id": "not2", "scan_id": "s2", "coin": "ETH", "direction": "LONG",
+            "order_type": "entry", "status": "FILLED", "entry_price": 3000,
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ticker.side_effect = Exception("API timeout")
+        mock_auth.return_value = mock_exchange
+
+        result = current_open_notional(exec_config, conn)
+        assert result == pytest.approx(3000.0)  # 3000 * 1.0
+
+    def test_no_positions_returns_zero(self, conn, exec_config):
+        """No open positions → 0.0."""
+        result = current_open_notional(exec_config, conn)
+        assert result == 0.0

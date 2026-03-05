@@ -279,6 +279,34 @@ def sum_open_notional(
     return float(row["total"])
 
 
+def get_open_position_coins(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> list[dict]:
+    """Get coin, direction, remaining_qty, entry_price for open positions."""
+    rows = conn.execute(
+        """SELECT e.coin, e.direction, e.entry_price,
+            (e.quantity - COALESCE(
+                (SELECT SUM(x.quantity) FROM orders x
+                 WHERE x.scan_id = e.scan_id
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2')
+                 AND x.status = 'FILLED'),
+                0
+            )) as remaining_qty
+        FROM orders e
+        WHERE e.order_type = 'entry' AND e.status = 'FILLED'
+        AND e.exchange = ? AND e.execution_mode = ?
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x2.quantity) FROM orders x2
+             WHERE x2.scan_id = e.scan_id
+             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2')
+             AND x2.status = 'FILLED'),
+            0
+        )""",
+        (exchange, execution_mode),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_order_quantity(
     order_id: str,
     new_quantity: float,
