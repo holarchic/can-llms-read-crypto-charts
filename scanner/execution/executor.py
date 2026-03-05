@@ -14,7 +14,7 @@ from scanner.models import ScanResult
 from .config import ExecutionConfig
 from .exchange import (
     fetch_balance,
-    fetch_current_price,
+    fetch_mainnet_price,
     get_auth_exchange,
     get_open_positions,
 )
@@ -169,7 +169,7 @@ def execute_trade(
 
     # 3. Fetch current price + ATR
     try:
-        current_price = fetch_current_price(result.coin, exec_config)
+        current_price = fetch_mainnet_price(result.coin, exec_config)
     except Exception as exc:
         er.skip_reason = "price_fetch_failed"
         er.error = str(exc)
