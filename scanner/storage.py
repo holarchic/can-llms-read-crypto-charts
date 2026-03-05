@@ -2,6 +2,7 @@
 
 import json as _json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -178,13 +179,12 @@ def _migrate_candles_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """Get a database connection, creating the table if needed."""
-    path = db_path or DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+_migrated: set[str] = set()
+_migration_lock = threading.Lock()
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Run all schema migrations — tables, indexes, columns, execution orders."""
     conn.execute(CREATE_TABLE)
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
@@ -224,6 +224,22 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     from .execution.storage import ensure_orders_table
     ensure_orders_table(conn)
     conn.commit()
+
+
+def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
+    """Get a database connection, running migrations once per db path per process."""
+    path = db_path or DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+
+    resolved = str(path.resolve())
+    if resolved not in _migrated:
+        with _migration_lock:
+            if resolved not in _migrated:
+                _run_migrations(conn)
+                _migrated.add(resolved)
     return conn
 
 

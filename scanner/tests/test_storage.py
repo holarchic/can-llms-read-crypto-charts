@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from scanner import storage
 from scanner.models import (
     Direction,
     MarketContext,
@@ -182,3 +183,47 @@ class TestPromptVersion:
         save_result(sample_result, db_conn)
         row = db_conn.execute("SELECT prompt_version FROM scans WHERE scan_id = ?", ("test1234",)).fetchone()
         assert row["prompt_version"] is None
+
+
+class TestMigrationCache:
+    def setup_method(self):
+        """Clear migration cache between tests."""
+        storage._migrated.clear()
+
+    def test_get_connection_migrations_run_once(self, tmp_path):
+        """Second get_connection() with same path skips migrations."""
+        db = tmp_path / "cache_test.db"
+        conn1 = get_connection(db)
+        conn1.close()
+
+        resolved = str(db.resolve())
+        assert resolved in storage._migrated
+
+        # Second call — _migrated already contains the path
+        conn2 = get_connection(db)
+        conn2.close()
+
+        # Verify tables exist (migrations ran on first call)
+        conn3 = get_connection(db)
+        tables = {
+            row[0] for row in conn3.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        conn3.close()
+        assert "scans" in tables
+        assert "signals" in tables
+        assert "candles" in tables
+
+    def test_get_connection_different_paths_both_migrate(self, tmp_path):
+        """Two different db paths each get their own migrations."""
+        db1 = tmp_path / "a.db"
+        db2 = tmp_path / "b.db"
+
+        conn1 = get_connection(db1)
+        conn1.close()
+        conn2 = get_connection(db2)
+        conn2.close()
+
+        assert str(db1.resolve()) in storage._migrated
+        assert str(db2.resolve()) in storage._migrated
