@@ -1,5 +1,6 @@
 """Exchange data fetching via ccxt — supports HyperLiquid, Bybit, Binance."""
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -11,16 +12,25 @@ from .config import ScannerConfig, get_exchange_meta
 # Module-level exchange instances — reused across all calls.
 # load_markets() takes ~11s, so we only want to do it once per exchange.
 _exchanges: dict[str, object] = {}
+_lock = threading.Lock()
+_exchange_locks: dict[str, threading.Lock] = {}
 
 
 def get_exchange(exchange_id: str = "hyperliquid") -> object:
-    """Get or create a shared exchange instance for the given exchange."""
-    global _exchanges
-    if exchange_id not in _exchanges:
-        meta = get_exchange_meta(exchange_id)
-        cls = getattr(ccxt, meta["ccxt_class"])
-        _exchanges[exchange_id] = cls({"timeout": 30000})
-        _exchanges[exchange_id].load_markets()
+    """Get or create a shared exchange instance for the given exchange.
+
+    Thread-safe: uses double-checked locking so load_markets() runs once.
+    """
+    if exchange_id in _exchanges:
+        return _exchanges[exchange_id]
+    with _lock:
+        if exchange_id not in _exchanges:
+            meta = get_exchange_meta(exchange_id)
+            cls = getattr(ccxt, meta["ccxt_class"])
+            ex = cls({"timeout": 30000})
+            ex.load_markets()
+            _exchange_locks[exchange_id] = threading.Lock()
+            _exchanges[exchange_id] = ex
     return _exchanges[exchange_id]
 
 
@@ -86,9 +96,11 @@ def fetch_candles(
     exchange = get_exchange(eid)
     symbol = meta["symbol_template"].format(coin=coin)
 
+    ex_lock = _exchange_locks.get(eid)
     for attempt in range(5):
         try:
-            candles = exchange.fetch_ohlcv(symbol, interval, limit=count)
+            with ex_lock:
+                candles = exchange.fetch_ohlcv(symbol, interval, limit=count)
             break
         except Exception as e:
             if "429" in str(e) and attempt < 4:

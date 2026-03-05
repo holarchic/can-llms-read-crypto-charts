@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 # Singleton authenticated exchange — separate from data.py's read-only instance.
 # WARNING: cached regardless of config. Safe while one mode/key per process (cron).
 # If moving to multi-mode (testnet+live in same process), key by (mode, wallet_address).
+# Thread safety: not locked — relies on flock in cron ensuring one scanner/monitor process.
 _auth_exchange = None
 
 
