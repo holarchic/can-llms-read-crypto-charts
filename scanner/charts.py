@@ -83,7 +83,7 @@ def generate_chart(
         style=STYLE,
         title=title,
         volume=False,
-        figsize=(14, 8),
+        figsize=(13.5, 8),
         savefig=dict(fname=str(filepath), dpi=70, bbox_inches="tight"),
         warn_too_much_data=500,
     )
