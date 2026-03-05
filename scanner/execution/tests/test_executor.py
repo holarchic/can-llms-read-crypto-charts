@@ -482,6 +482,38 @@ class TestExecuteTrade:
         assert abs(sl["quantity"] - expected_qty) < 1e-10
 
 
+class TestRiskDeltaLogging:
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_risk_delta_logged_on_fill(self, mock_killed, mock_price, mock_balance,
+                                       mock_auth, mock_discord, conn, exec_config,
+                                       scanner_config, caplog):
+        """Fill at different price from entry_mid → risk delta logged."""
+        mock_exchange = MagicMock()
+        # entry_mid = (61800+62200)/2 = 62000, but fill at 62300 (slippage)
+        resp = _mock_exchange_success()
+        resp["average"] = 62300
+        resp["price"] = 62300
+        mock_exchange.create_order.return_value = resp
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        import logging
+        with caplog.at_level(logging.INFO, logger="scanner.execution.executor"):
+            result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        risk_delta_logs = [r for r in caplog.records if "risk delta" in r.message]
+        assert len(risk_delta_logs) == 1
+        # fill=62300, sl=59800 → actual_stop=2500; entry_mid=62000, sl=59800 → intended=2200
+        # delta = (2500-2200)/2200 * 100 ≈ +13.6%
+        assert "+13." in risk_delta_logs[0].message
+
+
 class TestClientOrderId:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")

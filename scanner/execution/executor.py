@@ -310,6 +310,7 @@ def execute_trade(
         actual_tp1_qty = pos.tp1_quantity * fill_ratio
         actual_tp2_qty = filled_qty - actual_tp1_qty
 
+        fill_price = float(entry_resp.get("average", entry_resp.get("price", 0)))
         save_order({
             "order_id": entry_oid,
             "scan_id": result.scan_id,
@@ -318,8 +319,8 @@ def execute_trade(
             "order_type": "entry",
             "exchange_order_id": entry_resp.get("id", ""),
             "status": "FILLED",
-            "entry_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
-            "fill_price": float(entry_resp.get("average", entry_resp.get("price", 0))),
+            "entry_price": fill_price,
+            "fill_price": fill_price,
             "quantity": filled_qty,
             "leverage": pos.leverage,
             "placed_at": now,
@@ -328,6 +329,20 @@ def execute_trade(
             "execution_mode": exec_config.mode,
             "created_at": now,
         }, conn)
+
+        # Log risk delta: sizing uses entry_mid but fill is at market price
+        intended_stop_dist = pos.stop_distance
+        actual_stop_dist = abs(fill_price - mb["stop_loss"])
+        if intended_stop_dist > 0:
+            risk_delta_pct = (actual_stop_dist - intended_stop_dist) / intended_stop_dist * 100
+            actual_risk = pos.risk_amount * (actual_stop_dist / intended_stop_dist)
+            entry_mid = pos.notional_value / pos.quantity
+            log.info(
+                "%s risk delta: intended $%.2f, actual $%.2f (%+.1f%%) | "
+                "entry_mid=%.4f fill=%.4f sl=%.4f",
+                result.coin, pos.risk_amount, actual_risk, risk_delta_pct,
+                entry_mid, fill_price, mb["stop_loss"],
+            )
     except Exception as exc:
         er.skip_reason = "entry_failed"
         er.error = str(exc)
