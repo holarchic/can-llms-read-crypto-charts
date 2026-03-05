@@ -16,6 +16,7 @@ from .exchange import (
     fetch_balance,
     fetch_current_price,
     get_auth_exchange,
+    get_open_positions,
 )
 from .kill_switch import is_killed
 from .sanity import check_price_sanity, is_price_in_entry_zone
@@ -116,6 +117,17 @@ def execute_trade(
         except Exception as exc:
             log.warning("BTC volatility gate fetch failed: %s — proceeding", exc)
 
+    # 0.6 Exchange position reconciliation — ground truth from exchange
+    exchange_positions = None
+    try:
+        exchange_positions = get_open_positions(exec_config)
+        db_count = count_open_positions(conn, exec_config.exchange, exec_config.mode)
+        exch_count = len(exchange_positions)
+        if db_count != exch_count:
+            log.warning("Position count mismatch: DB=%d, exchange=%d", db_count, exch_count)
+    except Exception as exc:
+        log.warning("Exchange position fetch failed: %s — falling back to DB", exc)
+
     # 1. Check machine_block exists
     mb = result.machine_block
     if not mb:
@@ -169,24 +181,46 @@ def execute_trade(
         log.warning("Kill switch active — skipping %s %s", result.coin, er.direction)
         return er
 
-    # 7. Position limits
+    # 7. Position limits (prefer exchange truth when available)
     exchange = exec_config.exchange
     mode = exec_config.mode
 
-    if count_open_positions(conn, exchange, mode) >= exec_config.max_concurrent_positions:
-        er.skip_reason = "position_limit"
-        log.info("Position limit reached — skipping %s", result.coin)
-        return er
+    if exchange_positions is not None:
+        exch_count = len(exchange_positions)
+        if exch_count >= exec_config.max_concurrent_positions:
+            er.skip_reason = "position_limit"
+            log.info("Position limit reached (exchange: %d) — skipping %s", exch_count, result.coin)
+            return er
 
-    if has_open_position(result.coin, er.direction, conn, exchange, mode):
-        er.skip_reason = "duplicate_position"
-        log.info("Duplicate position %s %s — skipping", result.coin, er.direction)
-        return er
+        exch_has_dup = any(
+            p["coin"] == result.coin and p["direction"] == er.direction
+            for p in exchange_positions
+        )
+        if exch_has_dup:
+            er.skip_reason = "duplicate_position"
+            log.info("Duplicate position %s %s (exchange) — skipping", result.coin, er.direction)
+            return er
 
-    if er.direction == "LONG" and count_open_longs(conn, exchange, mode) >= exec_config.max_open_longs:
-        er.skip_reason = "long_limit"
-        log.info("Long limit reached — skipping %s", result.coin)
-        return er
+        exch_long_count = sum(1 for p in exchange_positions if p["direction"] == "LONG")
+        if er.direction == "LONG" and exch_long_count >= exec_config.max_open_longs:
+            er.skip_reason = "long_limit"
+            log.info("Long limit reached (exchange: %d) — skipping %s", exch_long_count, result.coin)
+            return er
+    else:
+        if count_open_positions(conn, exchange, mode) >= exec_config.max_concurrent_positions:
+            er.skip_reason = "position_limit"
+            log.info("Position limit reached — skipping %s", result.coin)
+            return er
+
+        if has_open_position(result.coin, er.direction, conn, exchange, mode):
+            er.skip_reason = "duplicate_position"
+            log.info("Duplicate position %s %s — skipping", result.coin, er.direction)
+            return er
+
+        if er.direction == "LONG" and count_open_longs(conn, exchange, mode) >= exec_config.max_open_longs:
+            er.skip_reason = "long_limit"
+            log.info("Long limit reached — skipping %s", result.coin)
+            return er
 
     try:
         balance = fetch_balance(exec_config)
