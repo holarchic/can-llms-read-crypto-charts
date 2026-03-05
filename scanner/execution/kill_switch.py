@@ -11,21 +11,34 @@ _TRUTHY = {"true", "1", "yes"}
 
 
 def is_killed(config) -> bool:
-    """Check if kill switch is active. Fail-open (error = not killed).
+    """Check if kill switch is active.
 
-    Checks GCP SM secret 'KILL_SWITCH' first, then env var fallback.
+    Live mode: fail-closed (SM error or missing value → killed).
+    Testnet: fail-open (SM error → not killed).
+    Explicit KILL_SWITCH=false env var overrides in either mode.
     """
+    fail_closed = config.mode == "live"
     try:
         if config.gcp_project_id:
             value = get_secret(config.gcp_project_id, "KILL_SWITCH")
             if value:
                 return value.strip().lower() in _TRUTHY
     except Exception as exc:
+        if fail_closed:
+            log.error("Kill switch SM error in LIVE mode: %s — fail-CLOSED", exc)
+            return True
         log.warning("Error checking kill switch (SM): %s — fail-open", exc)
 
     # Env var fallback
-    env_val = os.getenv("KILL_SWITCH", "false")
-    return env_val.strip().lower() in _TRUTHY
+    env_val = os.getenv("KILL_SWITCH", "")
+    if env_val:
+        return env_val.strip().lower() in _TRUTHY
+
+    # No SM value, no env var
+    if fail_closed:
+        log.error("Kill switch: no SM value and no env var in LIVE mode — fail-CLOSED")
+        return True
+    return False
 
 
 def _get_sm_client():

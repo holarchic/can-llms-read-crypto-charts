@@ -18,6 +18,11 @@ def config_no_gcp():
     return ExecutionConfig(gcp_project_id="")
 
 
+@pytest.fixture
+def live_config():
+    return ExecutionConfig(gcp_project_id="test-project", mode="live")
+
+
 class TestIsKilled:
     def test_true_from_sm(self, config):
         with patch("scanner.execution.kill_switch.get_secret", return_value="true"):
@@ -52,6 +57,34 @@ class TestIsKilled:
     def test_no_gcp_uses_env(self, config_no_gcp):
         with patch.dict("os.environ", {"KILL_SWITCH": "true"}):
             assert is_killed(config_no_gcp) is True
+
+
+class TestFailClosed:
+    """Live mode fails closed — SM error or missing value → killed."""
+
+    def test_live_mode_sm_error_fails_closed(self, live_config):
+        """SM raises in live mode → return True (killed)."""
+        with patch("scanner.execution.kill_switch.get_secret", side_effect=Exception("SM down")):
+            with patch.dict("os.environ", {}, clear=True):
+                assert is_killed(live_config) is True
+
+    def test_live_mode_no_value_fails_closed(self, live_config):
+        """SM returns empty, no env var, live → True (killed)."""
+        with patch("scanner.execution.kill_switch.get_secret", return_value=""):
+            with patch.dict("os.environ", {}, clear=True):
+                assert is_killed(live_config) is True
+
+    def test_live_mode_env_false_overrides(self, live_config):
+        """Explicit KILL_SWITCH=false in live → False (operator override)."""
+        with patch("scanner.execution.kill_switch.get_secret", return_value=""):
+            with patch.dict("os.environ", {"KILL_SWITCH": "false"}):
+                assert is_killed(live_config) is False
+
+    def test_testnet_sm_error_still_fails_open(self, config):
+        """SM raises in testnet → False (unchanged behavior)."""
+        with patch("scanner.execution.kill_switch.get_secret", side_effect=Exception("SM down")):
+            with patch.dict("os.environ", {"KILL_SWITCH": "false"}):
+                assert is_killed(config) is False
 
 
 class TestSetKillSwitch:
