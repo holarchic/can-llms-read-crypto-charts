@@ -67,12 +67,26 @@ class TestSaveAndRetrieve:
         assert row["coin"] == "BTC"
         assert row["decision"] == "CONFIRM"
 
-    def test_save_updates_on_conflict(self, db_conn, sample_result):
+    def test_collision_regenerates_scan_id(self, db_conn, sample_result):
+        """Duplicate scan_id gets a new ID instead of overwriting."""
         save_result(sample_result, db_conn)
+        original_id = sample_result.scan_id
+
+        # Reset scan_id to same value to force collision
+        sample_result.scan_id = original_id
         sample_result.decision = "REJECT"
         save_result(sample_result, db_conn)
-        row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?", ("test1234",)).fetchone()
-        assert row["decision"] == "REJECT"
+
+        # Original row untouched
+        row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?", (original_id,)).fetchone()
+        assert row["decision"] == "CONFIRM"
+
+        # New row got a different scan_id
+        assert sample_result.scan_id != original_id
+        new_row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?",
+                                   (sample_result.scan_id,)).fetchone()
+        assert new_row is not None
+        assert new_row["decision"] == "REJECT"
 
 
 class TestDedup:

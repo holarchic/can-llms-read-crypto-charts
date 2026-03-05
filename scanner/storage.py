@@ -243,42 +243,54 @@ def save_result(
     from .models import SETUP_NAMES
     setup_name = SETUP_NAMES.get(result.setup_signal.setup_type, "")
 
-    conn.execute(
-        """INSERT OR REPLACE INTO scans
+    scan_id = result.scan_id
+    values = (
+        scan_id,
+        result.coin,
+        result.timestamp.isoformat(),
+        result.setup_signal.setup_type.value,
+        setup_name,
+        result.setup_signal.direction.value,
+        result.setup_signal.confidence,
+        result.setup_signal.key_level,
+        result.decision,
+        result.confluence_score,
+        parsed.get("entry_zone"),
+        parsed.get("stop_loss"),
+        parsed.get("take_profit"),
+        parsed.get("reasoning"),
+        result.cost_usd,
+        1 if result.alerted else 0,
+        strategy_id,
+        result.analysis_text,
+        parsed.get("leverage"),
+        exchange,
+        result.llm_confidence,
+        _json.dumps(result.machine_block) if result.machine_block else None,
+        prompt_version,
+        datetime.now(timezone.utc).isoformat(),
+    )
+
+    sql = """INSERT INTO scans
         (scan_id, coin, timestamp, setup_type, setup_name, direction,
          screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
          strategy_id, analysis_text, leverage, exchange, llm_confidence,
          machine_block, prompt_version,
          created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            result.scan_id,
-            result.coin,
-            result.timestamp.isoformat(),
-            result.setup_signal.setup_type.value,
-            setup_name,
-            result.setup_signal.direction.value,
-            result.setup_signal.confidence,
-            result.setup_signal.key_level,
-            result.decision,
-            result.confluence_score,
-            parsed.get("entry_zone"),
-            parsed.get("stop_loss"),
-            parsed.get("take_profit"),
-            parsed.get("reasoning"),
-            result.cost_usd,
-            1 if result.alerted else 0,
-            strategy_id,
-            result.analysis_text,
-            parsed.get("leverage"),
-            exchange,
-            result.llm_confidence,
-            _json.dumps(result.machine_block) if result.machine_block else None,
-            prompt_version,
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+
+    try:
+        conn.execute(sql, values)
+    except sqlite3.IntegrityError:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "scan_id collision %s — regenerating", scan_id,
+        )
+        new_id = uuid4().hex[:8]
+        result.scan_id = new_id
+        conn.execute(sql, (new_id,) + values[1:])
+
     conn.commit()
 
     if own_conn:
