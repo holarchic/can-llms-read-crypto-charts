@@ -74,3 +74,55 @@ class TestGetExchangeThreadSafe:
 
         assert errors == []
         assert mock_exchange.fetch_ohlcv.call_count == 5
+
+
+class TestGetTestnetCoins:
+    @patch("scanner.data.ccxt")
+    @patch("scanner.data.get_exchange_meta", return_value={"ccxt_class": "hyperliquid"})
+    def test_returns_coin_names(self, mock_meta, mock_ccxt):
+        mock_exchange = MagicMock()
+        mock_exchange.markets = {
+            "BTC/USDC:USDC": {},
+            "ETH/USDC:USDC": {},
+            "SOL/USDC:USDC": {},
+            "BTC/USDC": {},  # spot — no colon, should be skipped
+        }
+        mock_cls = MagicMock(return_value=mock_exchange)
+        mock_ccxt.hyperliquid = mock_cls
+
+        coins = data.get_testnet_coins("hyperliquid")
+
+        assert coins == {"BTC", "ETH", "SOL"}
+        mock_exchange.set_sandbox_mode.assert_called_once_with(True)
+        mock_exchange.load_markets.assert_called_once()
+
+    @patch("scanner.data.ccxt")
+    @patch("scanner.data.get_exchange_meta", return_value={"ccxt_class": "hyperliquid"})
+    def test_excludes_non_alpha_coins(self, mock_meta, mock_ccxt):
+        mock_exchange = MagicMock()
+        mock_exchange.markets = {
+            "BTC/USDC:USDC": {},
+            "K-PEPE/USDC:USDC": {},  # hyphen — non-alpha
+            "1000SHIB/USDC:USDC": {},  # starts with digit — non-alpha
+        }
+        mock_cls = MagicMock(return_value=mock_exchange)
+        mock_ccxt.hyperliquid = mock_cls
+
+        coins = data.get_testnet_coins("hyperliquid")
+
+        assert coins == {"BTC"}
+
+    @patch("scanner.data.ccxt")
+    @patch("scanner.data.get_exchange_meta", return_value={"ccxt_class": "hyperliquid"})
+    def test_not_cached_in_singleton(self, mock_meta, mock_ccxt):
+        """Testnet exchange should NOT pollute the module-level singleton."""
+        mock_exchange = MagicMock()
+        mock_exchange.markets = {"BTC/USDC:USDC": {}}
+        mock_cls = MagicMock(return_value=mock_exchange)
+        mock_ccxt.hyperliquid = mock_cls
+
+        data.get_testnet_coins("hyperliquid")
+
+        assert "hyperliquid_testnet" not in data._exchanges
+        # Module singleton should be unaffected
+        assert mock_exchange not in data._exchanges.values()

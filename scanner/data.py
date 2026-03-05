@@ -34,6 +34,26 @@ def get_exchange(exchange_id: str = "hyperliquid") -> object:
     return _exchanges[exchange_id]
 
 
+def get_testnet_coins(exchange_id: str = "hyperliquid") -> set[str]:
+    """Load testnet markets and return available coin names.
+
+    Creates a temporary sandbox instance (not cached in module singleton).
+    """
+    meta = get_exchange_meta(exchange_id)
+    cls = getattr(ccxt, meta["ccxt_class"])
+    ex = cls({"timeout": 30000})
+    ex.set_sandbox_mode(True)
+    ex.load_markets()
+    coins = set()
+    for symbol in ex.markets:
+        if ":" not in symbol:
+            continue
+        coin = symbol.split("/")[0]
+        if coin.isalpha():
+            coins.add(coin)
+    return coins
+
+
 def fetch_pairs_with_volume(config: ScannerConfig | None = None) -> list[dict]:
     """Fetch all perps for the configured exchange, return sorted by 24h volume descending.
 

@@ -1,5 +1,6 @@
 """Tests for pipeline helpers (diversity selection, candle collection)."""
 
+from unittest.mock import MagicMock, patch
 
 from scanner.config import ScannerConfig
 from scanner.models import (
@@ -9,7 +10,7 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.pipeline import _collect_candles, _select_with_diversity
+from scanner.pipeline import _collect_candles, _select_with_diversity, stage1_screen
 
 
 def test_collect_candles_empty_exchanges():
@@ -139,3 +140,53 @@ class TestSelectWithDiversity:
         # First pick: HIGH (0.9). Second: MED (0.6 * 0.85 = 0.51 > LOW 0.3 * 0.85 = 0.255)
         assert result[0].coin == "HIGH"
         assert result[1].coin == "MED"
+
+
+class TestTestnetPairFilter:
+    """stage1_screen filters pairs not available on testnet when testnet_coins provided."""
+
+    def test_filters_pairs_not_on_testnet(self):
+        """Pairs with coins not in testnet_coins are removed before candle fetch."""
+        testnet_coins = {"BTC", "ETH"}
+        pairs = [
+            {"coin": "BTC", "symbol": "BTC/USDC:USDC", "max_leverage": 50},
+            {"coin": "ETH", "symbol": "ETH/USDC:USDC", "max_leverage": 25},
+            {"coin": "ENA", "symbol": "ENA/USDC:USDC", "max_leverage": 10},
+        ]
+
+        with patch("scanner.pipeline.fetch_pairs_with_volume", return_value=pairs), \
+             patch("scanner.pipeline.fetch_candles_batch", return_value={}) as mock_batch, \
+             patch("scanner.pipeline.fetch_candles"), \
+             patch("scanner.pipeline.get_connection") as mock_conn, \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.save_scan_universe"), \
+             patch("scanner.pipeline.save_signals"):
+            mock_conn.return_value = MagicMock()
+
+            stage1_screen(ScannerConfig(), verbose=False, testnet_coins=testnet_coins)
+
+            # fetch_candles_batch should only get BTC and ETH
+            called_coins = mock_batch.call_args[0][0]
+            assert "ENA" not in called_coins
+            assert set(called_coins) == {"BTC", "ETH"}
+
+    def test_no_filter_when_testnet_coins_none(self):
+        """All pairs pass through when testnet_coins is None (non-testnet mode)."""
+        pairs = [
+            {"coin": "BTC", "symbol": "BTC/USDC:USDC", "max_leverage": 50},
+            {"coin": "ENA", "symbol": "ENA/USDC:USDC", "max_leverage": 10},
+        ]
+
+        with patch("scanner.pipeline.fetch_pairs_with_volume", return_value=pairs), \
+             patch("scanner.pipeline.fetch_candles_batch", return_value={}) as mock_batch, \
+             patch("scanner.pipeline.fetch_candles"), \
+             patch("scanner.pipeline.get_connection") as mock_conn, \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.save_scan_universe"), \
+             patch("scanner.pipeline.save_signals"):
+            mock_conn.return_value = MagicMock()
+
+            stage1_screen(ScannerConfig(), verbose=False, testnet_coins=None)
+
+            called_coins = mock_batch.call_args[0][0]
+            assert set(called_coins) == {"BTC", "ENA"}

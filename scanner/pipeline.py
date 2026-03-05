@@ -102,6 +102,7 @@ def stage1_screen(
     coin_filter: str | None = None,
     verbose: bool = True,
     strategy_id: str = "v0",
+    testnet_coins: set[str] | None = None,
 ) -> list[SetupSignal]:
     """Stage 1: Fetch pairs → batch fetch 4H candles → run screener → dedup."""
     conn = get_connection()
@@ -124,6 +125,13 @@ def stage1_screen(
         pairs = fetch_pairs_with_volume(config)
         if verbose:
             print(f"Found {len(pairs)} {meta['label']} pairs above ${config.min_volume_usd:,.0f} volume")
+
+    if testnet_coins is not None:
+        before = len(pairs)
+        pairs = [p for p in pairs if p["coin"] in testnet_coins]
+        filtered = before - len(pairs)
+        if verbose and filtered:
+            print(f"  Filtered {filtered} pairs not on testnet ({len(pairs)} remaining)")
 
     # Batch fetch all 4H candles in parallel
     coins = [p["coin"] for p in pairs]
@@ -404,8 +412,23 @@ def run_scan(
         print(f"Scanner started at {start.strftime('%Y-%m-%d %H:%M:%S UTC')} [{exchange_label}]")
         print("=" * 60)
 
+    # Pre-filter: load testnet markets to avoid wasting candle fetches + LLM calls
+    testnet_coins = None
+    if exec_config and exec_config.mode == "testnet":
+        try:
+            from .data import get_testnet_coins
+            testnet_coins = get_testnet_coins(cfg.exchange)
+            if verbose:
+                print(f"Testnet filter: {len(testnet_coins)} pairs on {exchange_label} testnet")
+        except Exception as exc:
+            if verbose:
+                print(f"Testnet pair filter failed: {exc} — proceeding unfiltered")
+
     # Stage 1
-    signals, btc_structure, btc_context, candle_map = stage1_screen(cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id)
+    signals, btc_structure, btc_context, candle_map = stage1_screen(
+        cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id,
+        testnet_coins=testnet_coins,
+    )
 
     if dry_run:
         if verbose:
