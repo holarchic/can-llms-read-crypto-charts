@@ -34,6 +34,10 @@ class ExecutionConfig:
     min_atr_stop_mult: float = 0.5
     max_atr_stop_mult: float = 5.0
 
+    # BTC volatility gate
+    btc_vol_gate_enabled: bool = True
+    btc_vol_gate_mult: float = 2.0  # block when BTC 4H range > Nx ATR
+
     # GCP
     gcp_project_id: str = ""
 

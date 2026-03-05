@@ -97,6 +97,25 @@ def execute_trade(
         log.warning("%s: stale signal (%.0fm old) — skipping", result.coin, age_seconds / 60)
         return er
 
+    # 0.5 BTC volatility gate — block execution during extreme BTC moves
+    if exec_config.btc_vol_gate_enabled:
+        try:
+            from scanner.data import fetch_candles
+            from scanner.indicators import compute_atr
+
+            btc_df = fetch_candles("BTC", "4h", 50, scanner_config)
+            if btc_df is not None and len(btc_df) >= 20:
+                btc_atr = compute_atr(btc_df)
+                last_range = float(btc_df["High"].iloc[-1] - btc_df["Low"].iloc[-1])
+                if btc_atr > 0 and last_range / btc_atr > exec_config.btc_vol_gate_mult:
+                    er.skip_reason = "btc_volatility_gate"
+                    er.error = (f"BTC 4H range {last_range:.0f} "
+                                f"> {exec_config.btc_vol_gate_mult}x ATR {btc_atr:.0f}")
+                    log.warning("%s: %s", result.coin, er.error)
+                    return er
+        except Exception as exc:
+            log.warning("BTC volatility gate fetch failed: %s — proceeding", exc)
+
     # 1. Check machine_block exists
     mb = result.machine_block
     if not mb:
