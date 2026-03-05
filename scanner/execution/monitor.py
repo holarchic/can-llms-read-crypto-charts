@@ -1,6 +1,9 @@
 """Position monitoring — sync order status from exchange, health checks."""
 
 import logging
+import time
+
+import requests
 
 from scanner.config import get_exchange_meta
 from scanner.storage import get_connection
@@ -189,23 +192,48 @@ def _handle_tp1_fill(
     sl_trigger = sl_order.get("trigger_price")
     exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
+    rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
+    cloid = make_cloid(sl_order["order_id"] + ":replaced")
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            sl_resp = exchange.create_order(
+                symbol, "STOP_MARKET", exit_side, rounded_qty, sl_trigger,
+                {"stopLossPrice": sl_trigger, "reduceOnly": True, "clientOrderId": cloid},
+            )
+            new_exch_oid = sl_resp.get("id", "")
+            update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)
+            update_order_status(sl_order["order_id"], "PLACED", conn)
+            log.info(
+                "Replaced SL for %s: qty %s → %s (TP1 filled %s)",
+                entry["coin"], entry["quantity"], remaining_qty, tp1_qty,
+            )
+            break
+        except Exception as exc:
+            log.error("SL replacement attempt %d/%d for %s failed: %s",
+                      attempt, max_retries, entry["coin"], exc)
+            if attempt < max_retries:
+                time.sleep(attempt)  # 1s, 2s exponential backoff
+            else:
+                log.error("All SL replacement attempts exhausted for %s — position unprotected",
+                          entry["coin"])
+                _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+
+
+def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
+    """Send URGENT Discord alert when SL replacement exhausts retries."""
+    webhook = config.discord_execution_webhook_url
+    if not webhook:
+        return False
+    message = (f"@everyone **URGENT**: SL replacement FAILED for {coin} {direction} "
+               f"after 3 attempts — position running WITHOUT stop loss")
     try:
-        rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
-        cloid = make_cloid(sl_order["order_id"] + ":replaced")
-        sl_resp = exchange.create_order(
-            symbol, "STOP_MARKET", exit_side, rounded_qty, sl_trigger,
-            {"stopLossPrice": sl_trigger, "reduceOnly": True, "clientOrderId": cloid},
-        )
-        new_exch_oid = sl_resp.get("id", "")
-        update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)
-        update_order_status(sl_order["order_id"], "PLACED", conn)
-        log.info(
-            "Replaced SL for %s: qty %s → %s (TP1 filled %s)",
-            entry["coin"], entry["quantity"], remaining_qty, tp1_qty,
-        )
+        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        return resp.status_code == 204
     except Exception as exc:
-        log.error("Failed to place replacement SL for %s: %s — position unprotected",
-                  entry["coin"], exc)
+        log.error("URGENT SL alert send failed: %s", exc)
+        return False
 
 
 def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None) -> list[dict]:
