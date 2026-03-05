@@ -9,7 +9,7 @@ from scanner.config import get_exchange_meta
 from scanner.storage import get_connection
 
 from .config import ExecutionConfig
-from .exchange import cancel_order, get_auth_exchange
+from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
@@ -239,6 +239,7 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
 def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None) -> list[dict]:
     """Health check: verify open positions have SL orders, detect orphans.
 
+    Batch-fetches open orders from exchange to verify PLACED SLs actually exist.
     Returns list of issues found.
     """
     own_conn = conn is None
@@ -247,16 +248,38 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
 
     issues = []
 
+    # Fetch all open orders from exchange in one call
+    try:
+        exchange_orders = get_exchange_open_orders(exec_config)
+        exchange_oids = {str(o.get("id", "")) for o in exchange_orders}
+    except Exception as exc:
+        log.warning("Could not fetch exchange orders for health check: %s", exc)
+        exchange_oids = None  # Skip verification if exchange unreachable
+
     open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
 
     for entry in open_entries:
         scan_orders = get_orders_for_scan(entry["scan_id"], conn)
 
-        # Check for SL order
-        has_sl = any(
-            o["order_type"] == "stop_loss" and o["status"] == "PLACED"
-            for o in scan_orders
-        )
+        has_sl = False
+        for o in scan_orders:
+            if o["order_type"] == "stop_loss" and o["status"] == "PLACED":
+                has_sl = True
+                # Verify SL exists on exchange
+                if exchange_oids is not None:
+                    exch_oid = o.get("exchange_order_id", "")
+                    if exch_oid and exch_oid not in exchange_oids:
+                        issues.append({
+                            "type": "phantom_sl",
+                            "coin": entry["coin"],
+                            "scan_id": entry["scan_id"],
+                            "message": (
+                                f"{entry['coin']} {entry['direction']} SL exists "
+                                f"in DB but not on exchange"
+                            ),
+                        })
+                break
+
         if not has_sl:
             issues.append({
                 "type": "missing_sl",

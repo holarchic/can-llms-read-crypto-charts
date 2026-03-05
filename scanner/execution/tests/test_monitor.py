@@ -142,6 +142,51 @@ class TestCheckPositions:
         assert len(issues) == 0
 
 
+class TestPhantomSLDetection:
+    """check_positions verifies PLACED SL orders exist on exchange."""
+
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    def test_check_positions_detects_phantom_sl(self, mock_orders, config, conn):
+        """DB has PLACED SL but exchange returns empty → phantom_sl issue."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        issues = check_positions(config, conn)
+        assert len(issues) == 1
+        assert issues[0]["type"] == "phantom_sl"
+        assert "DB but not on exchange" in issues[0]["message"]
+
+    @patch("scanner.execution.monitor.get_exchange_open_orders",
+           side_effect=Exception("API timeout"))
+    def test_check_positions_exchange_error_skips_verification(self, mock_orders, config, conn):
+        """Exchange raises → still checks DB, no phantom_sl issues."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        issues = check_positions(config, conn)
+        assert len(issues) == 0  # SL exists in DB, exchange check skipped
+
+    @patch("scanner.execution.monitor.get_exchange_open_orders")
+    def test_check_positions_sl_exists_on_exchange(self, mock_orders, config, conn):
+        """DB and exchange agree SL exists → no issues."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_orders.return_value = [{"id": "sl_exch1", "status": "open"}]
+
+        issues = check_positions(config, conn)
+        assert len(issues) == 0
+
+
 class TestStaleListSafety:
     """Exit fill breaks the inner loop to avoid stale-list corruption."""
 
