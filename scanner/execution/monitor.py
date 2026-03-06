@@ -360,6 +360,12 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
     except Exception as exc:
         log.warning("Could not fetch exchange orders for health check: %s", exc)
         exchange_oids = None  # Skip verification if exchange unreachable
+        issues.append({
+            "type": "exchange_fetch_failed",
+            "coin": "",
+            "scan_id": "",
+            "message": f"Exchange order fetch failed: {exc} — SL verification skipped",
+        })
 
     open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
 

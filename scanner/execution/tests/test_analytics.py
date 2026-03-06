@@ -301,6 +301,46 @@ class TestComputeLiveMetrics:
         m = compute_live_metrics([])
         assert m["fill_rate"] == 0
 
+    def test_drawdown_all_losses(self):
+        """All-loss sequence should report non-zero drawdown using total_risk."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            TradeRecord("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            TradeRecord("s3", "SOL", "LONG", 100, 90, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        # total_risk = 600, total loss = 600, max_dd_pct = 600/600*100 = 100
+        assert m["max_drawdown_pct"] > 0
+        assert m["max_drawdown_pct"] == 100.0
+
+    def test_drawdown_loss_then_win(self):
+        """Loss then bigger win → peak-based drawdown (regression check)."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            TradeRecord("s2", "ETH", "LONG", 3000, 3500, "TP1", 500, 2.5, 200, 12, 0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        # After trade 1: running=-200, peak=0, dd=200 (no positive peak yet)
+        # After trade 2: running=300, peak=300, dd=0
+        # Peak goes positive after trade 2, so peak=300
+        # max_dd=200 happened before peak went positive → uses total_risk=400
+        # Actually: peak never > 0 during dd=200 window, but peak=300 at end
+        # Let's trace: t1: running=-200, peak=0 (not >0), dd=0-(-200)=200, max_dd=200
+        #              t2: running=300, peak=300, dd=0
+        # peak=300 > 0, so max_dd_pct = 200/300*100 = 66.67
+        assert m["max_drawdown_pct"] == pytest.approx(66.67, abs=0.01)
+
+    def test_funding_r_normalized_by_total_risk(self):
+        """funding_r = total_funding / total_risk (not avg risk)."""
+        trades = [
+            TradeRecord(f"s{i}", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 100, 24, 5, 0, "testnet")
+            for i in range(10)
+        ]
+        m = compute_live_metrics(trades)
+        # total_funding = 50, total_risk = 1000
+        # correct: 50/1000 = 0.05
+        assert m["total_funding_r"] == pytest.approx(0.05, abs=0.001)
+
 
 def _insert_multi_leg_trade(conn, scan_id, direction="LONG", entry_fill=62000,
                             stop_price=59800, entry_qty=0.1,

@@ -196,6 +196,8 @@ def compute_live_metrics(trades: list[TradeRecord]) -> dict:
     gross_loss = abs(sum(t.realized_pnl for t in losses))
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
 
+    total_risk = sum(t.risk_amount for t in trades)
+
     # Max drawdown (simple: track running PnL, find max peak-to-trough)
     running = 0
     peak = 0
@@ -207,14 +209,18 @@ def compute_live_metrics(trades: list[TradeRecord]) -> dict:
         dd = peak - running
         if dd > max_dd:
             max_dd = dd
-    # Express as % of peak (or initial balance proxy)
-    max_dd_pct = (max_dd / peak * 100) if peak > 0 else 0
+    # Express as % of peak, or % of total risk if equity never went positive
+    if peak > 0:
+        max_dd_pct = max_dd / peak * 100
+    elif total_risk > 0:
+        max_dd_pct = max_dd / total_risk * 100
+    else:
+        max_dd_pct = 0
 
     avg_holding = sum(t.holding_hours for t in trades) / len(trades)
     avg_slippage = sum(t.slippage_r for t in trades) / len(trades)
     total_funding = sum(t.funding_paid for t in trades)
-    total_risk = sum(t.risk_amount for t in trades)
-    total_funding_r = total_funding / (total_risk / len(trades)) if total_risk > 0 else 0
+    total_funding_r = total_funding / total_risk if total_risk > 0 else 0
 
     return {
         "count": len(trades),

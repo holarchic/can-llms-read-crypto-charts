@@ -114,7 +114,8 @@ class TestSyncOrderStatus:
 
 
 class TestCheckPositions:
-    def test_detects_missing_sl(self, config, conn):
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    def test_detects_missing_sl(self, mock_orders, config, conn):
         """Open position without active SL -> issue reported."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
         # SL was cancelled — no active SL
@@ -126,17 +127,23 @@ class TestCheckPositions:
         assert len(issues) == 1
         assert issues[0]["type"] == "missing_sl"
 
-    def test_healthy_position(self, config, conn):
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    def test_healthy_position(self, mock_orders, config, conn):
         """Position with active SL -> no issues."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
-        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
         save_order(entry, conn)
         save_order(sl, conn)
 
+        # SL is in DB but not on exchange → phantom_sl, not "no issues"
+        # For a true healthy test, exchange must return the SL order
+        mock_orders.return_value = [{"id": "sl_exch1", "status": "open"}]
         issues = check_positions(config, conn)
         assert len(issues) == 0
 
-    def test_no_positions(self, config, conn):
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    def test_no_positions(self, mock_orders, config, conn):
         """No open positions -> no issues."""
         issues = check_positions(config, conn)
         assert len(issues) == 0
@@ -161,8 +168,8 @@ class TestPhantomSLDetection:
 
     @patch("scanner.execution.monitor.get_exchange_open_orders",
            side_effect=Exception("API timeout"))
-    def test_check_positions_exchange_error_skips_verification(self, mock_orders, config, conn):
-        """Exchange raises → still checks DB, no phantom_sl issues."""
+    def test_check_positions_exchange_error_reports_failure(self, mock_orders, config, conn):
+        """Exchange raises → exchange_fetch_failed issue reported."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1")
@@ -170,7 +177,8 @@ class TestPhantomSLDetection:
         save_order(sl, conn)
 
         issues = check_positions(config, conn)
-        assert len(issues) == 0  # SL exists in DB, exchange check skipped
+        assert any(i["type"] == "exchange_fetch_failed" for i in issues)
+        assert not any(i["type"] == "phantom_sl" for i in issues)  # SL check skipped
 
     @patch("scanner.execution.monitor.get_exchange_open_orders")
     def test_check_positions_sl_exists_on_exchange(self, mock_orders, config, conn):
