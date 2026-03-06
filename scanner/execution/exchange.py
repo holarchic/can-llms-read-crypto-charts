@@ -28,16 +28,17 @@ def get_auth_exchange(config):
     meta = get_exchange_meta(config.exchange)
     cls = getattr(ccxt, meta["ccxt_class"])
 
-    _auth_exchange = cls({
+    exch = cls({
         "privateKey": config.private_key,
         "walletAddress": config.wallet_address,
         "timeout": 30000,
     })
 
     if config.mode == "testnet":
-        _auth_exchange.set_sandbox_mode(True)
+        exch.set_sandbox_mode(True)
 
-    _auth_exchange.load_markets()
+    exch.load_markets()
+    _auth_exchange = exch
     return _auth_exchange
 
 

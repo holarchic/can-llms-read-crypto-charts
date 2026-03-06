@@ -112,6 +112,7 @@ def execute_trade(
     Steps 9-11 place orders. Step 10 (SL) retries with URGENT alert on failure.
     """
     er = ExecutionResult(scan_id=result.scan_id, coin=result.coin)
+    er.direction = result.setup_signal.direction.value if result.setup_signal else ""
 
     # 0. Staleness guard — reject signals older than 30 minutes
     age_seconds = (datetime.now(timezone.utc) - result.timestamp).total_seconds()
