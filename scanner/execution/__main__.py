@@ -133,11 +133,12 @@ def _cmd_report(config, days, mode, discord):
     if discord and config.discord_execution_webhook_url:
         embeds = build_execution_embeds(metrics, sim_vs_live, report_mode)
         try:
-            req.post(
+            resp = req.post(
                 config.discord_execution_webhook_url,
                 json={"embeds": embeds},
                 timeout=10,
             )
+            resp.raise_for_status()
             print("\nReport sent to Discord.")
         except Exception as exc:
             print(f"\nDiscord send failed: {exc}")

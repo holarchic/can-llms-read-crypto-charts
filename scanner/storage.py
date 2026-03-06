@@ -230,7 +230,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     """Get a database connection, running migrations once per db path per process."""
     path = db_path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
 
