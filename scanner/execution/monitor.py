@@ -140,16 +140,121 @@ def _handle_exit_fill(
     symbol: str, exchange, config: ExecutionConfig, conn,
     fill_qty: float | None = None,
 ) -> None:
-    """Route exit fill: TP1 → partial close (replace SL), SL/TP2 → full close."""
+    """Route exit fill: TP1 → partial close (replace SL), SL/TP2 → full close or partial."""
     if filled_order["order_type"] == "tp1":
         _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn,
                          fill_qty=fill_qty)
     else:
-        # SL or TP2 filled — position fully closed, cancel remaining
-        _cancel_remaining_orders(
-            entry["scan_id"], filled_order["order_id"],
-            symbol, config, conn,
+        # Check for partial fill — residual position needs protection
+        order_qty = filled_order.get("quantity", 0)
+        actual_fill = fill_qty if fill_qty is not None else order_qty
+        if actual_fill < order_qty and order_qty > 0:
+            _handle_partial_exit_fill(
+                filled_order, entry, scan_orders,
+                symbol, exchange, config, conn,
+                fill_qty=actual_fill,
+            )
+        else:
+            # Full close — cancel everything
+            _cancel_remaining_orders(
+                entry["scan_id"], filled_order["order_id"],
+                symbol, config, conn,
+            )
+
+
+def _handle_partial_exit_fill(
+    filled_order: dict, entry: dict, scan_orders: list[dict],
+    symbol: str, exchange, config: ExecutionConfig, conn,
+    fill_qty: float,
+) -> None:
+    """SL or TP2 partially filled: cancel remaining orders, re-place at residual qty."""
+    residual_qty = filled_order["quantity"] - fill_qty
+
+    # Cancel all remaining PLACED orders on exchange
+    _cancel_remaining_orders(
+        entry["scan_id"], filled_order["order_id"],
+        symbol, config, conn,
+    )
+
+    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
+    rounded_qty = float(exchange.amount_to_precision(symbol, residual_qty))
+
+    # Determine which orders to re-place
+    filled_type = filled_order["order_type"]
+
+    # Always need an SL for the residual
+    sl_order = (
+        filled_order if filled_type == "stop_loss"
+        else next((o for o in scan_orders if o["order_type"] == "stop_loss"), None)
+    )
+    if sl_order:
+        sl_trigger = sl_order.get("trigger_price")
+        _place_replacement_order(
+            sl_order, "STOP_MARKET", sl_trigger,
+            {"stopLossPrice": sl_trigger, "reduceOnly": True},
+            rounded_qty, residual_qty, exit_side,
+            symbol, exchange, entry, config, conn,
+            suffix=":partial",
         )
+
+    # Re-place TP2 at residual qty
+    if filled_type == "stop_loss":
+        # SL partial fill — re-place the TP2 that was just cancelled
+        tp2_order = next(
+            (o for o in scan_orders if o["order_type"] == "tp2" and o["status"] in ("PLACED", "CANCELLED")),
+            None,
+        )
+    elif filled_type == "tp2":
+        # TP2 partial fill — re-place the TP2 itself
+        tp2_order = filled_order
+    else:
+        tp2_order = None
+
+    if tp2_order:
+            tp2_trigger = tp2_order.get("trigger_price")
+            _place_replacement_order(
+                tp2_order, "TAKE_PROFIT_MARKET", tp2_trigger,
+                {"takeProfitPrice": tp2_trigger, "reduceOnly": True},
+                rounded_qty, residual_qty, exit_side,
+                symbol, exchange, entry, config, conn,
+                suffix=":partial",
+            )
+
+
+def _place_replacement_order(
+    order: dict, order_type_str: str, trigger_price: float,
+    extra_params: dict, rounded_qty: float, residual_qty: float,
+    exit_side: str, symbol: str, exchange, entry: dict,
+    config: ExecutionConfig, conn, suffix: str = ":replaced",
+) -> None:
+    """Place a replacement SL or TP order with retry logic."""
+    cloid = make_cloid(order["order_id"] + suffix)
+    params = {**extra_params, "clientOrderId": cloid}
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = exchange.create_order(
+                symbol, order_type_str, exit_side, rounded_qty, trigger_price, params,
+            )
+            new_exch_oid = resp.get("id", "")
+            update_order_quantity(order["order_id"], residual_qty, new_exch_oid, conn)
+            update_order_status(order["order_id"], "PLACED", conn)
+            log.info(
+                "Replaced %s for %s: qty %s → %s (partial fill)",
+                order["order_type"], entry["coin"], order["quantity"], residual_qty,
+            )
+            break
+        except Exception as exc:
+            log.error("%s replacement attempt %d/%d for %s failed: %s",
+                      order["order_type"], attempt, max_retries, entry["coin"], exc)
+            if attempt < max_retries:
+                time.sleep(attempt)
+            else:
+                log.error("All %s replacement attempts exhausted for %s — position unprotected",
+                          order["order_type"], entry["coin"])
+                if order["order_type"] == "stop_loss":
+                    _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
 
 
 def _handle_tp1_fill(

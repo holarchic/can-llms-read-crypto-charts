@@ -504,3 +504,191 @@ class TestPartialExitHandling:
         # check_positions() should flag the missing SL
         issues = check_positions(config, conn)
         assert any(i["type"] == "missing_sl" and i["coin"] == "BTC" for i in issues)
+
+
+class TestPartialSLTP2Fill:
+    """Partial SL/TP2 fills should re-place orders at residual quantity."""
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sl_partial_fill_replaces_sl_and_tp2(self, mock_auth, mock_cancel, mock_sleep,
+                                                  config, conn):
+        """SL partially fills → residual gets new SL + TP2 resized."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", trigger_price=68000, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        # SL reports closed with partial fill (0.06 of 0.1)
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 59750, "filled": 0.06} if oid == "sl_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.side_effect = [
+            {"id": "sl_exch2"},   # SL replacement
+            {"id": "tp2_exch2"},  # TP2 replacement
+        ]
+        mock_exchange.amount_to_precision.return_value = "0.04"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL should be re-placed at residual qty
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["quantity"] == pytest.approx(0.04)
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+        # TP2 should be re-placed at residual qty
+        tp2_result = get_order(tp2["order_id"], conn)
+        assert tp2_result["status"] == "PLACED"
+        assert tp2_result["quantity"] == pytest.approx(0.04)
+        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp2_partial_fill_replaces_tp2_and_sl(self, mock_auth, mock_cancel, mock_sleep,
+                                                   config, conn):
+        """TP2 partially fills → residual gets new TP2 + SL resized."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.05)
+        # TP1 already filled
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED",
+                          exchange_order_id="tp1_exch1", quantity=0.025)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.025)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", trigger_price=68000, quantity=0.025)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+        save_order(sl, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        # TP2 partially fills (0.015 of 0.025)
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 68000, "filled": 0.015} if oid == "tp2_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.side_effect = [
+            {"id": "sl_exch2"},   # SL replacement
+            {"id": "tp2_exch2"},  # TP2 replacement
+        ]
+        mock_exchange.amount_to_precision.return_value = "0.01"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL re-placed at residual (was cancelled then re-placed)
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["quantity"] == pytest.approx(0.01)
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+        # TP2 re-placed at residual
+        tp2_result = get_order(tp2["order_id"], conn)
+        assert tp2_result["status"] == "PLACED"
+        assert tp2_result["quantity"] == pytest.approx(0.01)
+        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sl_partial_fill_no_active_tp2(self, mock_auth, mock_cancel, mock_sleep,
+                                            config, conn):
+        """SL partially fills with no TP2 → only SL re-placed."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.07,
+        }
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.03"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL re-placed
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["quantity"] == pytest.approx(0.03)
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+        # Only one create_order call (SL only, no TP2)
+        assert mock_exchange.create_order.call_count == 1
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sl_partial_fill_replacement_fails_sends_alert(self, mock_auth, mock_cancel,
+                                                            mock_sleep, mock_post, config, conn):
+        """SL partial fill, replacement fails after retries → urgent alert sent."""
+        config.discord_execution_webhook_url = "https://discord.com/test"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.07,
+        }
+        mock_exchange.amount_to_precision.return_value = "0.03"
+        mock_exchange.create_order.side_effect = Exception("exchange down")
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        sync_order_status(config, conn)
+
+        # Urgent alert sent
+        mock_post.assert_called_once()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "URGENT" in call_body
+        assert "BTC" in call_body
+
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_full_sl_fill_still_cancels_remaining(self, mock_auth, mock_cancel, config, conn):
+        """Full SL fill (no partial) still takes the existing full-close path — no regression."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        # SL fully filled (filled == quantity)
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 59750, "filled": 0.1} if oid == "sl_exch1"
+            else {"status": "open"}
+        )
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL filled
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "FILLED"
+
+        # TP1 cancelled (full close path)
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "CANCELLED"
+
+        # No replacement orders placed
+        mock_exchange.create_order.assert_not_called()
