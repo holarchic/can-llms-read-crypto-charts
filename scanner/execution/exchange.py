@@ -8,22 +8,21 @@ from scanner.config import get_exchange_meta
 
 log = logging.getLogger(__name__)
 
-# Singleton authenticated exchange — separate from data.py's read-only instance.
-# WARNING: cached regardless of config. Safe while one mode/key per process (cron).
-# If moving to multi-mode (testnet+live in same process), key by (mode, wallet_address).
+# Singleton authenticated exchanges — keyed by (mode, wallet_address) so
+# different configs (testnet vs live, multi-wallet) get separate instances.
 # Thread safety: not locked — relies on flock in cron ensuring one scanner/monitor process.
-_auth_exchange = None
+_auth_exchanges: dict[tuple[str, str], object] = {}
 
 
 def get_auth_exchange(config):
     """Get or create an authenticated ccxt HyperLiquid connection.
 
     Testnet mode: sets sandbox. Live mode: mainnet.
-    Singleton — cached after first creation.
+    Cached per (mode, wallet_address) key.
     """
-    global _auth_exchange
-    if _auth_exchange is not None:
-        return _auth_exchange
+    key = (config.mode, config.wallet_address)
+    if key in _auth_exchanges:
+        return _auth_exchanges[key]
 
     meta = get_exchange_meta(config.exchange)
     cls = getattr(ccxt, meta["ccxt_class"])
@@ -38,14 +37,13 @@ def get_auth_exchange(config):
         exch.set_sandbox_mode(True)
 
     exch.load_markets()
-    _auth_exchange = exch
-    return _auth_exchange
+    _auth_exchanges[key] = exch
+    return exch
 
 
 def reset_auth_exchange():
-    """Clear singleton — for testing."""
-    global _auth_exchange
-    _auth_exchange = None
+    """Clear all cached exchanges — for testing."""
+    _auth_exchanges.clear()
 
 
 def fetch_current_price(coin: str, config) -> float:

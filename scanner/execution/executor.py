@@ -74,6 +74,31 @@ def validate_execution_params(machine_block: dict) -> list[str]:
     if tp1_pct is not None and tp1_pct + tp2_pct > 100:
         errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct}) > 100")
 
+    # Direction-safe price geometry
+    entry_low = machine_block.get("entry_low", 0)
+    entry_high = machine_block.get("entry_high", 0)
+    stop = machine_block.get("stop_loss", 0)
+    tp1 = machine_block.get("tp1")
+    tp2 = machine_block.get("tp2")
+
+    if entry_low and entry_high and entry_low > entry_high:
+        errors.append(f"entry_low ({entry_low}) > entry_high ({entry_high})")
+
+    if direction == "LONG":
+        if stop and entry_low and stop >= entry_low:
+            errors.append(f"LONG stop ({stop}) must be below entry_low ({entry_low})")
+        if tp1 and entry_high and tp1 <= entry_high:
+            errors.append(f"LONG tp1 ({tp1}) must be above entry_high ({entry_high})")
+        if tp2 and tp1 and tp2 <= tp1:
+            errors.append(f"LONG tp2 ({tp2}) must be above tp1 ({tp1})")
+    elif direction == "SHORT":
+        if stop and entry_high and stop <= entry_high:
+            errors.append(f"SHORT stop ({stop}) must be above entry_high ({entry_high})")
+        if tp1 and entry_low and tp1 >= entry_low:
+            errors.append(f"SHORT tp1 ({tp1}) must be below entry_low ({entry_low})")
+        if tp2 and tp1 and tp2 >= tp1:
+            errors.append(f"SHORT tp2 ({tp2}) must be below tp1 ({tp1})")
+
     return errors
 
 

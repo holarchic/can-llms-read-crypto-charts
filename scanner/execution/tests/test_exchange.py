@@ -80,6 +80,15 @@ class TestGetAuthExchange:
         get_auth_exchange(testnet_config)
         assert mock_ccxt.hyperliquid.call_count == 2
 
+    @patch("scanner.execution.exchange.ccxt")
+    def test_different_configs_get_different_instances(self, mock_ccxt, testnet_config, live_config):
+        mock_ccxt.hyperliquid.side_effect = [MagicMock(), MagicMock()]
+
+        first = get_auth_exchange(testnet_config)
+        second = get_auth_exchange(live_config)
+        assert first is not second
+        assert mock_ccxt.hyperliquid.call_count == 2
+
 
 class TestFetchCurrentPrice:
     @patch("scanner.execution.exchange.get_auth_exchange")

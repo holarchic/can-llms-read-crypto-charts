@@ -152,6 +152,37 @@ class TestValidateExecutionParams:
         errors = validate_execution_params(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40))
         assert errors == []
 
+    def test_long_stop_above_entry(self):
+        errors = validate_execution_params(_make_machine_block(stop_loss=62000))
+        assert any("LONG stop" in e for e in errors)
+
+    def test_short_stop_below_entry(self):
+        mb = _make_machine_block(direction="SHORT", stop_loss=61000, tp1=59000, tp2=56000)
+        errors = validate_execution_params(mb)
+        assert any("SHORT stop" in e for e in errors)
+
+    def test_long_tp1_below_entry(self):
+        errors = validate_execution_params(_make_machine_block(tp1=61000))
+        assert any("LONG tp1" in e for e in errors)
+
+    def test_short_tp1_above_entry(self):
+        mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=62500, tp2=56000)
+        errors = validate_execution_params(mb)
+        assert any("SHORT tp1" in e for e in errors)
+
+    def test_entry_low_above_entry_high(self):
+        errors = validate_execution_params(_make_machine_block(entry_low=63000, entry_high=61000))
+        assert any("entry_low" in e for e in errors)
+
+    def test_long_tp2_below_tp1(self):
+        errors = validate_execution_params(_make_machine_block(tp2=64000))
+        assert any("LONG tp2" in e for e in errors)
+
+    def test_valid_short(self):
+        mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=59000, tp2=56000)
+        errors = validate_execution_params(mb)
+        assert errors == []
+
 
 class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
