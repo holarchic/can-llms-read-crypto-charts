@@ -42,51 +42,51 @@ def live_config():
 
 
 class TestGetAuthExchange:
-    @patch("scanner.execution.exchange.ccxt")
-    def test_testnet_sets_sandbox(self, mock_ccxt, testnet_config):
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_testnet_sets_sandbox(self, mock_cls, testnet_config):
         mock_exchange = MagicMock()
-        mock_ccxt.hyperliquid.return_value = mock_exchange
+        mock_cls.return_value = mock_exchange
 
         _result = get_auth_exchange(testnet_config)
         mock_exchange.set_sandbox_mode.assert_called_once_with(True)
         mock_exchange.load_markets.assert_called_once()
 
-    @patch("scanner.execution.exchange.ccxt")
-    def test_live_no_sandbox(self, mock_ccxt, live_config):
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_live_no_sandbox(self, mock_cls, live_config):
         mock_exchange = MagicMock()
-        mock_ccxt.hyperliquid.return_value = mock_exchange
+        mock_cls.return_value = mock_exchange
 
         _result = get_auth_exchange(live_config)
         mock_exchange.set_sandbox_mode.assert_not_called()
 
-    @patch("scanner.execution.exchange.ccxt")
-    def test_singleton_cached(self, mock_ccxt, testnet_config):
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_singleton_cached(self, mock_cls, testnet_config):
         mock_exchange = MagicMock()
-        mock_ccxt.hyperliquid.return_value = mock_exchange
+        mock_cls.return_value = mock_exchange
 
         first = get_auth_exchange(testnet_config)
         second = get_auth_exchange(testnet_config)
         assert first is second
-        assert mock_ccxt.hyperliquid.call_count == 1
+        assert mock_cls.call_count == 1
 
-    @patch("scanner.execution.exchange.ccxt")
-    def test_reset_clears_singleton(self, mock_ccxt, testnet_config):
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_reset_clears_singleton(self, mock_cls, testnet_config):
         mock_exchange = MagicMock()
-        mock_ccxt.hyperliquid.return_value = mock_exchange
+        mock_cls.return_value = mock_exchange
 
         get_auth_exchange(testnet_config)
         reset_auth_exchange()
         get_auth_exchange(testnet_config)
-        assert mock_ccxt.hyperliquid.call_count == 2
+        assert mock_cls.call_count == 2
 
-    @patch("scanner.execution.exchange.ccxt")
-    def test_different_configs_get_different_instances(self, mock_ccxt, testnet_config, live_config):
-        mock_ccxt.hyperliquid.side_effect = [MagicMock(), MagicMock()]
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_different_configs_get_different_instances(self, mock_cls, testnet_config, live_config):
+        mock_cls.side_effect = [MagicMock(), MagicMock()]
 
         first = get_auth_exchange(testnet_config)
         second = get_auth_exchange(live_config)
         assert first is not second
-        assert mock_ccxt.hyperliquid.call_count == 2
+        assert mock_cls.call_count == 2
 
 
 class TestFetchCurrentPrice:

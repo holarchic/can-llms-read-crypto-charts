@@ -8,6 +8,17 @@ from scanner.config import get_exchange_meta
 
 log = logging.getLogger(__name__)
 
+
+class SafeHyperliquid(ccxt.hyperliquid):
+    """Guard against ccxt bug: None base symbol in HL spot tokens crashes load_markets."""
+
+    def fetch_spot_markets(self, params={}):
+        try:
+            return super().fetch_spot_markets(params)
+        except TypeError:
+            log.warning("fetch_spot_markets TypeError (ccxt bug) — skipping spot markets")
+            return []
+
 # Singleton authenticated exchanges — keyed by (mode, wallet_address) so
 # different configs (testnet vs live, multi-wallet) get separate instances.
 # Thread safety: not locked — relies on flock in cron ensuring one scanner/monitor process.
@@ -25,7 +36,7 @@ def get_auth_exchange(config):
         return _auth_exchanges[key]
 
     meta = get_exchange_meta(config.exchange)
-    cls = getattr(ccxt, meta["ccxt_class"])
+    cls = SafeHyperliquid if meta["ccxt_class"] == "hyperliquid" else getattr(ccxt, meta["ccxt_class"])
 
     exch = cls({
         "privateKey": config.private_key,
