@@ -9,7 +9,6 @@ from scanner.execution.exchange import (
     cancel_order,
     fetch_balance,
     fetch_current_price,
-    fetch_mainnet_price,
     get_auth_exchange,
     get_open_positions,
     reset_auth_exchange,
@@ -160,35 +159,3 @@ class TestCancelOrder:
         assert cancel_order("bad_id", "BTC/USDC:USDC", testnet_config) is False
 
 
-class TestFetchMainnetPrice:
-    @patch("scanner.data.get_exchange")
-    @patch("scanner.config.get_exchange_meta", return_value={
-        "ccxt_class": "hyperliquid",
-        "symbol_template": "{coin}/USDC:USDC",
-    })
-    def test_returns_mainnet_price(self, mock_meta, mock_get_exchange, testnet_config):
-        """Uses public mainnet exchange, not auth sandbox."""
-        mock_exchange = MagicMock()
-        mock_exchange.fetch_ticker.return_value = {"last": 30.5}
-        mock_get_exchange.return_value = mock_exchange
-
-        price = fetch_mainnet_price("HYPE", testnet_config)
-
-        assert price == 30.5
-        mock_get_exchange.assert_called_once_with(testnet_config.exchange)
-        mock_exchange.fetch_ticker.assert_called_once_with("HYPE/USDC:USDC")
-
-    @patch("scanner.data.get_exchange")
-    @patch("scanner.config.get_exchange_meta", return_value={
-        "ccxt_class": "hyperliquid",
-        "symbol_template": "{coin}/USDC:USDC",
-    })
-    def test_does_not_touch_auth_exchange(self, mock_meta, mock_get_exchange, testnet_config):
-        """Mainnet price fetch should not create or use the auth exchange."""
-        mock_exchange = MagicMock()
-        mock_exchange.fetch_ticker.return_value = {"last": 100.0}
-        mock_get_exchange.return_value = mock_exchange
-
-        with patch("scanner.execution.exchange.get_auth_exchange") as mock_auth:
-            fetch_mainnet_price("BTC", testnet_config)
-            mock_auth.assert_not_called()

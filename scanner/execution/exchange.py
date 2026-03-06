@@ -55,20 +55,6 @@ def fetch_current_price(coin: str, config) -> float:
     return float(ticker["last"])
 
 
-def fetch_mainnet_price(coin: str, config) -> float:
-    """Get current price from mainnet (public exchange, no sandbox).
-
-    Used for pre-execution sanity checks where LLM levels are mainnet-based.
-    """
-    from scanner.config import get_exchange_meta
-    from scanner.data import get_exchange
-
-    meta = get_exchange_meta(config.exchange)
-    exchange = get_exchange(config.exchange)
-    symbol = meta["symbol_template"].format(coin=coin)
-    ticker = exchange.fetch_ticker(symbol)
-    return float(ticker["last"])
-
 
 def fetch_balance(config) -> float:
     """Get USDC balance from authenticated exchange."""

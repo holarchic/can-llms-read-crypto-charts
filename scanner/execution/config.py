@@ -49,6 +49,10 @@ class ExecutionConfig:
             raise ValueError(f"Invalid execution mode: '{self.mode}'. Must be 'testnet' or 'live'.")
         if self.risk_pct <= 0 or self.risk_pct > 100:
             raise ValueError(f"risk_pct must be in (0, 100], got {self.risk_pct}")
+        if self.enabled and not self.private_key:
+            raise ValueError("enabled=True requires private_key")
+        if self.enabled and not self.wallet_address:
+            raise ValueError("enabled=True requires wallet_address")
 
 
 def load_execution_config() -> ExecutionConfig:

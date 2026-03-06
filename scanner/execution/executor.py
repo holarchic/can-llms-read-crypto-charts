@@ -14,7 +14,7 @@ from scanner.models import ScanResult
 from .config import ExecutionConfig
 from .exchange import (
     fetch_balance,
-    fetch_mainnet_price,
+    fetch_current_price,
     get_auth_exchange,
     get_open_positions,
 )
@@ -195,7 +195,7 @@ def execute_trade(
 
     # 3. Fetch current price + ATR
     try:
-        current_price = fetch_mainnet_price(result.coin, exec_config)
+        current_price = fetch_current_price(result.coin, exec_config)
     except Exception as exc:
         er.skip_reason = "price_fetch_failed"
         er.error = str(exc)
@@ -528,8 +528,17 @@ def _place_stop_loss(
                 params,
             )
         except DuplicateOrderId:
-            log.info("SL cloid already exists for %s — prior attempt succeeded", symbol)
-            return {"id": "", "status": "duplicate_cloid"}
+            log.warning("SL cloid duplicate for %s — querying exchange for actual order", symbol)
+            try:
+                open_orders = exchange.fetch_open_orders(symbol)
+                cloid_hex = params.get("clientOrderId", "")
+                for oo in open_orders:
+                    if oo.get("clientOrderId") == cloid_hex:
+                        log.info("Found existing SL order %s for %s", oo["id"], symbol)
+                        return oo
+            except Exception as fetch_exc:
+                log.warning("Failed to fetch orders after DuplicateOrderId: %s", fetch_exc)
+            return None  # Triggers urgent alert — better than phantom record
         except Exception as exc:
             log.warning("SL attempt %d/%d failed for %s: %s", attempt + 1, max_retries, symbol, exc)
             if attempt < max_retries - 1:

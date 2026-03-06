@@ -296,16 +296,21 @@ def save_result(
          created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
-    try:
-        conn.execute(sql, values)
-    except sqlite3.IntegrityError:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "scan_id collision %s — regenerating", scan_id,
-        )
-        new_id = uuid4().hex[:8]
-        result.scan_id = new_id
-        conn.execute(sql, (new_id,) + values[1:])
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn.execute(sql, values)
+            break
+        except sqlite3.IntegrityError:
+            if attempt == max_retries - 1:
+                raise
+            import logging as _logging
+            new_id = uuid4().hex[:8]
+            result.scan_id = new_id
+            values = (new_id,) + values[1:]
+            _logging.getLogger(__name__).warning(
+                "scan_id collision %s — regenerating (attempt %d)", scan_id, attempt + 1,
+            )
 
     conn.commit()
 

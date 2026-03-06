@@ -36,6 +36,18 @@ class TestExecutionConfig:
         cfg = ExecutionConfig(mode="live")
         assert cfg.mode == "live"
 
+    def test_enabled_without_private_key_raises(self):
+        with pytest.raises(ValueError, match="private_key"):
+            ExecutionConfig(enabled=True, private_key="", wallet_address="0xwallet")
+
+    def test_enabled_without_wallet_address_raises(self):
+        with pytest.raises(ValueError, match="wallet_address"):
+            ExecutionConfig(enabled=True, private_key="0xkey", wallet_address="")
+
+    def test_enabled_with_credentials_ok(self):
+        cfg = ExecutionConfig(enabled=True, private_key="0xkey", wallet_address="0xwallet")
+        assert cfg.enabled is True
+
 
 class TestLoadExecutionConfig:
     def test_loads_from_env(self):
@@ -74,6 +86,6 @@ class TestLoadExecutionConfig:
     def test_enabled_accepts_yes_and_1(self):
         for val in ("yes", "1", "YES", "True"):
             with patch.dict("os.environ", {"EXECUTION_ENABLED": val}, clear=False):
-                with patch("scanner.execution.config.get_secret_or_env", return_value=""):
+                with patch("scanner.execution.config.get_secret_or_env", return_value="0xtest"):
                     cfg = load_execution_config()
             assert cfg.enabled is True, f"Failed for EXECUTION_ENABLED={val}"

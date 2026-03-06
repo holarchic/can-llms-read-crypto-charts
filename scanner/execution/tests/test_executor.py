@@ -188,7 +188,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_happy_path_long(self, mock_killed, mock_price, mock_balance,
                              mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -215,7 +215,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_happy_path_short(self, mock_killed, mock_price, mock_balance,
                               mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -259,7 +259,7 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "invalid_params"
 
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=56000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=56000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_sanity_fail(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         """Price too far from entry zone fails sanity check."""
@@ -267,7 +267,7 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "sanity_fail"
 
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=65000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=65000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_price_outside_zone(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         """Price beyond entry zone + direction buffer [61800, 62200] + 2% LONG buffer."""
@@ -277,14 +277,14 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "price_outside_zone"
 
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=True)
     def test_skip_kill_switch(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "kill_switch"
 
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_position_limit(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         exec_config.max_concurrent_positions = 0  # limit is 0
@@ -295,7 +295,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_sl_retry_succeeds(self, mock_killed, mock_price, mock_balance,
                                mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -321,7 +321,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_sl_retry_exhausted_urgent_alert(self, mock_killed, mock_price, mock_balance,
                                              mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -351,28 +351,30 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
-    def test_sl_duplicate_cloid_treated_as_success(self, mock_killed, mock_price, mock_balance,
+    def test_sl_duplicate_cloid_found_on_exchange(self, mock_killed, mock_price, mock_balance,
                                                     mock_auth, mock_discord, conn, exec_config, scanner_config):
-        """SL attempt 1 times out, attempt 2 raises DuplicateOrderId -> SL treated as placed."""
+        """SL attempt 1 times out, attempt 2 raises DuplicateOrderId -> query finds real order."""
+        existing_sl = {"id": "real-sl-123", "clientOrderId": "test-cloid", "status": "open"}
         mock_exchange = MagicMock()
         mock_exchange.create_order.side_effect = [
             _mock_exchange_success(),        # entry
             Exception("timeout"),            # SL attempt 1
             DuplicateOrderId("duplicate"),   # SL attempt 2 — prior attempt actually succeeded
-            _mock_exchange_success(),        # TP1
-            _mock_exchange_success(),        # TP2
         ]
+        mock_exchange.fetch_open_orders.return_value = [existing_sl]
         mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        # Patch make_cloid to return the matching clientOrderId
+        with patch("scanner.execution.executor.make_cloid", return_value="test-cloid"):
+            result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is True
-        assert result.sl_order_id is not None  # SL saved (even with empty exchange id)
+        assert result.sl_order_id != ""
 
-        # No URGENT alert — SL is on-exchange
+        # No URGENT alert — SL found on exchange
         urgent_calls = [c for c in mock_discord.call_args_list
                        if "URGENT" in str(c)]
         assert len(urgent_calls) == 0
@@ -380,7 +382,34 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_sl_duplicate_cloid_not_found_triggers_urgent(self, mock_killed, mock_price, mock_balance,
+                                                           mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """SL DuplicateOrderId but order not found on exchange -> URGENT alert."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),        # entry
+            Exception("timeout"),            # SL attempt 1
+            DuplicateOrderId("duplicate"),   # SL attempt 2
+        ]
+        mock_exchange.fetch_open_orders.return_value = []  # Not found
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+
+        # URGENT alert — SL ambiguous
+        urgent_calls = [c for c in mock_discord.call_args_list
+                       if "URGENT" in str(c)]
+        assert len(urgent_calls) == 1
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_tp_failure_non_fatal(self, mock_killed, mock_price, mock_balance,
                                   mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -404,7 +433,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_discord_alert_sent(self, mock_killed, mock_price, mock_balance,
                                 mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -420,7 +449,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_zero_fill_aborts(self, mock_killed, mock_price, mock_balance,
                               mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -446,7 +475,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_partial_fill_scales_sl_tp(self, mock_killed, mock_price, mock_balance,
                                        mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -489,7 +518,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_full_fill_uses_confirmed_qty(self, mock_killed, mock_price, mock_balance,
                                           mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -518,7 +547,7 @@ class TestRiskDeltaLogging:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_risk_delta_logged_on_fill(self, mock_killed, mock_price, mock_balance,
                                        mock_auth, mock_discord, conn, exec_config,
@@ -550,7 +579,7 @@ class TestClientOrderId:
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_cloid_passed_to_all_orders(self, mock_killed, mock_price, mock_balance,
                                          mock_auth, mock_discord, conn, exec_config, scanner_config):
@@ -618,7 +647,7 @@ class TestBtcVolatilityGate:
         assert result.skip_reason == "btc_volatility_gate"
         assert "BTC 4H range" in result.error
 
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.data.fetch_candles")
     def test_btc_vol_gate_passes_normal(self, mock_fetch, mock_price, conn, exec_config, scanner_config):
         """Normal BTC volatility (0.5x ATR) → execution continues past gate."""
@@ -642,7 +671,7 @@ class TestExchangeReconciliation:
     """Step 0.6: exchange position reconciliation before DB-based limits."""
 
     @patch("scanner.execution.executor.get_open_positions")
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_blocks_duplicate(self, mock_killed, mock_price,
                                                       mock_positions, conn, exec_config, scanner_config):
@@ -656,7 +685,7 @@ class TestExchangeReconciliation:
         assert result.skip_reason == "duplicate_position"
 
     @patch("scanner.execution.executor.get_open_positions")
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_respects_limit(self, mock_killed, mock_price,
                                                      mock_positions, conn, exec_config, scanner_config):
@@ -673,7 +702,7 @@ class TestExchangeReconciliation:
         assert result.skip_reason == "position_limit"
 
     @patch("scanner.execution.executor.get_open_positions", side_effect=Exception("API timeout"))
-    @patch("scanner.execution.executor.fetch_mainnet_price", return_value=62000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_falls_back_to_db(self, mock_killed, mock_price,
                                                        mock_positions, conn, exec_config, scanner_config):

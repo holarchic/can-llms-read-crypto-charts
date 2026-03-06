@@ -13,7 +13,7 @@ from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
 from .indicators import build_context
-from .models import ScanResult, SetupSignal
+from .models import MarketContext, ScanResult, SetupSignal
 from .screener import detect_all_setups
 from .storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
 from .strategy.store import get_strategy
@@ -103,7 +103,7 @@ def stage1_screen(
     verbose: bool = True,
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
-) -> list[SetupSignal]:
+) -> tuple[list[SetupSignal], str | None, MarketContext | None, dict]:
     """Stage 1: Fetch pairs → batch fetch 4H candles → run screener → dedup."""
     conn = get_connection()
 
