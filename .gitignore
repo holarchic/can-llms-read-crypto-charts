@@ -29,3 +29,10 @@ reference/transcripts/
 
 # Scanner runtime data
 data/
+
+# Bench build artifacts
+bench/benchmark_baseline
+bench/benchmark_scanner_bin
+bench/*.db
+bench/*.db-wal
+bench/*.db-shm
