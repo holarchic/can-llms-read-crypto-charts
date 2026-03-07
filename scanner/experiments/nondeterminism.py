@@ -61,7 +61,7 @@ def load_sample_scans(
             continue
         # Join scans with signals to get btc_structure and full signal context
         cur.execute("""
-            SELECT s.scan_id, s.coin, s.setup_type, s.direction,
+            SELECT s.scan_id, s.coin, s.setup_type, s.screener_direction,
                    s.screener_confidence, s.key_level, s.decision,
                    s.created_at, s.analysis_text,
                    sig.btc_structure, sig.atr, sig.current_price,
@@ -71,7 +71,7 @@ def load_sample_scans(
             FROM scans s
             LEFT JOIN signals sig ON s.coin = sig.coin
                 AND s.setup_type = sig.setup_type
-                AND s.direction = sig.direction
+                AND s.screener_direction = sig.direction
                 AND abs(julianday(s.created_at) - julianday(sig.created_at)) < 0.01
             WHERE s.decision = ?
             ORDER BY s.created_at DESC
@@ -156,7 +156,7 @@ def reconstruct_signal(scan: dict, config: ScannerConfig) -> SetupSignal:
     return SetupSignal(
         coin=scan["coin"],
         setup_type=SetupType(scan["setup_type"]),
-        direction=Direction(scan["direction"]),
+        direction=Direction(scan["screener_direction"]),
         confidence=scan.get("screener_confidence") or 0.5,
         key_level=scan.get("key_level") or 0.0,
         context=context,
@@ -210,14 +210,14 @@ def run_experiment(
         btc_structure = scan.get("btc_structure")
 
         print(f"\n[{i}/{len(samples)}] {coin} {scan['setup_type']} "
-              f"{scan['direction']} — original: {original_decision}")
+              f"{scan['screener_direction']} — original: {original_decision}")
 
         if dry_run:
             results.append({
                 "scan_id": scan["scan_id"],
                 "coin": coin,
                 "setup_type": scan["setup_type"],
-                "direction": scan["direction"],
+                "direction": scan["screener_direction"],
                 "original_decision": original_decision,
                 "runs": [],
                 "dry_run": True,
@@ -307,7 +307,7 @@ def run_experiment(
             "scan_id": scan["scan_id"],
             "coin": coin,
             "setup_type": scan["setup_type"],
-            "direction": scan["direction"],
+            "direction": scan["screener_direction"],
             "original_decision": original_decision,
             "btc_structure": btc_structure,
             "runs": runs,
@@ -435,7 +435,7 @@ def main():
     samples = load_sample_scans(conn, args.confirms, args.rejects, args.waits)
     print(f"Selected {len(samples)} signals:")
     for s in samples:
-        print(f"  {s['coin']:8s} {s['setup_type']} {s['direction']:5s} — {s['decision']}")
+        print(f"  {s['coin']:8s} {s['setup_type']} {s['screener_direction']:5s} — {s['decision']}")
 
     if not samples:
         print("No signals found. Exiting.")

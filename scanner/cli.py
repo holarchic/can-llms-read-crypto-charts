@@ -138,7 +138,7 @@ Examples:
         if s["recent"]:
             print("\nRecent scans:")
             for r in s["recent"]:
-                print(f"  {r['coin']:>6}  {r['setup_type']}  {r['direction']:>5}  "
+                print(f"  {r['coin']:>6}  {r['setup_type']}  {r['screener_direction']:>5}  "
                       f"{r['decision'] or 'N/A':>7}  ${r['cost_usd']:.4f}  {r['timestamp'][:16]}")
         return
 

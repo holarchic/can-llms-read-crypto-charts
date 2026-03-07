@@ -337,8 +337,8 @@ def build_llm_setup(row: dict) -> TradeSetup | None:
 
     Tries machine_block JSON first (structured, deterministic).
     Falls back to parsing entry_zone, stop_loss, take_profit from LLM text.
-    Direction is inferred from entry vs stop (not from screener's direction field,
-    since the LLM may classify the trade differently).
+    Direction comes from llm_direction (or machine_block), not screener_direction,
+    since the LLM may classify the trade differently.
     """
     # Try machine block first
     mb_raw = row.get("machine_block")

@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS scans (
     timestamp TEXT NOT NULL,
     setup_type TEXT NOT NULL,
     setup_name TEXT,
-    direction TEXT NOT NULL,
+    screener_direction TEXT NOT NULL,
+    llm_direction TEXT,
     screener_confidence REAL,
     key_level REAL,
     decision TEXT,
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS scans (
 
 CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_scans_dedup
-ON scans (coin, setup_type, direction, timestamp)
+ON scans (coin, setup_type, screener_direction, timestamp)
 """
 
 CREATE_SIGNALS_TABLE = """
@@ -179,6 +180,21 @@ def _migrate_candles_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_scans_direction(conn: sqlite3.Connection) -> None:
+    """Rename scans.direction → screener_direction, add llm_direction column."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(scans)").fetchall()}
+    if "direction" in cols and "screener_direction" not in cols:
+        conn.execute("ALTER TABLE scans RENAME COLUMN direction TO screener_direction")
+    if "llm_direction" not in cols:
+        conn.execute("ALTER TABLE scans ADD COLUMN llm_direction TEXT DEFAULT NULL")
+        # Backfill from machine_block JSON
+        conn.execute(
+            "UPDATE scans SET llm_direction = json_extract(machine_block, '$.direction') "
+            "WHERE machine_block IS NOT NULL AND llm_direction IS NULL"
+        )
+    conn.commit()
+
+
 _migrated: set[str] = set()
 _migration_lock = threading.Lock()
 
@@ -189,6 +205,8 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
     conn.execute(CREATE_SIGNALS_INDEX)
+    # Migrate scans.direction → screener_direction + add llm_direction
+    _migrate_scans_direction(conn)
     # Candles table: migrate PK to include exchange if needed
     _migrate_candles_table(conn)
     conn.execute(CREATE_CANDLES_INDEX)
@@ -259,6 +277,11 @@ def save_result(
     from .models import SETUP_NAMES
     setup_name = SETUP_NAMES.get(result.setup_signal.setup_type, "")
 
+    # Extract LLM direction from machine_block if available
+    llm_direction = None
+    if result.machine_block and isinstance(result.machine_block, dict):
+        llm_direction = result.machine_block.get("direction")
+
     scan_id = result.scan_id
     values = (
         scan_id,
@@ -267,6 +290,7 @@ def save_result(
         result.setup_signal.setup_type.value,
         setup_name,
         result.setup_signal.direction.value,
+        llm_direction,
         result.setup_signal.confidence,
         result.setup_signal.key_level,
         result.decision,
@@ -288,13 +312,13 @@ def save_result(
     )
 
     sql = """INSERT INTO scans
-        (scan_id, coin, timestamp, setup_type, setup_name, direction,
-         screener_confidence, key_level, decision, confluence_score,
+        (scan_id, coin, timestamp, setup_type, setup_name, screener_direction,
+         llm_direction, screener_confidence, key_level, decision, confluence_score,
          entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
          strategy_id, analysis_text, leverage, exchange, llm_confidence,
          machine_block, prompt_version,
          created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -333,7 +357,7 @@ def is_duplicate(
 
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM scans
-        WHERE coin = ? AND setup_type = ? AND direction = ?
+        WHERE coin = ? AND setup_type = ? AND screener_direction = ?
         AND exchange = ?
         AND datetime(timestamp) > datetime('now', ?)""",
         (coin, setup_type, direction, exchange, f"-{hours} hours"),
@@ -391,7 +415,7 @@ def stats(conn: sqlite3.Connection | None = None) -> dict:
 
     # Recent scans
     recent = conn.execute(
-        """SELECT coin, setup_type, direction, decision, cost_usd, timestamp
+        """SELECT coin, setup_type, screener_direction, decision, cost_usd, timestamp
         FROM scans ORDER BY created_at DESC LIMIT 10"""
     ).fetchall()
 

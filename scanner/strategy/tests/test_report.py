@@ -168,7 +168,7 @@ def _insert_test_scans(conn, strategy_id):
     for coin, st, d, dec, ez, sl, tp, cost, ts in scans:
         conn.execute(
             """INSERT INTO scans
-            (scan_id, coin, timestamp, setup_type, setup_name, direction,
+            (scan_id, coin, timestamp, setup_type, setup_name, screener_direction,
              screener_confidence, key_level, decision, confluence_score,
              entry_zone, stop_loss, take_profit, reasoning, cost_usd, alerted,
              strategy_id, created_at)

@@ -139,7 +139,7 @@ class TestExchangeScopedDedup:
         """Duplicate check should be exchange-scoped."""
         # Insert a scan for hyperliquid
         db_conn.execute(
-            "INSERT INTO scans (scan_id, coin, timestamp, setup_type, direction, exchange, created_at) "
+            "INSERT INTO scans (scan_id, coin, timestamp, setup_type, screener_direction, exchange, created_at) "
             "VALUES ('s1', 'BTC', datetime('now'), 'C', 'LONG', 'hyperliquid', datetime('now'))"
         )
         db_conn.commit()
