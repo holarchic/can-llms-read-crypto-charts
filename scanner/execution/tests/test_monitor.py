@@ -700,3 +700,74 @@ class TestPartialSLTP2Fill:
 
         # No replacement orders placed
         mock_exchange.create_order.assert_not_called()
+
+
+class TestMonitorDiscordAlerts:
+    """Monitor CLI sends Discord alerts for missing_sl and phantom_sl."""
+
+    @patch("scanner.execution.executor._send_urgent_alert")
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    @patch("scanner.execution.monitor.sync_order_status", return_value=0)
+    def test_missing_sl_sends_discord_alert(self, mock_sync, mock_orders, mock_urgent, config, conn):
+        """missing_sl issue triggers Discord urgent alert."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="CANCELLED")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        # Inline the _cmd_monitor logic with our fixtures
+        from scanner.execution.monitor import check_positions
+
+        issues = check_positions(config, conn)
+        critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
+        assert len(critical) == 1
+
+        from scanner.execution.executor import _send_urgent_alert
+        for issue in critical:
+            _send_urgent_alert(issue["message"], config)
+
+        mock_urgent.assert_called_once()
+        assert "no active stop loss" in mock_urgent.call_args[0][0]
+
+    @patch("scanner.execution.executor._send_urgent_alert")
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    @patch("scanner.execution.monitor.sync_order_status", return_value=0)
+    def test_phantom_sl_sends_discord_alert(self, mock_sync, mock_orders, mock_urgent, config, conn):
+        """phantom_sl issue triggers Discord urgent alert."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        from scanner.execution.monitor import check_positions
+
+        issues = check_positions(config, conn)
+        critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
+        assert len(critical) == 1
+
+        from scanner.execution.executor import _send_urgent_alert
+        for issue in critical:
+            _send_urgent_alert(issue["message"], config)
+
+        mock_urgent.assert_called_once()
+        assert "DB but not on exchange" in mock_urgent.call_args[0][0]
+
+    @patch("scanner.execution.executor._send_urgent_alert")
+    @patch("scanner.execution.monitor.get_exchange_open_orders")
+    @patch("scanner.execution.monitor.sync_order_status", return_value=0)
+    def test_healthy_position_no_discord_alert(self, mock_sync, mock_orders, mock_urgent, config, conn):
+        """Healthy position does not trigger Discord alert."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+        mock_orders.return_value = [{"id": "sl_exch1", "status": "open"}]
+
+        from scanner.execution.monitor import check_positions
+
+        issues = check_positions(config, conn)
+        critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
+        assert len(critical) == 0
+        mock_urgent.assert_not_called()

@@ -316,6 +316,7 @@ class TestExecuteTrade:
 
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is True
+        assert result.sl_failed is False
         assert result.sl_order_id != ""
 
     @patch("scanner.execution.executor.requests.post")
@@ -341,6 +342,7 @@ class TestExecuteTrade:
 
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is True
+        assert result.sl_failed is True
         assert result.sl_order_id == ""  # No SL placed
 
         # Verify URGENT alert was sent

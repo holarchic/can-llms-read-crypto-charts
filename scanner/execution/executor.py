@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class ExecutionResult:
     executed: bool = False
+    sl_failed: bool = False
     scan_id: str = ""
     coin: str = ""
     direction: str = ""
@@ -425,6 +426,7 @@ def execute_trade(
             "created_at": now,
         }, conn)
     else:
+        er.sl_failed = True
         _send_urgent_alert(
             f"URGENT: SL placement FAILED for {result.coin} {er.direction} "
             f"after 3 retries. Position WITHOUT stop loss!",
@@ -583,6 +585,10 @@ def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult,
             {"name": "R:R", "value": f"{pos.rr_ratio:.2f}" if pos else "?", "inline": True},
         ],
     }
+
+    if exec_result.sl_failed:
+        embed["title"] += " [NO SL]"
+        embed["fields"].append({"name": "Stop Loss", "value": "FAILED — position unprotected", "inline": False})
 
     try:
         resp = requests.post(

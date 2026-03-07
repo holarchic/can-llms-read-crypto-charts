@@ -383,6 +383,7 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
                         issues.append({
                             "type": "phantom_sl",
                             "coin": entry["coin"],
+                            "direction": entry["direction"],
                             "scan_id": entry["scan_id"],
                             "message": (
                                 f"{entry['coin']} {entry['direction']} SL exists "
@@ -395,6 +396,7 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
             issues.append({
                 "type": "missing_sl",
                 "coin": entry["coin"],
+                "direction": entry["direction"],
                 "scan_id": entry["scan_id"],
                 "message": f"{entry['coin']} {entry['direction']} has no active stop loss",
             })

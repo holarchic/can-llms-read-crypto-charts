@@ -56,6 +56,14 @@ def _cmd_monitor(config):
         print(f"\nHealth check issues ({len(issues)}):")
         for issue in issues:
             print(f"  [{issue['type']}] {issue['message']}")
+
+        # Send Discord alerts for critical SL issues
+        critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
+        if critical:
+            from .executor import _send_urgent_alert
+
+            for issue in critical:
+                _send_urgent_alert(issue["message"], config)
     else:
         print("Health check: OK")
 
