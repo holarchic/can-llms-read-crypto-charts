@@ -55,8 +55,8 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                 exch_status = exch_order.get("status", "").lower()
 
                 if exch_status == "closed":
-                    fill_price = float(exch_order.get("average", exch_order.get("price", 0)))
-                    fill_qty = float(exch_order["filled"]) if exch_order.get("filled") else order["quantity"]
+                    fill_price = float(exch_order.get("average") or exch_order.get("price") or 0)
+                    fill_qty = float(exch_order.get("filled") or order["quantity"])
                     if fill_qty < order["quantity"]:
                         log.warning(
                             "%s %s partial fill: expected %s, got %s",
@@ -83,10 +83,10 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         break  # stale list — re-check next cycle
 
                 elif exch_status == "canceled":
-                    partial_fill = float(exch_order.get("filled", 0))
+                    partial_fill = float(exch_order.get("filled") or 0)
                     if partial_fill > 0:
                         # Partial fill before cancel — treat as fill for the filled amount
-                        fill_price = float(exch_order.get("average", exch_order.get("price", 0)))
+                        fill_price = float(exch_order.get("average") or exch_order.get("price") or 0)
                         log.warning(
                             "%s %s canceled with partial fill: %s of %s at %s",
                             entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,

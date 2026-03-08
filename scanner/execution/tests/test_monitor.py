@@ -78,6 +78,31 @@ class TestSyncOrderStatus:
         assert sl_order["status"] == "FILLED"
         assert sl_order["fill_price"] == 59750
 
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_detects_fill_with_none_price_fields(self, mock_auth, config, conn):
+        """HL trigger orders return None for average/price — should not crash."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed",
+            "average": None,
+            "price": None,
+            "filled": 0.1,
+        }
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)
+        assert updated >= 1
+
+        sl_order = get_order(sl["order_id"], conn)
+        assert sl_order["status"] == "FILLED"
+        assert sl_order["fill_price"] == 0  # no price available, recorded as 0
+
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_cancels_remaining_on_fill(self, mock_auth, mock_cancel, config, conn):
