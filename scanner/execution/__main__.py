@@ -1,11 +1,20 @@
 """CLI for execution module. Run with: python -m scanner.execution"""
 
 import argparse
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from .config import load_execution_config
 
+_ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+
 
 def main():
+    # Load .env before execution config — otherwise credentials are empty
+    # when running standalone (python -m scanner.execution) vs via scanner.cli
+    load_dotenv(_ENV_PATH)
+
     parser = argparse.ArgumentParser(
         description="Execution module CLI — monitor, positions, orders, kill switch",
         formatter_class=argparse.RawDescriptionHelpFormatter,

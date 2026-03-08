@@ -41,6 +41,7 @@ def exec_config():
         private_key="0xtest",
         wallet_address="0xwallet",
         risk_pct=1.0,
+        btc_vol_gate_enabled=False,
         discord_execution_webhook_url="https://discord.com/test",
     )
 
@@ -638,33 +639,39 @@ def _make_btc_4h_df(last_range: float, atr_approx: float, rows: int = 30):
 
 
 class TestBtcVolatilityGate:
+    @pytest.fixture
+    def vol_gate_config(self, exec_config):
+        """exec_config with BTC vol gate explicitly enabled."""
+        exec_config.btc_vol_gate_enabled = True
+        return exec_config
+
     @patch("scanner.data.fetch_candles")
-    def test_btc_vol_gate_blocks_extreme(self, mock_fetch, conn, exec_config, scanner_config):
+    def test_btc_vol_gate_blocks_extreme(self, mock_fetch, conn, vol_gate_config, scanner_config):
         """BTC 4H range > 2x ATR → skip with btc_volatility_gate."""
         # ATR ≈ 1000 (all candles have range=1000), last candle range = 2500 (2.5x)
         mock_fetch.return_value = _make_btc_4h_df(last_range=2500, atr_approx=1000)
         sr = _make_scan_result()
-        result = execute_trade(sr, exec_config, scanner_config, conn)
+        result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "btc_volatility_gate"
         assert "BTC 4H range" in result.error
 
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.data.fetch_candles")
-    def test_btc_vol_gate_passes_normal(self, mock_fetch, mock_price, conn, exec_config, scanner_config):
+    def test_btc_vol_gate_passes_normal(self, mock_fetch, mock_price, conn, vol_gate_config, scanner_config):
         """Normal BTC volatility (0.5x ATR) → execution continues past gate."""
         # ATR ≈ 1000, last candle range = 500 (0.5x) — should pass
         mock_fetch.return_value = _make_btc_4h_df(last_range=500, atr_approx=1000)
         sr = _make_scan_result(machine_block=None)
-        result = execute_trade(sr, exec_config, scanner_config, conn)
+        result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         # Should pass the gate and fail on next check (no_machine_block)
         assert result.skip_reason == "no_machine_block"
 
     @patch("scanner.data.fetch_candles", side_effect=Exception("API timeout"))
-    def test_btc_vol_gate_fails_open(self, mock_fetch, conn, exec_config, scanner_config):
+    def test_btc_vol_gate_fails_open(self, mock_fetch, conn, vol_gate_config, scanner_config):
         """fetch_candles raises → gate fails open, execution continues."""
         sr = _make_scan_result(machine_block=None)
-        result = execute_trade(sr, exec_config, scanner_config, conn)
+        result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         # Gate failed open → proceeds to next check
         assert result.skip_reason == "no_machine_block"
 
