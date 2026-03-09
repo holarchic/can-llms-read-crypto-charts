@@ -1,4 +1,4 @@
-"""Setup detection A-G from UNIFIED_TA_RULESET. Sensitive — flag anything plausible, let LLM decide."""
+"""Setup detection A-G from unified-ta-ruleset. Sensitive — flag anything plausible, let LLM decide."""
 
 from collections import Counter
 

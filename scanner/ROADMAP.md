@@ -30,7 +30,7 @@ Every signal tagged with vol_percentile (ATR trailing percentile), efficiency_ra
 #### Next: Concave allocation lifecycle
 **When**: Phase 2 auto-execution is live.
 **What**: Scale position sizing by setup-type edge lifecycle — small allocation for new/unproven setups, grow as edge is confirmed (positive expectancy, CI excludes zero), shrink as edge decays (regime decay trend). Requires Phase 2 auto-execution to act on allocations.
-**Research basis**: Lopez de Prado's concave strategy lifecycle. See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 1.
+**Research basis**: Lopez de Prado's concave strategy lifecycle. See `reference/research-trading-bot-robustness.md` — Stream 1.
 
 ### LLM Decision Consistency
 
@@ -42,7 +42,7 @@ One LLM call per signal, structured decision block output, ~$0.12/signal.
 **What**: Run the same chart through the LLM 3-5 times. Take majority vote on CONFIRM/REJECT/WAIT. Only alert if >=3/5 agree on CONFIRM. Optionally average the entry/stop/target across agreeing runs.
 **Cost**: $0.36-0.60/signal (3-5x current). At 20 signals/scan, $7.20-12.00/scan vs current $2.40. Still within $15/day budget if scans stay at 1-2/day, tight at 6/day.
 **Why**: Research shows ~40% decision determinism for large models (arXiv:2601.15322). Simple aggregation across 3-5 runs "dramatically improves consistency." Our structured output format helps, but the underlying analysis still varies.
-**Research basis**: See `reference/RESEARCH_TRADING_BOT_ROBUSTNESS.md` — Stream 3 (LLM trading), non-determinism section.
+**Research basis**: See `reference/research-trading-bot-robustness.md` — Stream 3 (LLM trading), non-determinism section.
 
 ### Signal Ranking Evolution
 

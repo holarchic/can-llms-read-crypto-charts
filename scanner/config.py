@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 PROJECT_ROOT = Path(__file__).parent.parent
-STRATEGY_PATH = PROJECT_ROOT / "strategy" / "UNIFIED_TA_RULESET.md"
+STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 DB_PATH = DATA_DIR / "scanner.db"

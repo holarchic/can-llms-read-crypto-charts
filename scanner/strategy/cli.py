@@ -497,7 +497,7 @@ def main():
     p_create.add_argument("--max-setups", type=int, default=3)
     p_create.add_argument("--atr-stop", type=float, default=1.5)
     p_create.add_argument("--atr-target", type=float, default=3.0)
-    p_create.add_argument("--ruleset-version", type=str, default=None, help="UNIFIED_TA_RULESET version (e.g. v1.2.0)")
+    p_create.add_argument("--ruleset-version", type=str, default=None, help="unified-ta-ruleset version (e.g. v1.2.0)")
     p_create.add_argument("--notes", type=str, default=None)
     p_create.set_defaults(func=cmd_create)
 
