@@ -421,7 +421,11 @@ def _market_close_position(
     entry: dict, symbol: str, exit_side: str, qty: float,
     exchange, config: ExecutionConfig, conn,
 ) -> bool:
-    """Place a reduceOnly market order to close a timed-out position. 3 retries."""
+    """Place a reduceOnly market order to close a timed-out position. 3 retries.
+
+    HyperLiquid has no native market orders — ccxt simulates via limit IOC
+    with slippage. Requires current price as the base for slippage calc.
+    """
     order_id = new_order_id()
     cloid = make_cloid(order_id)
     rounded_qty = float(exchange.amount_to_precision(symbol, qty))
@@ -429,8 +433,10 @@ def _market_close_position(
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
+            ticker = exchange.fetch_ticker(symbol)
+            price = ticker["last"]
             resp = exchange.create_order(
-                symbol, "market", exit_side, rounded_qty, None,
+                symbol, "market", exit_side, rounded_qty, price,
                 {"reduceOnly": True, "clientOrderId": cloid},
             )
             fill_price = float(resp.get("average") or resp.get("price") or 0)
