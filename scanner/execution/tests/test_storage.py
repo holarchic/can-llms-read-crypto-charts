@@ -246,6 +246,22 @@ class TestPositionQueries:
         assert count_open_longs(conn) == 1
 
 
+class TestTimeoutCloseExclusion:
+    """FILLED timeout_close orders close positions just like SL/TP."""
+
+    def test_timeout_close_excludes_from_open(self, conn):
+        """Entry with FILLED timeout_close → not returned by get_open_entry_orders."""
+        entry = _make_order(scan_id="s1", status="FILLED", entry_price=62000, quantity=0.1)
+        save_order(entry, conn)
+        assert len(get_open_entry_orders(conn)) == 1
+
+        timeout = _make_order(
+            scan_id="s1", order_type="timeout_close", status="FILLED", quantity=0.1,
+        )
+        save_order(timeout, conn)
+        assert len(get_open_entry_orders(conn)) == 0
+
+
 class TestExecutionModeIsolation:
     """Testnet and live orders must not cross-contaminate risk checks."""
 

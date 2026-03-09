@@ -6,10 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scanner.execution.config import ExecutionConfig
-from scanner.execution.monitor import check_positions, sync_order_status
+from scanner.execution.monitor import check_positions, enforce_position_timeouts, sync_order_status
 from scanner.execution.storage import (
     ensure_orders_table,
     get_order,
+    get_orders_for_scan,
     new_order_id,
     save_order,
 )
@@ -796,3 +797,174 @@ class TestMonitorDiscordAlerts:
         critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
         assert len(critical) == 0
         mock_urgent.assert_not_called()
+
+
+class TestPositionTimeout:
+    """enforce_position_timeouts market-closes positions past timeout_hours."""
+
+    def _make_old_entry(self, conn, scan_id="s1", coin="BTC", direction="LONG",
+                        hours_ago=80, quantity=0.1):
+        """Create a filled entry order that's `hours_ago` hours old."""
+        from datetime import datetime, timedelta, timezone
+        filled_at = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        entry = _make_order(
+            scan_id=scan_id, coin=coin, direction=direction,
+            order_type="entry", status="FILLED", quantity=quantity,
+            entry_price=62000, filled_at=filled_at,
+        )
+        save_order(entry, conn)
+        return entry
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_happy_path_times_out_old_position(self, mock_auth, mock_cancel, mock_post, config, conn):
+        """Entry filled 80h ago (timeout=72) → market close + timeout_close saved + SL cancelled + alert."""
+        config.position_timeout_hours = 72
+        config.discord_execution_webhook_url = "https://discord.com/test"
+        self._make_old_entry(conn, hours_ago=80)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "timeout_exch1", "average": 62500}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 1
+
+        # timeout_close order saved
+        scan_orders = get_orders_for_scan("s1", conn)
+        timeout_orders = [o for o in scan_orders if o["order_type"] == "timeout_close"]
+        assert len(timeout_orders) == 1
+        assert timeout_orders[0]["status"] == "FILLED"
+
+        # SL cancelled
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"
+
+        # Discord alert sent
+        mock_post.assert_called()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "TIMEOUT" in call_body
+        assert "BTC" in call_body
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_fresh_position_skipped(self, mock_auth, config, conn):
+        """Entry filled 24h ago (timeout=72) → not timed out."""
+        config.position_timeout_hours = 72
+        self._make_old_entry(conn, hours_ago=24)
+
+        mock_exchange = MagicMock()
+        mock_auth.return_value = mock_exchange
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 0
+        mock_exchange.create_order.assert_not_called()
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_remaining_qty_after_tp1(self, mock_auth, mock_cancel, mock_post, config, conn):
+        """Entry 0.1, TP1 filled 0.05 → timeout closes remaining 0.05."""
+        config.position_timeout_hours = 72
+        self._make_old_entry(conn, hours_ago=80, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.05)
+        save_order(tp1, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "timeout_exch1", "average": 63000}
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 1
+
+        # Verify it closed 0.05, not 0.1
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][3] == 0.05  # qty argument
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_retry_success(self, mock_auth, mock_cancel, mock_sleep, config, conn):
+        """Market close fails twice, succeeds third → order saved."""
+        config.position_timeout_hours = 72
+        self._make_old_entry(conn, hours_ago=80)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            Exception("timeout"), Exception("timeout"),
+            {"id": "timeout_exch1", "average": 62000},
+        ]
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_auth.return_value = mock_exchange
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 1
+        assert mock_exchange.create_order.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_all_retries_fail_sends_urgent(self, mock_auth, mock_sleep, mock_post, config, conn):
+        """All 3 retries fail → no order saved, urgent alert sent."""
+        config.position_timeout_hours = 72
+        config.discord_execution_webhook_url = "https://discord.com/test"
+        self._make_old_entry(conn, hours_ago=80)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = Exception("exchange down")
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 0
+
+        # No timeout_close order saved
+        scan_orders = get_orders_for_scan("s1", conn)
+        timeout_orders = [o for o in scan_orders if o["order_type"] == "timeout_close"]
+        assert len(timeout_orders) == 0
+
+        # Urgent alert sent
+        mock_post.assert_called()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "URGENT" in call_body
+
+    def test_disabled_returns_zero(self, config, conn):
+        """timeout=0 → returns 0, no exchange calls."""
+        config.position_timeout_hours = 0
+        result = enforce_position_timeouts(config, conn)
+        assert result == 0
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_uses_filled_at_for_age(self, mock_auth, config, conn):
+        """Age calculated from filled_at, not created_at."""
+        from datetime import datetime, timedelta, timezone
+        config.position_timeout_hours = 72
+
+        # created_at is 100h ago, but filled_at is only 24h ago
+        created = (datetime.now(timezone.utc) - timedelta(hours=100)).isoformat()
+        filled = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        entry = _make_order(
+            scan_id="s1", order_type="entry", status="FILLED",
+            quantity=0.1, entry_price=62000,
+            created_at=created, filled_at=filled,
+        )
+        save_order(entry, conn)
+
+        mock_exchange = MagicMock()
+        mock_auth.return_value = mock_exchange
+
+        result = enforce_position_timeouts(config, conn)
+        assert result == 0  # 24h < 72h, not timed out
+        mock_exchange.create_order.assert_not_called()

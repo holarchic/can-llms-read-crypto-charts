@@ -54,11 +54,15 @@ Examples:
 def _cmd_monitor(config):
     from scanner.storage import get_connection
 
-    from .monitor import check_positions, sync_order_status
+    from .monitor import check_positions, enforce_position_timeouts, sync_order_status
 
     conn = get_connection()
     updated = sync_order_status(config, conn)
     print(f"Orders updated: {updated}")
+
+    timed_out = enforce_position_timeouts(config, conn)
+    if timed_out:
+        print(f"Positions timed out: {timed_out}")
 
     issues = check_positions(config, conn)
     if issues:

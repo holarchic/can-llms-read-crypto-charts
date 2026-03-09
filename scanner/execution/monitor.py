@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import datetime, timezone
 
 import requests
 
@@ -14,6 +15,8 @@ from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
     make_cloid,
+    new_order_id,
+    save_order,
     update_order_quantity,
     update_order_status,
 )
@@ -338,6 +341,145 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
         return resp.status_code == 204
     except Exception as exc:
         log.error("URGENT SL alert send failed: %s", exc)
+        return False
+
+
+def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
+    """Market-close positions that exceed position_timeout_hours.
+
+    Returns count of positions timed out.
+    """
+    if exec_config.position_timeout_hours <= 0:
+        return 0
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    timed_out = 0
+    exchange = get_auth_exchange(exec_config)
+    meta = get_exchange_meta(exec_config.exchange)
+    now = datetime.now(timezone.utc)
+
+    open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
+
+    for entry in open_entries:
+        # Parse entry fill time — fallback chain: filled_at → placed_at → created_at
+        entry_time_str = entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at")
+        if not entry_time_str:
+            continue
+
+        try:
+            entry_time = datetime.fromisoformat(entry_time_str)
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+
+        age_hours = (now - entry_time).total_seconds() / 3600
+        if age_hours <= exec_config.position_timeout_hours:
+            continue
+
+        # Calculate remaining qty
+        remaining_qty = _get_remaining_qty(entry, conn)
+        if remaining_qty <= 0:
+            continue
+
+        symbol = meta["symbol_template"].format(coin=entry["coin"])
+        exit_side = "sell" if entry["direction"] == "LONG" else "buy"
+
+        success = _market_close_position(
+            entry, symbol, exit_side, remaining_qty, exchange, exec_config, conn,
+        )
+
+        if success:
+            # Cancel remaining SL/TP orders
+            _cancel_remaining_orders(entry["scan_id"], "", symbol, exec_config, conn)
+            _send_timeout_alert(entry, age_hours, remaining_qty, exec_config)
+            timed_out += 1
+        else:
+            _send_urgent_sl_alert(entry["coin"], entry["direction"], exec_config)
+
+    if own_conn:
+        conn.close()
+
+    return timed_out
+
+
+def _get_remaining_qty(entry: dict, conn) -> float:
+    """Calculate remaining open quantity for an entry (entry qty minus filled exits)."""
+    row = conn.execute(
+        """SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
+        WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+        AND status = 'FILLED'""",
+        (entry["scan_id"],),
+    ).fetchone()
+    return entry.get("quantity", 0) - float(row["filled_qty"])
+
+
+def _market_close_position(
+    entry: dict, symbol: str, exit_side: str, qty: float,
+    exchange, config: ExecutionConfig, conn,
+) -> bool:
+    """Place a reduceOnly market order to close a timed-out position. 3 retries."""
+    order_id = new_order_id()
+    cloid = make_cloid(order_id)
+    rounded_qty = float(exchange.amount_to_precision(symbol, qty))
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = exchange.create_order(
+                symbol, "market", exit_side, rounded_qty, None,
+                {"reduceOnly": True, "clientOrderId": cloid},
+            )
+            fill_price = float(resp.get("average") or resp.get("price") or 0)
+            save_order({
+                "order_id": order_id,
+                "scan_id": entry["scan_id"],
+                "coin": entry["coin"],
+                "direction": entry["direction"],
+                "order_type": "timeout_close",
+                "exchange_order_id": resp.get("id", ""),
+                "status": "FILLED",
+                "fill_price": fill_price,
+                "quantity": rounded_qty,
+                "exchange": config.exchange,
+                "execution_mode": config.mode,
+                "filled_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }, conn)
+            log.info(
+                "Timeout close %s %s: qty %s at %s",
+                entry["coin"], entry["direction"], rounded_qty, fill_price,
+            )
+            return True
+        except Exception as exc:
+            log.error(
+                "Timeout close attempt %d/%d for %s failed: %s",
+                attempt, max_retries, entry["coin"], exc,
+            )
+            if attempt < max_retries:
+                time.sleep(attempt)
+
+    log.error("All timeout close attempts exhausted for %s — position still open", entry["coin"])
+    return False
+
+
+def _send_timeout_alert(entry: dict, age_hours: float, qty: float, config: ExecutionConfig) -> bool:
+    """Send Discord notification for a timed-out position."""
+    webhook = config.discord_execution_webhook_url
+    if not webhook:
+        return False
+    message = (
+        f"**TIMEOUT**: {entry['coin']} {entry['direction']} closed after "
+        f"{age_hours:.1f}h (limit: {config.position_timeout_hours}h) — qty {qty}"
+    )
+    try:
+        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.error("Timeout alert send failed: %s", exc)
         return False
 
 

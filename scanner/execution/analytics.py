@@ -53,7 +53,7 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         # Find ALL filled exits for this scan
         exits = conn.execute(
             """SELECT * FROM orders
-            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
+            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
             AND status = 'FILLED'
             AND execution_mode = ? AND exchange = ?
             ORDER BY filled_at""",
@@ -125,7 +125,7 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         slippage_r = _calculate_slippage_r(entry, last_exit, entry_fill, last_exit_fill, risk_amount, conn)
 
         # Map order_type to exit_type label (last exit determines label)
-        exit_type_map = {"stop_loss": "SL", "tp1": "TP1", "tp2": "TP2"}
+        exit_type_map = {"stop_loss": "SL", "tp1": "TP1", "tp2": "TP2", "timeout_close": "TIMEOUT"}
         exit_type = exit_type_map.get(last_exit["order_type"], last_exit["order_type"])
 
         trades.append(TradeRecord(
@@ -268,7 +268,7 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
         # Fetch all filled exits for quantity-weighted sim_r
         exits = conn.execute(
             """SELECT order_type, quantity FROM orders
-            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2')
+            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
             AND status = 'FILLED'
             AND execution_mode = ? AND exchange = ?""",
             (trade.scan_id, trade.execution_mode, trade.exchange),

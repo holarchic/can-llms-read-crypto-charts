@@ -41,6 +41,9 @@ class ExecutionConfig:
     # GCP
     gcp_project_id: str = ""
 
+    # Position timeout
+    position_timeout_hours: int = 72  # 0 = disabled
+
     # Discord
     discord_execution_webhook_url: str = ""
 
@@ -53,6 +56,8 @@ class ExecutionConfig:
             raise ValueError("enabled=True requires private_key")
         if self.enabled and not self.wallet_address:
             raise ValueError("enabled=True requires wallet_address")
+        if self.position_timeout_hours < 0:
+            raise ValueError(f"position_timeout_hours must be >= 0, got {self.position_timeout_hours}")
 
 
 def load_execution_config() -> ExecutionConfig:
@@ -70,5 +75,6 @@ def load_execution_config() -> ExecutionConfig:
         max_open_longs=int(os.getenv("EXECUTION_MAX_LONGS", "100")),
         max_portfolio_exposure_pct=float(os.getenv("EXECUTION_MAX_EXPOSURE_PCT", "100.0")),
         gcp_project_id=gcp_project,
+        position_timeout_hours=int(os.getenv("EXECUTION_POSITION_TIMEOUT_HOURS", "72")),
         discord_execution_webhook_url=os.getenv("DISCORD_EXECUTION_WEBHOOK_URL", ""),
     )
