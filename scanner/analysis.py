@@ -1,4 +1,4 @@
-"""LLM deep analysis — imports building blocks from chart_analyzer."""
+"""LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
 PROMPT_VERSION = "3"
 
@@ -8,15 +8,14 @@ from pathlib import Path
 
 import anthropic
 
-from chart_analyzer.analyzer import (
+from .config import ScannerConfig
+from .llm import (
     SYSTEM_PROMPT,
     encode_image,
     load_strategy,
     parse_decision_block,
     parse_machine_block,
 )
-
-from .config import ScannerConfig
 from .models import MarketContext, ScanResult, SetupSignal
 
 

@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["chart_analyzer*", "scanner*"]
+include = ["scanner*"]
 
 [project.optional-dependencies]
 dev = ["ruff", "pytest", "pandas-ta>=0.3.14b"]
@@ -32,7 +32,6 @@ ignore = ["E741"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "chart_analyzer/tests",
     "scanner/tests",
     "scanner/backtest/tests",
     "scanner/strategy/tests",
