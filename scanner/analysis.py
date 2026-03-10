@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "4"
 
 import uuid
 from datetime import datetime, timezone
@@ -45,7 +45,6 @@ def _build_btc_context(btc_ctx: MarketContext) -> str:
         "Market context — BTC:",
         f"- Daily structure: {structure.capitalize()}. {position} {last_low}".strip(),
         f"- Volatility: ATR percentile {btc_ctx.vol_percentile:.0f}%.",
-        "BTC declines propagate to alts with 1.5–3x amplification. Weight bearish BTC context more heavily than bullish.",
     ]
     return "\n".join(lines)
 
