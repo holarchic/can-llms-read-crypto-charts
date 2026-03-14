@@ -684,10 +684,24 @@ class TestExchangeReconciliation:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_blocks_duplicate(self, mock_killed, mock_price,
                                                       mock_positions, conn, exec_config, scanner_config):
-        """Exchange shows BTC LONG → skip as duplicate even if DB has nothing."""
+        """Exchange shows BTC position → skip as duplicate (any direction, net position)."""
         mock_positions.return_value = [
             {"coin": "BTC", "direction": "LONG", "size": 0.05, "entry_price": 61000,
              "unrealized_pnl": 100, "leverage": 5},
+        ]
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "duplicate_position"
+
+    @patch("scanner.execution.executor.get_open_positions")
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_exchange_reconciliation_blocks_opposite_direction(self, mock_killed, mock_price,
+                                                               mock_positions, conn, exec_config, scanner_config):
+        """Exchange shows BTC SHORT → skip BTC LONG (HL net position would close the SHORT)."""
+        mock_positions.return_value = [
+            {"coin": "BTC", "direction": "SHORT", "size": 0.05, "entry_price": 63000,
+             "unrealized_pnl": -50, "leverage": 5},
         ]
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is False

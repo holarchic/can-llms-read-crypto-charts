@@ -175,7 +175,9 @@ class TestPositionQueries:
         self._setup_open_position(conn, coin="BTC", direction="LONG")
         assert has_open_position("BTC", "LONG", conn) is True
         assert has_open_position("BTC", "SHORT", conn) is False
+        assert has_open_position("BTC", None, conn) is True  # coin-only check
         assert has_open_position("ETH", "LONG", conn) is False
+        assert has_open_position("ETH", None, conn) is False
 
     def test_count_open_longs(self, conn):
         self._setup_open_position(conn, direction="LONG", scan_id="s1")

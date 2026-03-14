@@ -243,12 +243,12 @@ def execute_trade(
             return er
 
         exch_has_dup = any(
-            p["coin"] == result.coin and p["direction"] == er.direction
+            p["coin"] == result.coin
             for p in exchange_positions
         )
         if exch_has_dup:
             er.skip_reason = "duplicate_position"
-            log.info("Duplicate position %s %s (exchange) — skipping", result.coin, er.direction)
+            log.info("Duplicate position %s (exchange) — skipping", result.coin)
             return er
 
         exch_long_count = sum(1 for p in exchange_positions if p["direction"] == "LONG")
@@ -262,9 +262,9 @@ def execute_trade(
             log.info("Position limit reached — skipping %s", result.coin)
             return er
 
-        if has_open_position(result.coin, er.direction, conn, exchange, mode):
+        if has_open_position(result.coin, None, conn, exchange, mode):
             er.skip_reason = "duplicate_position"
-            log.info("Duplicate position %s %s — skipping", result.coin, er.direction)
+            log.info("Duplicate position %s (DB) — skipping", result.coin)
             return er
 
         if er.direction == "LONG" and count_open_longs(conn, exchange, mode) >= exec_config.max_open_longs:

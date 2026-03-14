@@ -209,24 +209,37 @@ def count_open_positions(
 
 
 def has_open_position(
-    coin: str, direction: str, conn: sqlite3.Connection,
+    coin: str, direction: str | None, conn: sqlite3.Connection,
     exchange: str = "hyperliquid", execution_mode: str = "testnet",
 ) -> bool:
-    """Check if there's already an open position for this coin+direction."""
-    row = conn.execute(
-        """SELECT COUNT(*) as cnt FROM orders e
-        WHERE e.order_type = 'entry' AND e.status = 'FILLED'
-        AND e.coin = ? AND e.direction = ? AND e.exchange = ?
-        AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
-            (SELECT SUM(x.quantity) FROM orders x
-             WHERE x.scan_id = e.scan_id
-             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
-             AND x.status = 'FILLED'),
-            0
-        )""",
-        (coin, direction, exchange, execution_mode),
-    ).fetchone()
+    """Check if there's already an open position for this coin (optionally filtered by direction)."""
+    if direction:
+        query = """SELECT COUNT(*) as cnt FROM orders e
+            WHERE e.order_type = 'entry' AND e.status = 'FILLED'
+            AND e.coin = ? AND e.direction = ? AND e.exchange = ?
+            AND e.execution_mode = ?
+            AND e.quantity > COALESCE(
+                (SELECT SUM(x.quantity) FROM orders x
+                 WHERE x.scan_id = e.scan_id
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.status = 'FILLED'),
+                0
+            )"""
+        params = (coin, direction, exchange, execution_mode)
+    else:
+        query = """SELECT COUNT(*) as cnt FROM orders e
+            WHERE e.order_type = 'entry' AND e.status = 'FILLED'
+            AND e.coin = ? AND e.exchange = ?
+            AND e.execution_mode = ?
+            AND e.quantity > COALESCE(
+                (SELECT SUM(x.quantity) FROM orders x
+                 WHERE x.scan_id = e.scan_id
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.status = 'FILLED'),
+                0
+            )"""
+        params = (coin, exchange, execution_mode)
+    row = conn.execute(query, params).fetchone()
     return row["cnt"] > 0
 
 
