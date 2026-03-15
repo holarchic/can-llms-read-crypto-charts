@@ -8,7 +8,7 @@ from ..config import get_exchange_meta
 from ..storage import get_connection
 from .candles import fetch_and_cache
 from .metrics import compute_metrics, slice_metrics
-from .report import build_backtest_embeds, format_full_report
+from .report import build_backtest_embeds, build_distribution_embeds, format_full_report
 from .resolver import (
     TradeOutcome,
     build_llm_setup,
@@ -94,9 +94,45 @@ def main():
     parser.add_argument("--strategy", type=str, default=None, help="Filter signals by strategy version")
     parser.add_argument("--prompt-version", type=str, default=None, help="Filter LLM scans by prompt version (e.g. 2)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print per-signal details")
+    parser.add_argument("--distribution", action="store_true", help="Show signal distribution by setup type and direction")
     parser.add_argument("--discord", action="store_true", help="Post results to Discord reports channel")
     parser.add_argument("--sign-flip", action="store_true", help="Run Monte Carlo sign-flip test on expectancy")
     args = parser.parse_args()
+
+    # Distribution mode: signal counts by type/direction, no backtesting
+    if args.distribution:
+        from ..storage import signal_distribution
+        conn = get_connection()
+        dist = signal_distribution(args.days, conn, exchange=args.exchange)
+        conn.close()
+
+        if not dist["total"]:
+            print(f"No signals found for --days {args.days}")
+            sys.exit(0)
+
+        # CLI table
+        print(f"\n{'='*50}")
+        print(f"  SIGNAL DISTRIBUTION — {args.days}d")
+        print(f"{'='*50}")
+        print(f"  Total: {dist['total']}  |  Batches: {dist['batches']}")
+        print()
+        print(f"  {'Type':<4} {'Name':<24} {'N':>4} {'Long':>5} {'Short':>5}")
+        print(f"  {'-'*46}")
+        for row in dist["by_type"]:
+            print(f"  {row['setup_type']:<4} {(row['setup_name'] or ''):<24} "
+                  f"{row['count']:>4} {row['long']:>5} {row['short']:>5}")
+        print()
+        for d in dist["by_direction"]:
+            print(f"  {d['dir']}: {d['count']}", end="  ")
+        print(f"\n{'='*50}")
+
+        if args.discord:
+            from ..alerts import send_report_embeds
+            embeds = build_distribution_embeds(dist)
+            ok = send_report_embeds(embeds)
+            print("\n  Sent to Discord." if ok else "\n  Discord send failed.")
+
+        sys.exit(0)
 
     # Resolve fee rate: explicit --fee > exchange default
     meta = get_exchange_meta(args.exchange)

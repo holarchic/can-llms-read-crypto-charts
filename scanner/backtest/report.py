@@ -105,6 +105,40 @@ def _ci_verdict(report: MetricsReport) -> str:
     return "inconclusive"
 
 
+def build_distribution_embeds(dist: dict) -> list[dict]:
+    """Build Discord embeds for a weekly signal distribution report."""
+    COLOR_INFO = 0x42A5F5  # blue
+
+    # Setup type table
+    lines = ["```"]
+    lines.append(f"{'Type':<4} {'Name':<24} {'N':>4} {'Long':>5} {'Short':>5}")
+    lines.append("-" * 46)
+    for row in dist["by_type"]:
+        lines.append(
+            f"{row['setup_type']:<4} {(row['setup_name'] or ''):<24} "
+            f"{row['count']:>4} {row['long']:>5} {row['short']:>5}"
+        )
+    lines.append("```")
+
+    # Direction totals
+    dir_parts = []
+    for d in dist["by_direction"]:
+        dir_parts.append(f"{d['dir']}: {d['count']}")
+    lines.append(" | ".join(dir_parts))
+
+    embed = {
+        "title": f"Weekly Setup Distribution | {dist['days']}d",
+        "color": COLOR_INFO,
+        "fields": [
+            {"name": "Total Signals", "value": str(dist["total"]), "inline": True},
+            {"name": "Batches", "value": str(dist["batches"]), "inline": True},
+        ],
+        "description": "\n".join(lines),
+        "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+    }
+    return [embed]
+
+
 def build_backtest_embeds(
     overall: MetricsReport,
     sliced: dict[str, list[MetricsReport]],

@@ -620,6 +620,59 @@ def signal_history(
     return [dict(r) for r in rows]
 
 
+def signal_distribution(
+    days: int = 7,
+    conn: sqlite3.Connection | None = None,
+    exchange: str | None = None,
+) -> dict:
+    """Signal counts grouped by setup type and direction for distribution reports."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
+    params: list = []
+    if exchange:
+        clauses.append("exchange = ?")
+        params.append(exchange)
+    where = " AND ".join(clauses)
+
+    total = conn.execute(
+        f"SELECT COUNT(*) as cnt FROM signals WHERE {where}", params
+    ).fetchone()["cnt"]
+
+    batches = conn.execute(
+        f"SELECT COUNT(DISTINCT batch_id) as cnt FROM signals WHERE {where}", params
+    ).fetchone()["cnt"]
+
+    # By setup type with long/short split
+    by_type = conn.execute(
+        f"""SELECT setup_type, setup_name, COUNT(*) as count,
+            SUM(CASE WHEN direction = 'LONG' THEN 1 ELSE 0 END) as long,
+            SUM(CASE WHEN direction = 'SHORT' THEN 1 ELSE 0 END) as short
+        FROM signals WHERE {where}
+        GROUP BY setup_type ORDER BY setup_type""", params
+    ).fetchall()
+
+    # By direction
+    by_direction = conn.execute(
+        f"""SELECT direction as dir, COUNT(*) as count
+        FROM signals WHERE {where}
+        GROUP BY direction ORDER BY direction""", params
+    ).fetchall()
+
+    if own_conn:
+        conn.close()
+
+    return {
+        "days": days,
+        "total": total,
+        "batches": batches,
+        "by_type": [dict(r) for r in by_type],
+        "by_direction": [dict(r) for r in by_direction],
+    }
+
+
 def signal_stats(
     days: int = 7,
     conn: sqlite3.Connection | None = None,
