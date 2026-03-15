@@ -26,7 +26,7 @@ class ExecutionConfig:
     max_portfolio_exposure_pct: float = 100.0
 
     # Sanity thresholds
-    entry_price_tolerance_pct: float = 3.0
+    entry_price_tolerance_pct: float = 5.0
     entry_zone_buffer_pct: float = 2.0  # direction-aware buffer beyond entry zone
     max_price_deviation_pct: float = 30.0
     min_rr_ratio: float = 0.5
