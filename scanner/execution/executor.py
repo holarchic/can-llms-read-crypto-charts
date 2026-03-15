@@ -632,3 +632,13 @@ def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
     except Exception as exc:
         log.warning("Ops alert failed: %s", exc)
         return False
+
+
+def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
+    """Send Discord notification when a CONFIRM is skipped (not executed)."""
+    if not er.skip_reason or not config.discord_execution_webhook_url:
+        return False
+
+    detail = f" ({er.error})" if er.error else ""
+    message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
+    return _send_ops_alert(message, config)

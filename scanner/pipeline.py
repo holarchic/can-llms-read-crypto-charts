@@ -361,7 +361,7 @@ def stage4_execute(
     Each CONFIRM attempted independently. Errors caught — NEVER crashes scanner.
     Returns list of ExecutionResult.
     """
-    from .execution.executor import ExecutionResult, execute_trade
+    from .execution.executor import ExecutionResult, execute_trade, send_skip_alert
 
     if not exec_config.enabled:
         return []
@@ -380,6 +380,7 @@ def stage4_execute(
             elif er.skip_reason:
                 print(f"  {confirm.coin} {er.direction}: SKIPPED — {er.skip_reason}"
                       f"{f' ({er.error})' if er.error else ''}")
+                send_skip_alert(er, exec_config)
         except Exception as exc:
             print(f"  {confirm.coin}: execution error — {exc}")
             results.append(ExecutionResult(
