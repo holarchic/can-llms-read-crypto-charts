@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "4"
+PROMPT_VERSION = "5"
 
 import uuid
 from datetime import datetime, timezone
@@ -79,17 +79,9 @@ def _build_scanner_content(
     if signal.max_leverage:
         constraint = f"\n\nExchange constraint: Maximum leverage for this pair is {signal.max_leverage}x. Do not recommend leverage above this."
 
-    market_ctx = ""
-    if btc_context and signal.coin != "BTC":
-        market_ctx = "\n\n" + _build_btc_context(btc_context)
-    elif btc_structure and signal.coin != "BTC":
-        # Fallback to simple string if full context unavailable
-        market_ctx = (f"\n\nMarket context: BTC Daily structure is {btc_structure}."
-                      " Factor this into your directional bias and invalidation conditions.")
-
     content.append({
         "type": "text",
-        "text": f"{prefix}\n\nApply the ruleset. Identify the setup, classify, and evaluate from scratch.{constraint}{market_ctx}",
+        "text": f"{prefix}\n\nApply the ruleset. Identify the setup, classify, and evaluate from scratch.{constraint}",
     })
 
     return content
