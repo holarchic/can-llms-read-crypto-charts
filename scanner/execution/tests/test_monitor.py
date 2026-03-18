@@ -102,7 +102,7 @@ class TestSyncOrderStatus:
 
         sl_order = get_order(sl["order_id"], conn)
         assert sl_order["status"] == "FILLED"
-        assert sl_order["fill_price"] == 0  # no price available, recorded as 0
+        assert sl_order["fill_price"] is None  # no price available, recorded as NULL
 
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")

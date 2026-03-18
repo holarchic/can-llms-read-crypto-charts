@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 class SafeHyperliquid(ccxt.hyperliquid):
     """Guard against ccxt bug: None base symbol in HL spot tokens crashes load_markets."""
 
-    def fetch_spot_markets(self, params={}):
+    def fetch_spot_markets(self, params=None):
+        params = params if params is not None else {}
         try:
             return super().fetch_spot_markets(params)
         except TypeError:

@@ -24,6 +24,12 @@ from .storage import (
 log = logging.getLogger(__name__)
 
 
+def _extract_fill_price(exch_order: dict) -> float | None:
+    """Extract fill price from exchange order. Returns None if unavailable."""
+    raw = exch_order.get("average") or exch_order.get("price")
+    return float(raw) if raw else None
+
+
 def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
     """Poll exchange for order fills, update DB. Cancel counterpart orders on fill.
 
@@ -58,7 +64,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                 exch_status = exch_order.get("status", "").lower()
 
                 if exch_status == "closed":
-                    fill_price = float(exch_order.get("average") or exch_order.get("price") or 0)
+                    fill_price = _extract_fill_price(exch_order)
                     fill_qty = float(exch_order.get("filled") or order["quantity"])
                     if fill_qty < order["quantity"]:
                         log.warning(
@@ -89,7 +95,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                     partial_fill = float(exch_order.get("filled") or 0)
                     if partial_fill > 0:
                         # Partial fill before cancel — treat as fill for the filled amount
-                        fill_price = float(exch_order.get("average") or exch_order.get("price") or 0)
+                        fill_price = _extract_fill_price(exch_order)
                         log.warning(
                             "%s %s canceled with partial fill: %s of %s at %s",
                             entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,
@@ -439,7 +445,7 @@ def _market_close_position(
                 symbol, "market", exit_side, rounded_qty, price,
                 {"reduceOnly": True, "clientOrderId": cloid},
             )
-            fill_price = float(resp.get("average") or resp.get("price") or 0)
+            fill_price = _extract_fill_price(resp)
             save_order({
                 "order_id": order_id,
                 "scan_id": entry["scan_id"],
