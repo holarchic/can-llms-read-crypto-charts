@@ -10,8 +10,10 @@ from ccxt.base.errors import DuplicateOrderId
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import (
+    ExecutionResult,
     current_open_notional,
     execute_trade,
+    send_skip_alert,
     validate_execution_params,
 )
 from scanner.execution.storage import ensure_orders_table, get_orders_for_scan, save_order
@@ -1106,3 +1108,30 @@ class TestOpenOrderCap:
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should pass the cap check and fail on next (no_machine_block via balance → ...)
         assert result.skip_reason != "order_count_error"
+
+
+class TestSkipAlertSeverity:
+    """Critical vs routine skip alert formatting."""
+
+    @patch("scanner.execution.executor.requests.post")
+    def test_skip_alert_critical_includes_everyone(self, mock_post, exec_config):
+        """position_mismatch → @everyone + BLOCKED."""
+        mock_post.return_value = MagicMock(status_code=204)
+        er = ExecutionResult(coin="BTC", direction="LONG", skip_reason="position_mismatch",
+                             error="DB=0 vs exchange=1")
+        send_skip_alert(er, exec_config)
+        call_args = mock_post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "@everyone" in body["content"]
+        assert "BLOCKED" in body["content"]
+
+    @patch("scanner.execution.executor.requests.post")
+    def test_skip_alert_routine_no_everyone(self, mock_post, exec_config):
+        """position_limit → no @everyone, SKIPPED prefix."""
+        mock_post.return_value = MagicMock(status_code=204)
+        er = ExecutionResult(coin="ETH", direction="SHORT", skip_reason="position_limit")
+        send_skip_alert(er, exec_config)
+        call_args = mock_post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "@everyone" not in body["content"]
+        assert "SKIPPED" in body["content"]

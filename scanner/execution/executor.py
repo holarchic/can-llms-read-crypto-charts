@@ -712,11 +712,23 @@ def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
         return False
 
 
+_CRITICAL_SKIP_REASONS = frozenset({
+    "position_mismatch", "reconciliation_error", "unprotected_position",
+    "kill_switch", "btc_vol_gate_error", "order_count_error",
+})
+
+
 def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
-    """Send Discord notification when a CONFIRM is skipped (not executed)."""
+    """Send Discord notification when a CONFIRM is skipped (not executed).
+
+    Critical skips get @everyone + BLOCKED prefix. Routine skips get SKIPPED.
+    """
     if not er.skip_reason or not config.discord_execution_webhook_url:
         return False
 
     detail = f" ({er.error})" if er.error else ""
-    message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
+    if er.skip_reason in _CRITICAL_SKIP_REASONS:
+        message = f"@everyone **BLOCKED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
+    else:
+        message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
     return _send_ops_alert(message, config)
