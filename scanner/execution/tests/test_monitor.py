@@ -984,7 +984,7 @@ class TestPositionTimeout:
     def test_happy_path_times_out_old_position(self, mock_auth, mock_cancel, mock_post, config, conn):
         """Entry filled 80h ago (timeout=72) → market close + timeout_close saved + SL cancelled + alert."""
         config.position_timeout_hours = 72
-        config.discord_execution_webhook_url = "https://discord.com/test"
+        config.discord_ops_webhook_url = "https://discord.com/ops"
         self._make_old_entry(conn, hours_ago=80)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)

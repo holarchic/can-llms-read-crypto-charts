@@ -524,7 +524,7 @@ def _market_close_position(
 
 def _send_timeout_alert(entry: dict, age_hours: float, qty: float, config: ExecutionConfig) -> bool:
     """Send Discord notification for a timed-out position."""
-    webhook = config.discord_execution_webhook_url
+    webhook = config.discord_ops_webhook_url
     if not webhook:
         return False
     message = (

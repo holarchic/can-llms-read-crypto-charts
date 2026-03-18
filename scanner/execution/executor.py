@@ -648,7 +648,7 @@ def _place_take_profit(
 
 def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult, config: ExecutionConfig) -> bool:
     """Send Discord notification for executed trade."""
-    if not config.discord_execution_webhook_url:
+    if not config.discord_ops_webhook_url:
         return False
 
     pos = exec_result.position_size
@@ -670,7 +670,7 @@ def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult,
 
     try:
         resp = requests.post(
-            config.discord_execution_webhook_url,
+            config.discord_ops_webhook_url,
             json={"embeds": [embed]},
             timeout=10,
         )
@@ -700,7 +700,7 @@ def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
 
 def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
     """Send operational Discord alert."""
-    webhook = config.discord_execution_webhook_url
+    webhook = config.discord_ops_webhook_url
     if not webhook:
         return False
 
