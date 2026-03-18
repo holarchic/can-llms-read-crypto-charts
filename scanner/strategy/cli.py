@@ -1,4 +1,4 @@
-"""Strategy CLI — create, list, activate, replay, compare, sweep, backfill, report, disable."""
+"""Strategy CLI — create, list, activate, replay, sweep, backfill, report, disable."""
 
 import argparse
 import sys
@@ -11,7 +11,6 @@ from ..backtest.metrics import deflated_sharpe_ratio
 from ..backtest.report import format_summary
 from ..storage import get_connection
 from .calibrate import build_calibration_embeds, format_calibration, run_calibration
-from .compare import format_comparison
 from .models import Strategy
 from .replay import replay
 from .report import (
@@ -127,40 +126,6 @@ def cmd_replay(args):
     if metrics:
         print(f"\n{format_summary(metrics)}")
 
-    conn.close()
-
-
-def cmd_compare(args):
-    conn = get_connection()
-    strat_a = get_strategy(args.id_a, conn)
-    strat_b = get_strategy(args.id_b, conn)
-
-    if not strat_a or not strat_b:
-        missing = args.id_a if not strat_a else args.id_b
-        print(f"Strategy '{missing}' not found.")
-        conn.close()
-        sys.exit(1)
-
-    coins = [c.upper() for c in args.coin] if args.coin else None
-
-    print(f"Replaying strategy A: {strat_a.strategy_id}...")
-    _, metrics_a = replay(
-        strat_a, args.since, args.until, conn,
-        coins=coins, resolve=True, verbose=args.verbose,
-    )
-
-    print(f"Replaying strategy B: {strat_b.strategy_id}...")
-    _, metrics_b = replay(
-        strat_b, args.since, args.until, conn,
-        coins=coins, resolve=True, verbose=args.verbose,
-    )
-
-    if not metrics_a or not metrics_b:
-        print("Could not resolve signals for one or both strategies.")
-        conn.close()
-        sys.exit(1)
-
-    print(f"\n{format_comparison(metrics_a, metrics_b)}")
     conn.close()
 
 
@@ -519,16 +484,6 @@ def main():
     p_replay.add_argument("--resolve", action="store_true", help="Also resolve and compute metrics")
     p_replay.add_argument("-v", "--verbose", action="store_true")
     p_replay.set_defaults(func=cmd_replay)
-
-    # compare
-    p_compare = sub.add_parser("compare", help="A/B compare two strategies")
-    p_compare.add_argument("id_a", help="Strategy A")
-    p_compare.add_argument("id_b", help="Strategy B")
-    p_compare.add_argument("--since", required=True, help="Start date")
-    p_compare.add_argument("--until", required=True, help="End date")
-    p_compare.add_argument("--coin", nargs="*", help="Filter by coin(s)")
-    p_compare.add_argument("-v", "--verbose", action="store_true")
-    p_compare.set_defaults(func=cmd_compare)
 
     # sweep
     p_sweep = sub.add_parser("sweep", help="Grid search over resolution params")
