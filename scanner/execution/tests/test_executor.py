@@ -771,6 +771,51 @@ class TestExchangeReconciliation:
         assert any("mismatch" in r.message.lower() for r in caplog.records)
 
 
+class TestFailPolicy:
+    """Fail-open in testnet, fail-closed in live."""
+
+    @patch("scanner.data.fetch_candles", side_effect=Exception("API timeout"))
+    def test_btc_vol_gate_error_blocks_live(self, mock_fetch, conn, scanner_config):
+        """BTC vol gate fetch failure in live mode → blocks trade."""
+        live_config = ExecutionConfig(
+            enabled=True, mode="live", private_key="0xtest",
+            wallet_address="0xwallet", risk_pct=1.0,
+            btc_vol_gate_enabled=True,
+        )
+        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        assert result.skip_reason == "btc_vol_gate_error"
+
+    @patch("scanner.data.fetch_candles", side_effect=Exception("API timeout"))
+    def test_btc_vol_gate_error_passes_testnet(self, mock_fetch, conn, exec_config, scanner_config):
+        """BTC vol gate fetch failure in testnet → proceeds past gate."""
+        exec_config.btc_vol_gate_enabled = True
+        sr = _make_scan_result(machine_block=None)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        assert result.skip_reason != "btc_vol_gate_error"
+
+    @patch("scanner.execution.executor.get_open_positions", side_effect=Exception("API timeout"))
+    def test_reconciliation_error_blocks_live(self, mock_positions, conn, scanner_config):
+        """Exchange position fetch failure in live mode → blocks trade."""
+        live_config = ExecutionConfig(
+            enabled=True, mode="live", private_key="0xtest",
+            wallet_address="0xwallet", risk_pct=1.0,
+            btc_vol_gate_enabled=False,
+        )
+        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        assert result.skip_reason == "reconciliation_error"
+
+    @patch("scanner.execution.executor.get_open_positions", side_effect=Exception("API timeout"))
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_reconciliation_error_passes_testnet(self, mock_killed, mock_price,
+                                                  mock_positions, conn, exec_config, scanner_config):
+        """Exchange position fetch failure in testnet → proceeds past gate."""
+        exec_config.max_concurrent_positions = 0
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        # Hits position_limit from DB checks, not reconciliation_error
+        assert result.skip_reason == "position_limit"
+
+
 class TestCurrentOpenNotional:
     @patch("scanner.execution.executor.get_auth_exchange")
     def test_uses_live_price(self, mock_auth, conn, exec_config):

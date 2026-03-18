@@ -165,7 +165,12 @@ def execute_trade(
                     log.warning("%s: %s", result.coin, er.error)
                     return er
         except Exception as exc:
-            log.warning("BTC volatility gate fetch failed: %s — proceeding", exc)
+            if exec_config.mode == "live":
+                er.skip_reason = "btc_vol_gate_error"
+                er.error = f"BTC vol gate fetch failed: {exc}"
+                log.error("BTC vol gate fetch failed in LIVE: %s — blocking trade", exc)
+                return er
+            log.warning("BTC volatility gate fetch failed: %s — proceeding (testnet)", exc)
 
     # 0.6 Exchange position reconciliation — ground truth from exchange
     exchange_positions = None
@@ -176,7 +181,12 @@ def execute_trade(
         if db_count != exch_count:
             log.warning("Position count mismatch: DB=%d, exchange=%d", db_count, exch_count)
     except Exception as exc:
-        log.warning("Exchange position fetch failed: %s — falling back to DB", exc)
+        if exec_config.mode == "live":
+            er.skip_reason = "reconciliation_error"
+            er.error = f"exchange position fetch failed: {exc}"
+            log.error("Reconciliation failed in LIVE: %s — blocking trade", exc)
+            return er
+        log.warning("Exchange position fetch failed: %s — falling back to DB (testnet)", exc)
 
     # 1. Check machine_block exists
     mb = result.machine_block
