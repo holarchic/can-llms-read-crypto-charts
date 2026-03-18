@@ -795,6 +795,102 @@ class TestPartialSLTP2Fill:
         mock_exchange.create_order.assert_not_called()
 
 
+class TestLivePositionQtyCrossCheck:
+    """Replacement orders cross-check qty against exchange position."""
+
+    @patch("scanner.execution.monitor.get_open_positions")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_replacement_uses_exchange_qty_on_mismatch(self, mock_auth, mock_cancel,
+                                                        mock_sleep, mock_positions, config, conn):
+        """DB says 0.04 residual, exchange says 0.03 → SL placed at 0.03."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_positions.return_value = [
+            {"coin": "BTC", "direction": "LONG", "size": 0.03, "entry_price": 62000,
+             "unrealized_pnl": 0, "leverage": 5},
+        ]
+
+        mock_exchange = MagicMock()
+        # SL partially fills 0.06 of 0.1 → DB residual = 0.04, exchange = 0.03
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.06,
+        }
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL re-placed at exchange qty (0.03), not DB residual (0.04)
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["quantity"] == pytest.approx(0.03)
+
+    @patch("scanner.execution.monitor.get_open_positions", side_effect=Exception("API timeout"))
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_replacement_falls_back_to_db_on_error(self, mock_auth, mock_cancel,
+                                                     mock_sleep, mock_positions, config, conn):
+        """Exchange position fetch raises → SL placed at DB-derived qty."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.06,
+        }
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # Falls back to DB residual (0.1 - 0.06 = 0.04)
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["quantity"] == pytest.approx(0.04)
+
+    @patch("scanner.execution.monitor.get_open_positions")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_replacement_logs_mismatch(self, mock_auth, mock_cancel, mock_sleep,
+                                        mock_positions, config, conn, caplog):
+        """Qty mismatch >1% → warning logged."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_positions.return_value = [
+            {"coin": "BTC", "direction": "LONG", "size": 0.03, "entry_price": 62000,
+             "unrealized_pnl": 0, "leverage": 5},
+        ]
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.06,
+        }
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="scanner.execution.monitor"):
+            sync_order_status(config, conn)
+
+        assert any("qty mismatch" in r.message for r in caplog.records)
+
+
 class TestMonitorDiscordAlerts:
     """Monitor CLI sends Discord alerts for missing_sl and phantom_sl."""
 

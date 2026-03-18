@@ -10,7 +10,7 @@ from scanner.config import get_exchange_meta
 from scanner.storage import get_connection
 
 from .config import ExecutionConfig
-from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders
+from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
@@ -188,6 +188,27 @@ def _handle_exit_fill(
             )
 
 
+def _get_live_position_qty(
+    coin: str, direction: str, db_qty: float, config: ExecutionConfig,
+) -> float:
+    """Cross-check DB qty against exchange. Use exchange if available, log mismatch."""
+    try:
+        positions = get_open_positions(config)
+        for pos in positions:
+            if pos["coin"] == coin and pos["direction"] == direction:
+                exch_qty = pos["size"]
+                if abs(exch_qty - db_qty) / max(db_qty, 1e-10) > 0.01:
+                    log.warning(
+                        "%s %s qty mismatch: DB=%.6f exchange=%.6f — using exchange",
+                        coin, direction, db_qty, exch_qty,
+                    )
+                return exch_qty
+        log.warning("%s %s not found on exchange — using DB qty %.6f", coin, direction, db_qty)
+    except Exception as exc:
+        log.warning("Position qty check failed for %s: %s — using DB", coin, exc)
+    return db_qty
+
+
 def _handle_partial_exit_fill(
     filled_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
@@ -195,6 +216,9 @@ def _handle_partial_exit_fill(
 ) -> None:
     """SL or TP2 partially filled: cancel remaining orders, re-place at residual qty."""
     residual_qty = filled_order["quantity"] - fill_qty
+    residual_qty = _get_live_position_qty(
+        entry["coin"], entry["direction"], residual_qty, config,
+    )
 
     # Cancel all remaining PLACED orders on exchange
     _cancel_remaining_orders(
@@ -291,6 +315,9 @@ def _handle_tp1_fill(
     """TP1 filled: cancel old SL, place replacement SL at remaining quantity, keep TP2."""
     tp1_qty = fill_qty if fill_qty is not None else tp1_order.get("quantity", 0)
     remaining_qty = entry.get("quantity", 0) - tp1_qty
+    remaining_qty = _get_live_position_qty(
+        entry["coin"], entry["direction"], remaining_qty, config,
+    )
 
     if remaining_qty <= 0:
         # TP1 was full size — treat as full close
