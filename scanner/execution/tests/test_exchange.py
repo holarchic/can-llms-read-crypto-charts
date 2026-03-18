@@ -89,6 +89,25 @@ class TestGetAuthExchange:
         assert mock_cls.call_count == 2
 
 
+    @patch("scanner.execution.exchange.ccxt")
+    @patch("scanner.execution.exchange.SafeHyperliquid")
+    def test_different_exchanges_get_different_instances(self, mock_hl_cls, mock_ccxt, testnet_config):
+        """Same mode+wallet but different exchange → separate instances."""
+        mock_hl_cls.return_value = MagicMock()
+        mock_ccxt.bybit.return_value = MagicMock()
+
+        first = get_auth_exchange(testnet_config)  # exchange="hyperliquid"
+
+        bybit_config = ExecutionConfig(
+            mode="testnet",
+            private_key="0xtest_key",
+            wallet_address="0xtest_wallet",
+            exchange="bybit",
+        )
+        second = get_auth_exchange(bybit_config)
+        assert first is not second
+
+
 class TestFetchCurrentPrice:
     @patch("scanner.execution.exchange.get_auth_exchange")
     def test_returns_last_price(self, mock_get_auth, testnet_config):

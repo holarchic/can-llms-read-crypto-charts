@@ -19,19 +19,19 @@ class SafeHyperliquid(ccxt.hyperliquid):
             log.warning("fetch_spot_markets TypeError (ccxt bug) — skipping spot markets")
             return []
 
-# Singleton authenticated exchanges — keyed by (mode, wallet_address) so
-# different configs (testnet vs live, multi-wallet) get separate instances.
+# Singleton authenticated exchanges — keyed by (exchange, mode, wallet_address)
+# so different configs get separate instances.
 # Thread safety: not locked — relies on flock in cron ensuring one scanner/monitor process.
-_auth_exchanges: dict[tuple[str, str], object] = {}
+_auth_exchanges: dict[tuple[str, str, str], object] = {}
 
 
 def get_auth_exchange(config):
     """Get or create an authenticated ccxt HyperLiquid connection.
 
     Testnet mode: sets sandbox. Live mode: mainnet.
-    Cached per (mode, wallet_address) key.
+    Cached per (exchange, mode, wallet_address) key.
     """
-    key = (config.mode, config.wallet_address)
+    key = (config.exchange, config.mode, config.wallet_address)
     if key in _auth_exchanges:
         return _auth_exchanges[key]
 
