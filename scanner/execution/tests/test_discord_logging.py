@@ -128,7 +128,7 @@ class TestConfigureMonitorLogging:
 class TestMonitorCrashWrapper:
     """Tests for crash handling in _cmd_monitor."""
 
-    @patch("scanner.execution.executor._send_ops_alert")
+    @patch("scanner.execution.executor._send_errors_alert")
     @patch("scanner.execution.monitor.sync_order_status", side_effect=RuntimeError("exchange down"))
     def test_monitor_crash_sends_ops_alert(self, mock_sync, mock_alert):
         from scanner.execution.__main__ import _cmd_monitor
@@ -141,7 +141,7 @@ class TestMonitorCrashWrapper:
         assert "Monitor CRASHED" in msg
         assert "exchange down" in msg
 
-    @patch("scanner.execution.executor._send_ops_alert")
+    @patch("scanner.execution.executor._send_errors_alert")
     @patch("scanner.execution.monitor.sync_order_status", side_effect=RuntimeError("boom"))
     def test_monitor_crash_still_flushes(self, mock_sync, mock_alert):
         from scanner.execution.__main__ import _cmd_monitor

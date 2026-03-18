@@ -712,6 +712,20 @@ def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
         return False
 
 
+def _send_errors_alert(message: str, config: ExecutionConfig) -> bool:
+    """Send alert to Discord errors channel."""
+    webhook = config.discord_errors_webhook_url
+    if not webhook:
+        return False
+
+    try:
+        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.warning("Errors alert failed: %s", exc)
+        return False
+
+
 def preflight_check(exec_config: ExecutionConfig) -> list[str]:
     """Validate execution readiness. Returns list of failures (empty = OK)."""
     failures = []

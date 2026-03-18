@@ -71,6 +71,7 @@ class TestLoadExecutionConfig:
             "GCP_PROJECT_ID": "",
             "DISCORD_OPS_WEBHOOK_URL": "https://discord.com/ops",
             "DISCORD_URGENT_WEBHOOK_URL": "https://discord.com/urgent",
+            "DISCORD_ERRORS_WEBHOOK_URL": "https://discord.com/errors",
         }
         with patch.dict("os.environ", env, clear=False):
             with patch("scanner.execution.config.get_secret_or_env", side_effect=lambda s, e, p, **kw: env.get(e, "")):
@@ -84,6 +85,7 @@ class TestLoadExecutionConfig:
         assert cfg.max_open_longs == 3
         assert cfg.discord_ops_webhook_url == "https://discord.com/ops"
         assert cfg.discord_urgent_webhook_url == "https://discord.com/urgent"
+        assert cfg.discord_errors_webhook_url == "https://discord.com/errors"
 
     def test_defaults_when_env_empty(self):
         with patch.dict("os.environ", {}, clear=True):

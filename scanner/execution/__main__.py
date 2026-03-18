@@ -40,7 +40,7 @@ Examples:
     if args.command == "monitor":
         from .discord_logging import configure_monitor_logging
 
-        discord_handler = configure_monitor_logging(config.discord_ops_webhook_url)
+        discord_handler = configure_monitor_logging(config.discord_errors_webhook_url)
         _cmd_monitor(config, discord_handler)
     elif args.command == "positions":
         _cmd_positions(config)
@@ -61,7 +61,7 @@ def _cmd_monitor(config, discord_handler=None):
 
     from scanner.storage import get_connection
 
-    from .executor import _send_ops_alert
+    from .executor import _send_errors_alert
     from .monitor import check_positions, enforce_position_timeouts, sync_order_status
 
     try:
@@ -92,7 +92,7 @@ def _cmd_monitor(config, discord_handler=None):
         conn.close()
     except Exception as exc:
         traceback.print_exc()
-        _send_ops_alert(f"Monitor CRASHED: {type(exc).__name__}: {exc}", config)
+        _send_errors_alert(f"Monitor CRASHED: {type(exc).__name__}: {exc}", config)
     finally:
         if discord_handler:
             discord_handler.flush_to_discord()
