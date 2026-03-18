@@ -160,6 +160,75 @@ class TestGetOpenPositions:
         assert positions[0]["direction"] == "LONG"
 
 
+class TestSideNormalization:
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_side_long_uppercase(self, mock_get_auth, testnet_config):
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "BTC/USDC:USDC", "contracts": 0.1, "side": "LONG",
+             "entryPrice": 62000, "unrealizedPnl": 0, "leverage": 5},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config)
+        assert len(positions) == 1
+        assert positions[0]["direction"] == "LONG"
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_side_short_lowercase(self, mock_get_auth, testnet_config):
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "ETH/USDC:USDC", "contracts": 1.0, "side": "short",
+             "entryPrice": 3000, "unrealizedPnl": 0, "leverage": 3},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config)
+        assert len(positions) == 1
+        assert positions[0]["direction"] == "SHORT"
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_side_buy_maps_long(self, mock_get_auth, testnet_config):
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "SOL/USDC:USDC", "contracts": 10.0, "side": "buy",
+             "entryPrice": 150, "unrealizedPnl": 0, "leverage": 5},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config)
+        assert len(positions) == 1
+        assert positions[0]["direction"] == "LONG"
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_side_sell_maps_short(self, mock_get_auth, testnet_config):
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "SOL/USDC:USDC", "contracts": 10.0, "side": "sell",
+             "entryPrice": 150, "unrealizedPnl": 0, "leverage": 5},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config)
+        assert len(positions) == 1
+        assert positions[0]["direction"] == "SHORT"
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_side_unknown_skipped(self, mock_get_auth, testnet_config, caplog):
+        """Empty, None, and unknown side values are skipped with log.error."""
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "A/USDC:USDC", "contracts": 1.0, "side": "",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+            {"symbol": "B/USDC:USDC", "contracts": 1.0, "side": None,
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+            {"symbol": "C/USDC:USDC", "contracts": 1.0, "side": "unknown",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        import logging
+        with caplog.at_level(logging.ERROR, logger="scanner.execution.exchange"):
+            positions = get_open_positions(testnet_config)
+        assert len(positions) == 0
+        assert caplog.text.count("Unknown position side") == 3
+
+
 class TestCancelOrder:
     @patch("scanner.execution.exchange.get_auth_exchange")
     def test_cancel_success(self, mock_get_auth, testnet_config):

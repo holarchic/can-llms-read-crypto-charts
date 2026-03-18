@@ -8,6 +8,8 @@ from scanner.config import get_exchange_meta
 
 log = logging.getLogger(__name__)
 
+_SIDE_MAP = {"LONG": "LONG", "BUY": "LONG", "SHORT": "SHORT", "SELL": "SHORT"}
+
 
 class SafeHyperliquid(ccxt.hyperliquid):
     """Guard against ccxt bug: None base symbol in HL spot tokens crashes load_markets."""
@@ -88,10 +90,14 @@ def get_open_positions(config) -> list[dict]:
         if size == 0:
             continue
         coin = pos["symbol"].split("/")[0]
-        side = pos.get("side", "").upper()
+        side_upper = pos.get("side", "").upper() if isinstance(pos.get("side"), str) else ""
+        direction = _SIDE_MAP.get(side_upper)
+        if direction is None:
+            log.error("Unknown position side '%s' for %s — skipping", pos.get("side"), coin)
+            continue
         result.append({
             "coin": coin,
-            "direction": "LONG" if side == "LONG" else "SHORT",
+            "direction": direction,
             "size": abs(size),
             "entry_price": float(pos.get("entryPrice", 0)),
             "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
