@@ -1024,3 +1024,18 @@ class TestCurrentOpenNotional:
         """No open positions → 0.0."""
         result = current_open_notional(exec_config, conn)
         assert result == 0.0
+
+    def test_exposure_uses_exchange_positions_when_available(self, conn, exec_config):
+        """Exchange positions provided → uses exchange truth, skips DB/ticker."""
+        exchange_positions = [
+            {"coin": "ETH", "direction": "LONG", "size": 2.0, "entry_price": 3000},
+            {"coin": "SOL", "direction": "SHORT", "size": -50.0, "entry_price": 150},
+        ]
+        result = current_open_notional(exec_config, conn, exchange_positions=exchange_positions)
+        # abs(2.0)*3000 + abs(-50.0)*150 = 6000 + 7500 = 13500
+        assert result == pytest.approx(13500.0)
+
+    def test_exposure_falls_back_to_db(self, conn, exec_config):
+        """No exchange positions → falls back to DB (empty DB = 0.0)."""
+        result = current_open_notional(exec_config, conn, exchange_positions=None)
+        assert result == 0.0

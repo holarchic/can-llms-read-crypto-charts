@@ -104,11 +104,23 @@ def validate_execution_params(machine_block: dict) -> list[str]:
     return errors
 
 
-def current_open_notional(exec_config: ExecutionConfig, conn) -> float:
-    """Sum notional of open positions using current exchange prices.
+def current_open_notional(
+    exec_config: ExecutionConfig,
+    conn,
+    exchange_positions: list[dict] | None = None,
+) -> float:
+    """Sum notional of open positions.
 
-    Falls back to entry_price if price fetch fails for any position.
+    When exchange_positions is provided, uses exchange truth (size * entry_price).
+    Otherwise falls back to DB positions with live price lookups.
     """
+    if exchange_positions is not None:
+        return sum(
+            abs(pos.get("size", 0)) * pos.get("entry_price", 0)
+            for pos in exchange_positions
+        )
+
+    # Fallback to DB positions with live price lookups
     positions = get_open_position_coins(conn, exec_config.exchange, exec_config.mode)
     if not positions:
         return 0.0
@@ -311,7 +323,9 @@ def execute_trade(
         return er
 
     if exec_config.max_portfolio_exposure_pct < 100:
-        open_notional = current_open_notional(exec_config, conn)
+        open_notional = current_open_notional(
+            exec_config, conn, exchange_positions=exchange_positions,
+        )
         exposure_pct = (open_notional / balance * 100) if balance > 0 else 0
         if exposure_pct >= exec_config.max_portfolio_exposure_pct:
             er.skip_reason = "exposure_limit"
