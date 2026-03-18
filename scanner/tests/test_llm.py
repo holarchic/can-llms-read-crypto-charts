@@ -88,6 +88,21 @@ class TestParseMachineBlock:
         text = "<!-- MACHINE_BLOCK\n[1, 2, 3]\nMACHINE_BLOCK -->"
         assert parse_machine_block(text) is None
 
+    def test_rejects_long_stop_above_entry(self):
+        """LONG with stop above entry_low rejected at parse time."""
+        assert parse_machine_block(_wrap(_valid_block(stop_loss=63000.0))) is None
+
+    def test_rejects_zero_price(self):
+        assert parse_machine_block(_wrap(_valid_block(entry_low=0))) is None
+
+    def test_rejects_confidence_out_of_range(self):
+        assert parse_machine_block(_wrap(_valid_block(confidence=0))) is None
+
+    def test_valid_block_passes_with_validation(self):
+        """Regression: default valid block still passes."""
+        result = parse_machine_block(_wrap(_valid_block()))
+        assert result is not None
+
 
 # --- TestValidateExecutionParams ---
 

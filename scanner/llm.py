@@ -295,6 +295,11 @@ def parse_machine_block(text: str) -> dict | None:
             return None
         data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
 
+    # Business-rule validation — reject blocks with bad geometry/ranges
+    valid, _errors = validate_execution_params(data)
+    if not valid:
+        return None
+
     return data
 
 
