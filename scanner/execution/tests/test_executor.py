@@ -234,16 +234,25 @@ class TestExecuteTrade:
 
     def test_skip_stale_signal(self, conn, exec_config, scanner_config):
         from datetime import timedelta
+        old_detected = datetime.now(timezone.utc) - timedelta(minutes=35)
+        sr = _make_scan_result(detected_at=old_detected)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "stale_signal"
+
+    def test_skip_stale_signal_falls_back_to_timestamp(self, conn, exec_config, scanner_config):
+        """When detected_at is None, staleness uses timestamp."""
+        from datetime import timedelta
         old_timestamp = datetime.now(timezone.utc) - timedelta(minutes=35)
-        sr = _make_scan_result(timestamp=old_timestamp)
+        sr = _make_scan_result(timestamp=old_timestamp, detected_at=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "stale_signal"
 
     def test_fresh_signal_passes_staleness(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        fresh_timestamp = datetime.now(timezone.utc) - timedelta(minutes=10)
-        sr = _make_scan_result(timestamp=fresh_timestamp, machine_block=None)
+        fresh_detected = datetime.now(timezone.utc) - timedelta(minutes=10)
+        sr = _make_scan_result(detected_at=fresh_detected, machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should pass staleness but fail on no_machine_block (next check)
         assert result.skip_reason == "no_machine_block"

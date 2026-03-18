@@ -142,7 +142,9 @@ def execute_trade(
     er.direction = result.setup_signal.direction.value if result.setup_signal else ""
 
     # 0. Staleness guard — reject signals older than 30 minutes
-    age_seconds = (datetime.now(timezone.utc) - result.timestamp).total_seconds()
+    #    Use detected_at (screener time) when available, not analysis completion time
+    staleness_ref = result.detected_at or result.timestamp
+    age_seconds = (datetime.now(timezone.utc) - staleness_ref).total_seconds()
     if age_seconds > 1800:
         er.skip_reason = "stale_signal"
         er.error = f"Signal age {age_seconds / 60:.0f}m exceeds 30m limit"

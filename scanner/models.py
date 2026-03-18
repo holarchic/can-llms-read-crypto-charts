@@ -1,7 +1,7 @@
 """Data models for the scanner pipeline."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -111,6 +111,7 @@ class SetupSignal:
     description: str  # human-readable, used for logging
     max_leverage: int | None = None  # exchange max leverage for this pair
     score_components: ScoreComponents | None = None  # individual factors for calibration
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -128,3 +129,4 @@ class ScanResult:
     alerted: bool = False
     llm_confidence: int | None = None
     machine_block: dict | None = None
+    detected_at: datetime | None = None

@@ -217,4 +217,5 @@ def analyze_for_scanner(
         cost_usd=cost,
         llm_confidence=llm_confidence,
         machine_block=machine_block,
+        detected_at=signal.detected_at if signal else None,
     )
