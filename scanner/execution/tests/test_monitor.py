@@ -503,7 +503,7 @@ class TestPartialExitHandling:
     def test_tp1_sl_replacement_exhausted_sends_urgent(self, mock_auth, mock_cancel,
                                                         mock_sleep, mock_post, config, conn):
         """All 3 SL replacement attempts fail → URGENT Discord alert sent."""
-        config.discord_execution_webhook_url = "https://discord.com/test"
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -736,7 +736,7 @@ class TestPartialSLTP2Fill:
     def test_sl_partial_fill_replacement_fails_sends_alert(self, mock_auth, mock_cancel,
                                                             mock_sleep, mock_post, config, conn):
         """SL partial fill, replacement fails after retries → urgent alert sent."""
-        config.discord_execution_webhook_url = "https://discord.com/test"
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -1081,7 +1081,7 @@ class TestPositionTimeout:
     def test_all_retries_fail_sends_urgent(self, mock_auth, mock_sleep, mock_post, config, conn):
         """All 3 retries fail → no order saved, urgent alert sent."""
         config.position_timeout_hours = 72
-        config.discord_execution_webhook_url = "https://discord.com/test"
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
         self._make_old_entry(conn, hours_ago=80)
 
         mock_exchange = MagicMock()

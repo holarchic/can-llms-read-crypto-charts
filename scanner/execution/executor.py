@@ -682,7 +682,7 @@ def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult,
 
 def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
     """Send URGENT Discord alert (e.g., SL placement failure)."""
-    webhook = config.discord_execution_webhook_url
+    webhook = config.discord_urgent_webhook_url
     if not webhook:
         return False
 
@@ -739,14 +739,24 @@ _CRITICAL_SKIP_REASONS = frozenset({
 def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
     """Send Discord notification when a CONFIRM is skipped (not executed).
 
-    Critical skips get @everyone + BLOCKED prefix. Routine skips get SKIPPED.
+    Critical skips get @everyone + BLOCKED prefix → urgent channel.
+    Routine skips get SKIPPED → ops channel.
     """
-    if not er.skip_reason or not config.discord_execution_webhook_url:
+    if not er.skip_reason:
         return False
 
     detail = f" ({er.error})" if er.error else ""
     if er.skip_reason in _CRITICAL_SKIP_REASONS:
         message = f"@everyone **BLOCKED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
+        webhook = config.discord_urgent_webhook_url
+        if not webhook:
+            return False
+        try:
+            resp = requests.post(webhook, json={"content": message}, timeout=10)
+            return resp.status_code == 204
+        except Exception as exc:
+            log.warning("Critical skip alert failed: %s", exc)
+            return False
     else:
         message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
-    return _send_ops_alert(message, config)
+        return _send_ops_alert(message, config)

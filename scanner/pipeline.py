@@ -326,7 +326,7 @@ def stage3_alert(
         if verbose:
             print(format_alert_text(result))
 
-        if not skip_discord and config.discord_webhook_url:
+        if not skip_discord and config.discord_urgent_webhook_url:
             exchange_label = get_exchange_meta(config.exchange)["label"]
             success = send_alert(result, config, exchange_label=exchange_label)
             if success:

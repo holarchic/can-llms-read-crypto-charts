@@ -6,10 +6,10 @@ from scanner.alerts import COLOR_ERROR, COLOR_OK, send_ops_log, send_report_embe
 from scanner.config import ScannerConfig
 
 
-def _cfg(ops_url="https://ops.hook", reports_url="", main_url=""):
+def _cfg(ops_url="https://ops.hook", reports_url="", urgent_url=""):
     return ScannerConfig(
         anthropic_api_key="",
-        discord_webhook_url=main_url,
+        discord_urgent_webhook_url=urgent_url,
         discord_reports_webhook_url=reports_url,
         discord_ops_webhook_url=ops_url,
     )
@@ -83,15 +83,15 @@ class TestSendReportEmbeds:
         assert payload["embeds"] == embeds
 
     def test_no_webhook_returns_false(self):
-        result = send_report_embeds([{"title": "X"}], _cfg(ops_url="", reports_url="", main_url=""))
+        result = send_report_embeds([{"title": "X"}], _cfg(ops_url="", reports_url=""))
         assert result is False
 
     @patch("scanner.alerts.requests.post")
-    def test_falls_back_to_main_webhook(self, mock_post):
+    def test_falls_back_to_ops_webhook(self, mock_post):
         mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.raise_for_status = MagicMock()
 
-        send_report_embeds([{"title": "X"}], _cfg(ops_url="", reports_url="", main_url="https://main.hook"))
+        send_report_embeds([{"title": "X"}], _cfg(ops_url="https://ops.hook", reports_url=""))
 
         url = mock_post.call_args[0][0]
-        assert url == "https://main.hook"
+        assert url == "https://ops.hook"

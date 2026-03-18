@@ -51,6 +51,8 @@ class ExecutionConfig:
 
     # Discord
     discord_execution_webhook_url: str = ""
+    discord_ops_webhook_url: str = ""
+    discord_urgent_webhook_url: str = ""
 
     def __post_init__(self):
         if self.mode not in ("testnet", "live"):
@@ -90,4 +92,6 @@ def load_execution_config() -> ExecutionConfig:
         gcp_project_id=gcp_project,
         position_timeout_hours=int(os.getenv("EXECUTION_POSITION_TIMEOUT_HOURS", "72")),
         discord_execution_webhook_url=os.getenv("DISCORD_EXECUTION_WEBHOOK_URL", ""),
+        discord_ops_webhook_url=os.getenv("DISCORD_OPS_WEBHOOK_URL", ""),
+        discord_urgent_webhook_url=os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""),
     )

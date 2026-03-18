@@ -381,7 +381,7 @@ def _handle_tp1_fill(
 
 def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
     """Send URGENT Discord alert when SL replacement exhausts retries."""
-    webhook = config.discord_execution_webhook_url
+    webhook = config.discord_urgent_webhook_url
     if not webhook:
         return False
     message = (f"@everyone **URGENT**: SL replacement FAILED for {coin} {direction} "

@@ -48,7 +48,7 @@ def get_exchange_meta(exchange_id: str) -> dict:
 class ScannerConfig:
     # API keys
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
-    discord_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_WEBHOOK_URL", ""))
+    discord_urgent_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""))
     discord_reports_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_REPORTS_WEBHOOK_URL", ""))
     discord_ops_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_OPS_WEBHOOK_URL", ""))
 

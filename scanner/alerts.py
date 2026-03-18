@@ -99,7 +99,7 @@ def send_alert(
     Attaches the 4H chart image if available.
     """
     cfg = config or ScannerConfig()
-    if not cfg.discord_webhook_url:
+    if not cfg.discord_urgent_webhook_url:
         return False
 
     embed = _build_embed(result, exchange_label=exchange_label)
@@ -120,7 +120,7 @@ def send_alert(
         if chart_file and chart_file.exists():
             # Multipart: embed as JSON + chart as file
             resp = requests.post(
-                cfg.discord_webhook_url,
+                cfg.discord_urgent_webhook_url,
                 data={"payload_json": json.dumps(payload)},
                 files={"file": (chart_file.name, chart_file.read_bytes(), "image/png")},
                 timeout=10,
@@ -130,13 +130,13 @@ def send_alert(
                 print(f"Discord multipart rejected (400): {resp.text[:500]}")
                 print(f"  Chart: {chart_file} ({chart_file.stat().st_size} bytes). Retrying without chart...")
                 resp = requests.post(
-                    cfg.discord_webhook_url,
+                    cfg.discord_urgent_webhook_url,
                     json=payload,
                     timeout=10,
                 )
         else:
             resp = requests.post(
-                cfg.discord_webhook_url,
+                cfg.discord_urgent_webhook_url,
                 json=payload,
                 timeout=10,
             )
@@ -199,7 +199,7 @@ def send_text_alert(
     Splits into multiple messages if > 1900 chars (Discord 2000 limit).
     """
     cfg = config or ScannerConfig()
-    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_webhook_url
+    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_ops_webhook_url
     if not webhook_url:
         return False
 
@@ -236,7 +236,7 @@ def send_report_embeds(
 ) -> bool:
     """Post a list of embeds to the reports Discord channel."""
     cfg = config or ScannerConfig()
-    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_webhook_url
+    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_ops_webhook_url
     if not webhook_url:
         return False
 
