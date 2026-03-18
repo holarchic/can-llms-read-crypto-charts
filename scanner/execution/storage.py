@@ -320,6 +320,30 @@ def get_open_position_coins(
     return [dict(r) for r in rows]
 
 
+def has_unprotected_positions(
+    conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
+) -> bool:
+    """Check if any open position has no PLACED stop_loss — blocks new entries."""
+    row = conn.execute(
+        """SELECT COUNT(*) as cnt FROM orders e
+        WHERE e.order_type = 'entry' AND e.status = 'FILLED'
+        AND e.exchange = ? AND e.execution_mode = ?
+        AND e.quantity > COALESCE(
+            (SELECT SUM(x.quantity) FROM orders x
+             WHERE x.scan_id = e.scan_id
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x.status = 'FILLED'), 0)
+        AND NOT EXISTS (
+            SELECT 1 FROM orders sl
+            WHERE sl.scan_id = e.scan_id
+            AND sl.order_type = 'stop_loss'
+            AND sl.status = 'PLACED'
+        )""",
+        (exchange, execution_mode),
+    ).fetchone()
+    return row["cnt"] > 0
+
+
 def update_order_quantity(
     order_id: str,
     new_quantity: float,

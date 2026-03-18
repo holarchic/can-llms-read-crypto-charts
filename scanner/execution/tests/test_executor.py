@@ -816,6 +816,91 @@ class TestFailPolicy:
         assert result.skip_reason == "position_limit"
 
 
+class TestUnprotectedPositionGuard:
+    """Block all entries if any open position lacks a PLACED stop loss."""
+
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_unprotected_position_blocks_entry(self, mock_killed, mock_price,
+                                                mock_positions, conn, exec_config, scanner_config):
+        """Entry FILLED + SL CANCELLED → skip_reason='unprotected_position'."""
+        save_order({
+            "order_id": "e1", "scan_id": "s_existing", "coin": "ETH", "direction": "LONG",
+            "order_type": "entry", "status": "FILLED", "entry_price": 3000,
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": "sl1", "scan_id": "s_existing", "coin": "ETH", "direction": "LONG",
+            "order_type": "stop_loss", "status": "CANCELLED",
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "unprotected_position"
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_protected_position_allows_entry(self, mock_killed, mock_price, mock_balance,
+                                              mock_auth, mock_positions, mock_discord,
+                                              conn, exec_config, scanner_config):
+        """Entry FILLED + SL PLACED → proceeds past the guard."""
+        save_order({
+            "order_id": "e1", "scan_id": "s_existing", "coin": "ETH", "direction": "LONG",
+            "order_type": "entry", "status": "FILLED", "entry_price": 3000,
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": "sl1", "scan_id": "s_existing", "coin": "ETH", "direction": "LONG",
+            "order_type": "stop_loss", "status": "PLACED",
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.skip_reason != "unprotected_position"
+
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_closed_position_not_unprotected(self, mock_killed, mock_price,
+                                              mock_positions, conn, exec_config, scanner_config):
+        """Entry FILLED + SL FILLED (position closed) → not considered unprotected."""
+        save_order({
+            "order_id": "e1", "scan_id": "s_closed", "coin": "ETH", "direction": "LONG",
+            "order_type": "entry", "status": "FILLED", "entry_price": 3000,
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": "sl1", "scan_id": "s_closed", "coin": "ETH", "direction": "LONG",
+            "order_type": "stop_loss", "status": "FILLED", "fill_price": 2800,
+            "quantity": 1.0, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-03-05T00:00:00+00:00",
+            "filled_at": "2026-03-05T01:00:00+00:00",
+        }, conn)
+
+        # Position is fully closed → should proceed past unprotected guard
+        sr = _make_scan_result(machine_block=None)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        # Should fail on next check (no_machine_block), not unprotected_position
+        assert result.skip_reason == "no_machine_block"
+
+
 class TestCurrentOpenNotional:
     @patch("scanner.execution.executor.get_auth_exchange")
     def test_uses_live_price(self, mock_auth, conn, exec_config):

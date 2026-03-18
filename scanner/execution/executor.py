@@ -26,6 +26,7 @@ from .storage import (
     count_open_positions,
     get_open_position_coins,
     has_open_position,
+    has_unprotected_positions,
     make_cloid,
     new_order_id,
     save_order,
@@ -281,6 +282,12 @@ def execute_trade(
             er.skip_reason = "long_limit"
             log.info("Long limit reached — skipping %s", result.coin)
             return er
+
+    # 7.5 Unprotected position guard — block all entries if any position lacks SL
+    if has_unprotected_positions(conn, exchange, mode):
+        er.skip_reason = "unprotected_position"
+        log.error("Unprotected position detected — blocking all new entries")
+        return er
 
     try:
         balance = fetch_balance(exec_config)
