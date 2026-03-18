@@ -182,7 +182,10 @@ def execute_trade(
         db_count = count_open_positions(conn, exec_config.exchange, exec_config.mode)
         exch_count = len(exchange_positions)
         if db_count != exch_count:
-            log.warning("Position count mismatch: DB=%d, exchange=%d", db_count, exch_count)
+            er.skip_reason = "position_mismatch"
+            er.error = f"DB positions={db_count} vs exchange={exch_count} — reconcile before trading"
+            log.error("Position count mismatch: DB=%d, exchange=%d — blocking trade", db_count, exch_count)
+            return er
     except Exception as exc:
         if exec_config.mode == "live":
             er.skip_reason = "reconciliation_error"

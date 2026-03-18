@@ -708,11 +708,13 @@ class TestBtcVolatilityGate:
 class TestExchangeReconciliation:
     """Step 0.6: exchange position reconciliation before DB-based limits."""
 
+    @patch("scanner.execution.executor.count_open_positions", return_value=1)
     @patch("scanner.execution.executor.get_open_positions")
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_blocks_duplicate(self, mock_killed, mock_price,
-                                                      mock_positions, conn, exec_config, scanner_config):
+                                                      mock_positions, mock_db_count,
+                                                      conn, exec_config, scanner_config):
         """Exchange shows BTC position → skip as duplicate (any direction, net position)."""
         mock_positions.return_value = [
             {"coin": "BTC", "direction": "LONG", "size": 0.05, "entry_price": 61000,
@@ -722,11 +724,13 @@ class TestExchangeReconciliation:
         assert result.executed is False
         assert result.skip_reason == "duplicate_position"
 
+    @patch("scanner.execution.executor.count_open_positions", return_value=1)
     @patch("scanner.execution.executor.get_open_positions")
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_blocks_opposite_direction(self, mock_killed, mock_price,
-                                                               mock_positions, conn, exec_config, scanner_config):
+                                                               mock_positions, mock_db_count,
+                                                               conn, exec_config, scanner_config):
         """Exchange shows BTC SHORT → skip BTC LONG (HL net position would close the SHORT)."""
         mock_positions.return_value = [
             {"coin": "BTC", "direction": "SHORT", "size": 0.05, "entry_price": 63000,
@@ -736,11 +740,13 @@ class TestExchangeReconciliation:
         assert result.executed is False
         assert result.skip_reason == "duplicate_position"
 
+    @patch("scanner.execution.executor.count_open_positions", return_value=2)
     @patch("scanner.execution.executor.get_open_positions")
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_exchange_reconciliation_respects_limit(self, mock_killed, mock_price,
-                                                     mock_positions, conn, exec_config, scanner_config):
+                                                     mock_positions, mock_db_count,
+                                                     conn, exec_config, scanner_config):
         """Exchange shows max positions → skip even if DB disagrees."""
         exec_config.max_concurrent_positions = 2
         mock_positions.return_value = [
@@ -765,19 +771,18 @@ class TestExchangeReconciliation:
         assert result.skip_reason == "position_limit"
 
     @patch("scanner.execution.executor.get_open_positions")
-    def test_exchange_reconciliation_logs_mismatch(self, mock_positions, conn, exec_config,
-                                                    scanner_config, caplog):
-        """Exchange vs DB count differs → warning logged."""
+    def test_exchange_reconciliation_blocks_mismatch(self, mock_positions, conn, exec_config,
+                                                      scanner_config):
+        """Exchange vs DB count differs → trade blocked."""
         mock_positions.return_value = [
             {"coin": "ETH", "direction": "LONG", "size": 1.0, "entry_price": 3000,
              "unrealized_pnl": 50, "leverage": 3},
         ]
         # DB has 0 positions, exchange has 1 — mismatch
-        sr = _make_scan_result(machine_block=None)
-        import logging
-        with caplog.at_level(logging.WARNING, logger="scanner.execution.executor"):
-            execute_trade(sr, exec_config, scanner_config, conn)
-        assert any("mismatch" in r.message.lower() for r in caplog.records)
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "position_mismatch"
+        assert "DB positions=0 vs exchange=1" in result.error
 
 
 class TestFailPolicy:
@@ -828,12 +833,17 @@ class TestFailPolicy:
 class TestUnprotectedPositionGuard:
     """Block all entries if any open position lacks a PLACED stop loss."""
 
-    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.get_open_positions")
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_unprotected_position_blocks_entry(self, mock_killed, mock_price,
                                                 mock_positions, conn, exec_config, scanner_config):
         """Entry FILLED + SL CANCELLED → skip_reason='unprotected_position'."""
+        # Exchange shows 1 position (matches DB count of 1)
+        mock_positions.return_value = [
+            {"coin": "ETH", "direction": "LONG", "size": 1.0, "entry_price": 3000,
+             "unrealized_pnl": 0, "leverage": 3},
+        ]
         save_order({
             "order_id": "e1", "scan_id": "s_existing", "coin": "ETH", "direction": "LONG",
             "order_type": "entry", "status": "FILLED", "entry_price": 3000,
