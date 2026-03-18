@@ -293,6 +293,26 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "position_limit"
 
+    @patch("scanner.execution.executor.calculate_position")
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_skip_insufficient_margin(self, mock_killed, mock_price, mock_balance,
+                                       mock_auth, mock_discord, mock_calc,
+                                       conn, exec_config, scanner_config):
+        """Margin required exceeds available balance."""
+        mock_pos = MagicMock()
+        mock_pos.quantity = 0.1
+        mock_pos.margin_required = 50  # >> balance of 10
+        mock_calc.return_value = mock_pos
+        mock_auth.return_value = MagicMock()
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "insufficient_margin"
+
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)

@@ -301,6 +301,14 @@ def execute_trade(
 
     er.position_size = pos
 
+    # 8b. Margin guard — reject if margin exceeds available balance
+    if pos.margin_required > balance:
+        er.skip_reason = "insufficient_margin"
+        er.error = f"margin=${pos.margin_required:.2f} > balance=${balance:.2f}"
+        log.warning("%s: margin $%.2f exceeds balance $%.2f",
+                    result.coin, pos.margin_required, balance)
+        return er
+
     # --- Order placement (past this point, errors are more serious) ---
     meta = get_exchange_meta(exec_config.exchange)
     symbol = meta["symbol_template"].format(coin=result.coin)
