@@ -28,7 +28,7 @@ Examples:
   python -m scanner.execution unkill          # Deactivate kill switch
         """,
     )
-    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report"],
+    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "smoke"],
                         help="Subcommand to run")
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
     parser.add_argument("--mode", choices=["testnet", "live"], help="Filter by execution mode")
@@ -49,6 +49,8 @@ Examples:
         _cmd_kill(config, active=False)
     elif args.command == "report":
         _cmd_report(config, args.days, args.mode, args.discord)
+    elif args.command == "smoke":
+        _cmd_smoke(config)
 
 
 def _cmd_monitor(config):
@@ -163,6 +165,44 @@ def _cmd_report(config, days, mode, discord):
             print("\nReport sent to Discord.")
         except Exception as exc:
             print(f"\nDiscord send failed: {exc}")
+
+
+def _cmd_smoke(config):
+    """Execution-path smoke test."""
+    from .executor import preflight_check, validate_execution_params
+
+    errors = []
+
+    # 1. Config loaded (already done)
+    print("  Config load: OK")
+
+    # 2. Param validation logic works
+    validate_execution_params({
+        "direction": "LONG", "entry_low": 100, "entry_high": 110,
+        "stop_loss": 90, "leverage": 5,
+    })
+    print("  Param validation: OK")
+
+    # 3. Monitor imports
+    from .monitor import check_positions, sync_order_status  # noqa: F401
+
+    print("  Monitor imports: OK")
+
+    # 4. Preflight (if enabled)
+    if config.enabled:
+        failures = preflight_check(config)
+        if failures:
+            errors.extend(failures)
+            print(f"  Preflight: FAIL ({len(failures)} issues)")
+        else:
+            print("  Preflight: OK")
+    else:
+        print("  Preflight: SKIPPED (execution disabled)")
+
+    if errors:
+        print(f"\nSmoke FAILED: {len(errors)} errors")
+        raise SystemExit(1)
+    print("\nSmoke: ALL PASS")
 
 
 if __name__ == "__main__":
