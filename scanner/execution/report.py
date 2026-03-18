@@ -14,7 +14,6 @@ def format_execution_report(metrics: dict, sim_vs_live: list[dict], mode: str) -
         f"  Max drawdown:     {metrics['max_drawdown_pct']:.1f}%",
         f"  Avg holding:      {metrics['avg_holding_hours']:.1f}h",
         f"  Avg slippage:     {metrics['avg_slippage_r']:.4f}R",
-        f"  Total funding:    {metrics['total_funding_r']:+.4f}R",
     ]
 
     if sim_vs_live:
