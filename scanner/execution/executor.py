@@ -16,6 +16,7 @@ from .exchange import (
     fetch_balance,
     fetch_current_price,
     get_auth_exchange,
+    get_exchange_open_orders,
     get_open_positions,
 )
 from .kill_switch import is_killed
@@ -305,6 +306,23 @@ def execute_trade(
         er.skip_reason = "unprotected_position"
         log.error("Unprotected position detected — blocking all new entries")
         return er
+
+    # 7.6 Open order cap — prevent HL rejection at 1000 orders
+    if exec_config.max_open_orders > 0:
+        try:
+            open_orders = get_exchange_open_orders(exec_config)
+            if len(open_orders) >= exec_config.max_open_orders:
+                er.skip_reason = "open_order_limit"
+                er.error = f"open_orders={len(open_orders)} >= max={exec_config.max_open_orders}"
+                log.warning("Open order cap reached (%d) — skipping %s", len(open_orders), result.coin)
+                return er
+        except Exception as exc:
+            if exec_config.mode == "live":
+                er.skip_reason = "order_count_error"
+                er.error = f"open order count failed: {exc}"
+                log.error("Open order count failed in LIVE: %s — blocking trade", exc)
+                return er
+            log.warning("Open order count failed: %s — proceeding (testnet)", exc)
 
     try:
         balance = fetch_balance(exec_config)

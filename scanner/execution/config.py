@@ -25,6 +25,9 @@ class ExecutionConfig:
     max_open_longs: int = 100
     max_portfolio_exposure_pct: float = 100.0
 
+    # Order limits
+    max_open_orders: int = 200  # 0 = disabled; env: EXECUTION_MAX_OPEN_ORDERS
+
     # Capital bounds
     max_notional_usd: float = 0.0  # 0 = disabled; max notional per trade
 
@@ -79,6 +82,7 @@ def load_execution_config() -> ExecutionConfig:
             "LT_HL_WALLET_ADDRESS", "HL_WALLET_ADDRESS", gcp_project, require=require_sm,
         ),
         risk_pct=float(os.getenv("EXECUTION_RISK_PCT", "1.0")),
+        max_open_orders=int(os.getenv("EXECUTION_MAX_OPEN_ORDERS", "200")),
         max_notional_usd=float(os.getenv("EXECUTION_MAX_NOTIONAL_USD", "0.0")),
         max_concurrent_positions=int(os.getenv("EXECUTION_MAX_POSITIONS", "100")),
         max_open_longs=int(os.getenv("EXECUTION_MAX_LONGS", "100")),

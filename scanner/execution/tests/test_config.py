@@ -48,6 +48,14 @@ class TestExecutionConfig:
         cfg = ExecutionConfig(enabled=True, private_key="0xkey", wallet_address="0xwallet")
         assert cfg.enabled is True
 
+    def test_max_open_orders_default(self):
+        cfg = ExecutionConfig()
+        assert cfg.max_open_orders == 200
+
+    def test_max_open_orders_disabled(self):
+        cfg = ExecutionConfig(max_open_orders=0)
+        assert cfg.max_open_orders == 0
+
 
 class TestLoadExecutionConfig:
     def test_loads_from_env(self):

@@ -1039,3 +1039,70 @@ class TestCurrentOpenNotional:
         """No exchange positions → falls back to DB (empty DB = 0.0)."""
         result = current_open_notional(exec_config, conn, exchange_positions=None)
         assert result == 0.0
+
+
+class TestOpenOrderCap:
+    """Step 7.6: open order cap prevents HL rejection at 1000 orders."""
+
+    @patch("scanner.execution.executor.get_exchange_open_orders")
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_skip_open_order_limit(self, mock_killed, mock_price, mock_positions,
+                                    mock_orders, conn, exec_config, scanner_config):
+        """200 open orders → skip with open_order_limit."""
+        exec_config.max_open_orders = 200
+        mock_orders.return_value = [{}] * 200
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "open_order_limit"
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_exchange_open_orders")
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_open_order_below_threshold_passes(self, mock_killed, mock_price, mock_balance,
+                                                mock_auth, mock_positions, mock_orders,
+                                                mock_discord, conn, exec_config, scanner_config):
+        """50 open orders < 200 cap → passes to next check."""
+        exec_config.max_open_orders = 200
+        mock_orders.return_value = [{}] * 50
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+
+    @patch("scanner.execution.executor.get_exchange_open_orders", side_effect=Exception("API timeout"))
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_order_count_error_blocks_live(self, mock_killed, mock_price, mock_positions,
+                                            mock_orders, conn, scanner_config):
+        """API raises in live mode → blocks trade."""
+        live_config = ExecutionConfig(
+            enabled=True, mode="live", private_key="0xtest",
+            wallet_address="0xwallet", risk_pct=1.0,
+            btc_vol_gate_enabled=False, max_open_orders=200,
+        )
+        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        assert result.skip_reason == "order_count_error"
+
+    @patch("scanner.execution.executor.get_exchange_open_orders", side_effect=Exception("API timeout"))
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_order_count_error_passes_testnet(self, mock_killed, mock_price, mock_positions,
+                                               mock_orders, conn, exec_config, scanner_config):
+        """API raises in testnet → proceeds past check."""
+        exec_config.max_open_orders = 200
+        sr = _make_scan_result(machine_block=None)
+        result = execute_trade(sr, exec_config, scanner_config, conn)
+        # Should pass the cap check and fail on next (no_machine_block via balance → ...)
+        assert result.skip_reason != "order_count_error"
