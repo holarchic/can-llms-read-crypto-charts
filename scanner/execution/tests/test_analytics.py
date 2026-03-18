@@ -476,14 +476,15 @@ class TestQualityWarnings:
         m = compute_live_metrics(trades)
         assert any("Funding costs not captured" in w for w in m["quality_warnings"])
 
-    def test_no_warnings_when_clean(self):
+    def test_no_funding_warning_when_clean(self):
         """Trades with funding_paid > 0 → no funding warning."""
         trades = [
             TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
             TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 3.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert not any("Funding" in w for w in m["quality_warnings"])
+        assert not any("Funding costs not captured" in w for w in m["quality_warnings"])
+        assert not any("missing funding" in w for w in m["quality_warnings"])
 
     def test_flags_missing_fill_prices(self):
         """Trades with entry_fill=0 → warning about missing fill prices."""
@@ -492,12 +493,39 @@ class TestQualityWarnings:
         ]
         m = compute_live_metrics(trades)
         assert any("missing fill prices" in w for w in m["quality_warnings"])
+        assert any("using trigger prices" in w for w in m["quality_warnings"])
 
-    def test_empty_trades_no_warnings(self):
-        """No trades → no warnings."""
+    def test_empty_trades_has_db_note(self):
+        """No trades → still has DB-only note."""
         m = compute_live_metrics([])
-        assert m.get("quality_warnings") is not None
-        assert len(m.get("quality_warnings", [])) == 0
+        assert any("not reconciled" in w for w in m["quality_warnings"])
+
+    def test_metrics_include_data_source(self):
+        """Metrics dict always includes data_source=db_only."""
+        m = compute_live_metrics([])
+        assert m["data_source"] == "db_only"
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+        ]
+        m2 = compute_live_metrics(trades)
+        assert m2["data_source"] == "db_only"
+
+    def test_quality_warnings_always_include_db_note(self):
+        """DB-only note is always the first warning."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        assert m["quality_warnings"][0] == "All metrics estimated from DB — not reconciled with exchange"
+
+    def test_quality_warnings_partial_funding(self):
+        """Some trades missing funding → partial funding warning."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        assert any("1/2 trades missing funding data" in w for w in m["quality_warnings"])
 
 
 class TestRollingExpectancy:

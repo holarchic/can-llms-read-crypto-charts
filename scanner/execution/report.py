@@ -6,6 +6,7 @@ def format_execution_report(metrics: dict, sim_vs_live: list[dict], mode: str) -
     lines = [
         f"\nExecution Report ({mode.upper()})",
         "=" * 50,
+        f"  Data source:      {metrics.get('data_source', 'db_only').upper()}",
         f"  Closed trades:    {metrics['count']}",
         f"  Win rate:         {metrics['win_rate']:.1%}",
         f"  Expectancy:       {metrics['expectancy_r']:+.4f}R",
@@ -62,7 +63,7 @@ def build_execution_embeds(metrics: dict, sim_vs_live: list[dict], mode: str) ->
         })
 
     embeds = [{
-        "title": f"Execution Report ({mode.upper()})",
+        "title": f"Execution Report ({mode.upper()}) [DB-ONLY]",
         "color": color,
         "fields": fields,
     }]
