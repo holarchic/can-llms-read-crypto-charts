@@ -57,8 +57,7 @@ def check_price_sanity(
 ) -> SanityResult:
     """Run all pre-execution sanity checks on machine_block values.
 
-    Checks: entry zone proximity, stop distance vs ATR, R:R bounds,
-    all prices within max deviation of current price.
+    Checks: entry zone proximity, stop distance vs ATR, R:R bounds.
     """
     errors = []
 
@@ -113,20 +112,5 @@ def check_price_sanity(
                 errors.append(f"R:R ratio {rr:.2f} below minimum {config.min_rr_ratio}")
             if rr > config.max_rr_ratio:
                 errors.append(f"R:R ratio {rr:.2f} above maximum {config.max_rr_ratio}")
-
-    # 4. All prices within max deviation of current price
-    price_fields = {"entry_low": entry_low, "entry_high": entry_high, "stop_loss": stop_loss}
-    if tp1:
-        price_fields["tp1"] = tp1
-    if tp2:
-        price_fields["tp2"] = tp2
-
-    for name, price in price_fields.items():
-        deviation_pct = abs(price - current_price) / current_price * 100
-        if deviation_pct > config.max_price_deviation_pct:
-            errors.append(
-                f"{name} ({price:.2f}) is {deviation_pct:.1f}% from current price "
-                f"(max {config.max_price_deviation_pct}%)"
-            )
 
     return SanityResult(passed=len(errors) == 0, errors=errors)

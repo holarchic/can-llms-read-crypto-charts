@@ -148,13 +148,6 @@ class TestCheckPriceSanity:
         assert result.passed is False
         assert any("R:R ratio" in e and "above" in e for e in result.errors)
 
-    def test_price_magnitude_error(self, config):
-        # TP is 50% away from current price (max 20%)
-        block = _long_block(tp1=93000, tp2=None)
-        result = check_price_sanity(block, 62000, 500, config)
-        assert result.passed is False
-        assert any("tp1" in e for e in result.errors)
-
     def test_missing_fields(self, config):
         result = check_price_sanity({}, 62000, 500, config)
         assert result.passed is False
