@@ -118,6 +118,23 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         update_order_status(order["order_id"], "CANCELLED", conn)
                         updated += 1
 
+                elif exch_status in ("expired", "rejected"):
+                    update_order_status(
+                        order["order_id"], "CANCELLED", conn,
+                        error_message=f"Exchange status: {exch_status}",
+                    )
+                    updated += 1
+                    log.warning(
+                        "%s %s %s on exchange (oid=%s)",
+                        entry["coin"], order["order_type"], exch_status, exch_oid,
+                    )
+
+                elif exch_status not in ("open", "pending", "new"):
+                    log.warning(
+                        "%s %s unknown exchange status '%s' (oid=%s)",
+                        entry["coin"], order["order_type"], exch_status, exch_oid,
+                    )
+
             except Exception as exc:
                 log.warning("Error checking order %s: %s", exch_oid, exc)
 

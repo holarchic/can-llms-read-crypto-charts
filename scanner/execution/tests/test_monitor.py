@@ -540,6 +540,73 @@ class TestPartialExitHandling:
         assert any(i["type"] == "missing_sl" and i["coin"] == "BTC" for i in issues)
 
 
+class TestUnknownOrderStatuses:
+    """expired/rejected → CANCELLED; unknown → left PLACED with warning."""
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_expired_order_marked_cancelled(self, mock_auth, config, conn):
+        """Exchange reports status='expired' → order becomes CANCELLED with error_message."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "expired"}
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)
+        assert updated == 1
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"
+        assert "expired" in sl_result["error_message"]
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_order_marked_cancelled(self, mock_auth, config, conn):
+        """Exchange reports status='rejected' → order becomes CANCELLED with error_message."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)
+        assert updated == 1
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "CANCELLED"
+        assert "rejected" in sl_result["error_message"]
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_unknown_status_left_placed(self, mock_auth, config, conn, caplog):
+        """Exchange returns unrecognized status → order stays PLACED, warning logged."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "wtf_status"}
+        mock_auth.return_value = mock_exchange
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="scanner.execution.monitor"):
+            updated = sync_order_status(config, conn)
+
+        assert updated == 0
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert any("unknown exchange status" in r.message for r in caplog.records)
+
+
 class TestPartialSLTP2Fill:
     """Partial SL/TP2 fills should re-place orders at residual quantity."""
 
