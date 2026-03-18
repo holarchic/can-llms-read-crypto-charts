@@ -98,6 +98,7 @@ class TestUpdateOrderStatus:
     def test_update_with_fill(self, conn):
         order = _make_order()
         save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
         update_order_status(
             order["order_id"], "FILLED", conn,
             fill_price=62100, exchange_order_id="exch123",
@@ -118,6 +119,7 @@ class TestUpdateOrderStatus:
     def test_update_with_pnl(self, conn):
         order = _make_order()
         save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
         update_order_status(
             order["order_id"], "FILLED", conn,
             realized_pnl=150.50, funding_paid=-2.30,
@@ -125,6 +127,35 @@ class TestUpdateOrderStatus:
         result = get_order(order["order_id"], conn)
         assert result["realized_pnl"] == 150.50
         assert result["funding_paid"] == -2.30
+
+    def test_filled_to_cancelled_blocked(self, conn):
+        """FILLED is terminal — cannot regress to CANCELLED."""
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        update_order_status(order["order_id"], "FILLED", conn, fill_price=62100)
+        update_order_status(order["order_id"], "CANCELLED", conn)
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "FILLED"
+
+    def test_placed_to_filled_allowed(self, conn):
+        """Normal fill transition: PLACED → FILLED."""
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        update_order_status(order["order_id"], "FILLED", conn, fill_price=62100)
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "FILLED"
+
+    def test_cancelled_to_placed_allowed(self, conn):
+        """SL replacement flow: PLACED → CANCELLED → re-PLACED."""
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        update_order_status(order["order_id"], "CANCELLED", conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "PLACED"
 
 
 class TestPositionQueries:

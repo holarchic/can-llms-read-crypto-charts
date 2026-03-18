@@ -1,8 +1,19 @@
 """Orders table — CRUD operations for trade execution tracking."""
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from uuid import NAMESPACE_OID, uuid4, uuid5
+
+log = logging.getLogger(__name__)
+
+# Valid state transitions — reject anything else
+_VALID_TRANSITIONS: dict[str, set[str]] = {
+    "PENDING": {"PLACED", "CANCELLED"},
+    "PLACED": {"FILLED", "CANCELLED"},
+    "FILLED": {"PLACED"},  # partial fill re-placement only; FILLED→CANCELLED blocked
+    "CANCELLED": {"PLACED"},  # SL replacement: CANCELLED → re-PLACED
+}
 
 CREATE_ORDERS_TABLE = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -126,7 +137,24 @@ def update_order_status(
     funding_paid: float | None = None,
     filled_quantity: float | None = None,
 ) -> None:
-    """Update order status and optional fill/error fields."""
+    """Update order status and optional fill/error fields.
+
+    Enforces state machine: PENDING→PLACED→FILLED (terminal), with
+    CANCELLED→PLACED allowed for SL replacement flows.
+    """
+    current = conn.execute(
+        "SELECT status FROM orders WHERE order_id = ?", (order_id,),
+    ).fetchone()
+    if current:
+        current_status = current["status"]
+        allowed = _VALID_TRANSITIONS.get(current_status, set())
+        if status not in allowed:
+            log.warning(
+                "Invalid transition %s → %s for order %s — skipping",
+                current_status, status, order_id,
+            )
+            return
+
     now = datetime.now(timezone.utc).isoformat()
 
     updates = ["status = ?"]
