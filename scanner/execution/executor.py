@@ -300,6 +300,13 @@ def execute_trade(
         _send_ops_alert(f"Balance fetch failed: {exc}", exec_config)
         return er
 
+    # 7.6 Zero balance guard
+    if balance <= 0:
+        er.skip_reason = "zero_balance"
+        er.error = f"balance=${balance:.2f}"
+        log.warning("Zero or negative balance ($%.2f) — skipping %s", balance, result.coin)
+        return er
+
     if exec_config.max_portfolio_exposure_pct < 100:
         open_notional = current_open_notional(exec_config, conn)
         exposure_pct = (open_notional / balance * 100) if balance > 0 else 0
@@ -326,6 +333,15 @@ def execute_trade(
         er.error = f"margin=${pos.margin_required:.2f} > balance=${balance:.2f}"
         log.warning("%s: margin $%.2f exceeds balance $%.2f",
                     result.coin, pos.margin_required, balance)
+        return er
+
+    # 8c. Max notional per trade
+    if exec_config.max_notional_usd > 0 and pos.notional_value > exec_config.max_notional_usd:
+        er.skip_reason = "notional_limit"
+        er.error = (f"notional=${pos.notional_value:.2f} > "
+                    f"max=${exec_config.max_notional_usd:.2f}")
+        log.warning("%s: notional $%.2f exceeds max $%.2f",
+                    result.coin, pos.notional_value, exec_config.max_notional_usd)
         return er
 
     # --- Order placement (past this point, errors are more serious) ---

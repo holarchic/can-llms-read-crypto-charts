@@ -25,6 +25,9 @@ class ExecutionConfig:
     max_open_longs: int = 100
     max_portfolio_exposure_pct: float = 100.0
 
+    # Capital bounds
+    max_notional_usd: float = 0.0  # 0 = disabled; max notional per trade
+
     # Sanity thresholds
     entry_price_tolerance_pct: float = 5.0
     entry_zone_buffer_pct: float = 2.0  # direction-aware buffer beyond entry zone
@@ -70,6 +73,7 @@ def load_execution_config() -> ExecutionConfig:
         private_key=get_secret_or_env("LT_HL_PRIVATE_KEY", "HL_PRIVATE_KEY", gcp_project),
         wallet_address=get_secret_or_env("LT_HL_WALLET_ADDRESS", "HL_WALLET_ADDRESS", gcp_project),
         risk_pct=float(os.getenv("EXECUTION_RISK_PCT", "1.0")),
+        max_notional_usd=float(os.getenv("EXECUTION_MAX_NOTIONAL_USD", "0.0")),
         max_concurrent_positions=int(os.getenv("EXECUTION_MAX_POSITIONS", "100")),
         max_open_longs=int(os.getenv("EXECUTION_MAX_LONGS", "100")),
         max_portfolio_exposure_pct=float(os.getenv("EXECUTION_MAX_EXPOSURE_PCT", "100.0")),

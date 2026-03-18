@@ -910,6 +910,69 @@ class TestUnprotectedPositionGuard:
         assert result.skip_reason == "no_machine_block"
 
 
+class TestCapitalBounds:
+    """Zero balance guard and max notional per trade."""
+
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_balance", return_value=0)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_skip_zero_balance(self, mock_killed, mock_price, mock_balance,
+                                mock_positions, conn, exec_config, scanner_config):
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "zero_balance"
+
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_balance", return_value=-100)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_skip_negative_balance(self, mock_killed, mock_price, mock_balance,
+                                    mock_positions, conn, exec_config, scanner_config):
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "zero_balance"
+
+    @patch("scanner.execution.executor.calculate_position")
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_skip_notional_limit(self, mock_killed, mock_price, mock_balance,
+                                  mock_positions, mock_calc, conn, exec_config, scanner_config):
+        """Notional exceeds max → skip."""
+        exec_config.max_notional_usd = 500.0
+        mock_pos = MagicMock()
+        mock_pos.quantity = 0.1
+        mock_pos.margin_required = 100
+        mock_pos.notional_value = 6200  # >> 500
+        mock_calc.return_value = mock_pos
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.skip_reason == "notional_limit"
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_open_positions", return_value=[])
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_notional_limit_disabled_by_default(self, mock_killed, mock_price, mock_balance,
+                                                 mock_auth, mock_positions, mock_discord,
+                                                 conn, exec_config, scanner_config):
+        """max_notional_usd=0 (default) → no notional limit check."""
+        assert exec_config.max_notional_usd == 0.0
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+
+
 class TestCurrentOpenNotional:
     @patch("scanner.execution.executor.get_auth_exchange")
     def test_uses_live_price(self, mock_auth, conn, exec_config):
