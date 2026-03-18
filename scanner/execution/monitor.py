@@ -84,6 +84,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
 
                     # Handle exit fill: route based on partial vs full close
                     if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                        _send_fill_alert(entry, order, fill_price, exec_config)
                         _handle_exit_fill(
                             order, entry, scan_orders,
                             symbol, exchange, exec_config, conn,
@@ -108,6 +109,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         updated += 1
 
                         if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                            _send_fill_alert(entry, order, fill_price, exec_config)
                             _handle_exit_fill(
                                 order, entry, scan_orders,
                                 symbol, exchange, exec_config, conn,
@@ -520,6 +522,27 @@ def _market_close_position(
 
     log.error("All timeout close attempts exhausted for %s — position still open", entry["coin"])
     return False
+
+
+def _send_fill_alert(entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig) -> bool:
+    """Send Discord notification when an exit order (SL/TP) fills."""
+    webhook = config.discord_ops_webhook_url
+    if not webhook:
+        return False
+
+    type_labels = {"stop_loss": "SL", "tp1": "TP1", "tp2": "TP2"}
+    label = type_labels.get(order["order_type"], order["order_type"])
+    is_win = order["order_type"] in ("tp1", "tp2")
+    emoji = "\U0001f7e2" if is_win else "\U0001f534"
+    price_str = f" @ ${fill_price:,.2f}" if fill_price else ""
+    message = f"{emoji} **{label} FILLED** {entry['coin']} {entry['direction']}{price_str}"
+
+    try:
+        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.warning("Fill alert failed: %s", exc)
+        return False
 
 
 def _send_timeout_alert(entry: dict, age_hours: float, qty: float, config: ExecutionConfig) -> bool:

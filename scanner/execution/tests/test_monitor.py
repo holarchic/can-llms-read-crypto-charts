@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scanner.execution.config import ExecutionConfig
-from scanner.execution.monitor import check_positions, enforce_position_timeouts, sync_order_status
+from scanner.execution.monitor import (
+    _send_fill_alert,
+    check_positions,
+    enforce_position_timeouts,
+    sync_order_status,
+)
 from scanner.execution.storage import (
     ensure_orders_table,
     get_order,
@@ -1131,3 +1136,49 @@ class TestPositionTimeout:
         result = enforce_position_timeouts(config, conn)
         assert result == 0  # 24h < 72h, not timed out
         mock_exchange.create_order.assert_not_called()
+
+
+class TestFillAlert:
+    """SL/TP fill Discord notifications."""
+
+    @patch("scanner.execution.monitor.requests.post")
+    def test_fill_alert_sl(self, mock_post):
+        """SL fill → red emoji, SL FILLED label."""
+        mock_post.return_value = MagicMock(status_code=204)
+        config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
+        entry = {"coin": "BTC", "direction": "LONG"}
+        order = {"order_type": "stop_loss"}
+
+        result = _send_fill_alert(entry, order, 59800.0, config)
+
+        assert result is True
+        body = mock_post.call_args[1]["json"]["content"]
+        assert "SL FILLED" in body
+        assert "BTC" in body
+        assert "59,800.00" in body
+        assert "\U0001f534" in body  # red circle
+
+    @patch("scanner.execution.monitor.requests.post")
+    def test_fill_alert_tp(self, mock_post):
+        """TP1 fill → green emoji, TP1 FILLED label."""
+        mock_post.return_value = MagicMock(status_code=204)
+        config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
+        entry = {"coin": "ETH", "direction": "SHORT"}
+        order = {"order_type": "tp1"}
+
+        result = _send_fill_alert(entry, order, 3200.50, config)
+
+        assert result is True
+        body = mock_post.call_args[1]["json"]["content"]
+        assert "TP1 FILLED" in body
+        assert "ETH" in body
+        assert "\U0001f7e2" in body  # green circle
+
+    def test_fill_alert_no_webhook(self):
+        """No ops webhook → returns False, no request."""
+        config = ExecutionConfig(discord_ops_webhook_url="")
+        entry = {"coin": "BTC", "direction": "LONG"}
+        order = {"order_type": "stop_loss"}
+
+        result = _send_fill_alert(entry, order, 59800.0, config)
+        assert result is False
