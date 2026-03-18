@@ -466,6 +466,40 @@ class TestCompareSimVsLive:
         assert abs(comparisons[0]["sim_r"] - 2.0455) < 0.01
 
 
+class TestQualityWarnings:
+    def test_flags_missing_funding(self):
+        """All trades have funding_paid=0 → warning present."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
+            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        assert any("Funding costs not captured" in w for w in m["quality_warnings"])
+
+    def test_no_warnings_when_clean(self):
+        """Trades with funding_paid > 0 → no funding warning."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 3.0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        assert not any("Funding" in w for w in m["quality_warnings"])
+
+    def test_flags_missing_fill_prices(self):
+        """Trades with entry_fill=0 → warning about missing fill prices."""
+        trades = [
+            TradeRecord("s1", "BTC", "LONG", 0, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+        ]
+        m = compute_live_metrics(trades)
+        assert any("missing fill prices" in w for w in m["quality_warnings"])
+
+    def test_empty_trades_no_warnings(self):
+        """No trades → no warnings."""
+        m = compute_live_metrics([])
+        assert m.get("quality_warnings") is not None
+        assert len(m.get("quality_warnings", [])) == 0
+
+
 class TestRollingExpectancy:
     def test_window_calculation(self):
         trades = [

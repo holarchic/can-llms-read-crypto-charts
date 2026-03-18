@@ -182,7 +182,7 @@ def compute_live_metrics(trades: list[TradeRecord]) -> dict:
             "count": 0, "win_rate": 0, "expectancy_r": 0, "profit_factor": 0,
             "total_pnl": 0, "max_drawdown_pct": 0,
             "avg_holding_hours": 0, "avg_slippage_r": 0, "total_funding_r": 0,
-            "fill_rate": 0,
+            "fill_rate": 0, "quality_warnings": [],
         }
 
     wins = [t for t in trades if t.realized_r > 0]
@@ -233,7 +233,21 @@ def compute_live_metrics(trades: list[TradeRecord]) -> dict:
         "avg_slippage_r": round(avg_slippage, 4),
         "total_funding_r": round(total_funding_r, 4),
         "fill_rate": 0,  # Populated by caller with CONFIRM count context
+        "quality_warnings": _compute_quality_warnings(trades),
     }
+
+
+def _compute_quality_warnings(trades: list[TradeRecord]) -> list[str]:
+    """Flag data gaps that affect metric accuracy."""
+    warnings = []
+    if trades:
+        no_funding = sum(1 for t in trades if t.funding_paid == 0)
+        if no_funding == len(trades):
+            warnings.append("Funding costs not captured — PnL overstated")
+        approx_fills = sum(1 for t in trades if t.entry_fill == 0 or t.exit_fill == 0)
+        if approx_fills:
+            warnings.append(f"{approx_fills} trades with missing fill prices")
+    return warnings
 
 
 def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:

@@ -16,6 +16,11 @@ def format_execution_report(metrics: dict, sim_vs_live: list[dict], mode: str) -
         f"  Avg slippage:     {metrics['avg_slippage_r']:.4f}R",
     ]
 
+    if metrics.get("quality_warnings"):
+        lines.append("\n  Data quality:")
+        for w in metrics["quality_warnings"]:
+            lines.append(f"    * {w}")
+
     if sim_vs_live:
         lines.append(f"\nSim vs Live ({len(sim_vs_live)} trades):")
         lines.append(f"  {'Coin':>8} {'Sim R':>8} {'Live R':>8} {'Delta':>8} {'Slip':>8}")
@@ -48,6 +53,13 @@ def build_execution_embeds(metrics: dict, sim_vs_live: list[dict], mode: str) ->
         {"name": "Avg Holding", "value": f"{metrics['avg_holding_hours']:.1f}h", "inline": True},
         {"name": "Avg Slippage", "value": f"{metrics['avg_slippage_r']:.4f}R", "inline": True},
     ]
+
+    if metrics.get("quality_warnings"):
+        fields.append({
+            "name": "Data Quality",
+            "value": "\n".join(metrics["quality_warnings"]),
+            "inline": False,
+        })
 
     embeds = [{
         "title": f"Execution Report ({mode.upper()})",
