@@ -13,6 +13,7 @@ from scanner.execution.executor import (
     ExecutionResult,
     current_open_notional,
     execute_trade,
+    preflight_check,
     send_skip_alert,
     validate_execution_params,
 )
@@ -1135,3 +1136,27 @@ class TestSkipAlertSeverity:
         body = call_args.kwargs.get("json") or call_args[1].get("json")
         assert "@everyone" not in body["content"]
         assert "SKIPPED" in body["content"]
+
+
+class TestPreflightCheck:
+    """Startup self-checks before first trade."""
+
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    @patch("scanner.execution.executor.fetch_balance", return_value=5000.0)
+    def test_preflight_all_pass(self, mock_balance, mock_killed, exec_config):
+        failures = preflight_check(exec_config)
+        assert failures == []
+
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    @patch("scanner.execution.executor.fetch_balance", side_effect=Exception("auth failed"))
+    def test_preflight_exchange_failure(self, mock_balance, mock_killed, exec_config):
+        failures = preflight_check(exec_config)
+        assert len(failures) == 1
+        assert "Exchange auth/balance failed" in failures[0]
+
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    @patch("scanner.execution.executor.fetch_balance", return_value=0.0)
+    def test_preflight_zero_balance(self, mock_balance, mock_killed, exec_config):
+        failures = preflight_check(exec_config)
+        assert len(failures) == 1
+        assert "Zero balance" in failures[0]

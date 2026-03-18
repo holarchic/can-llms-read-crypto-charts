@@ -361,10 +361,17 @@ def stage4_execute(
     Each CONFIRM attempted independently. Errors caught — NEVER crashes scanner.
     Returns list of ExecutionResult.
     """
-    from .execution.executor import ExecutionResult, execute_trade, send_skip_alert
+    from .execution.executor import ExecutionResult, execute_trade, preflight_check, send_skip_alert
 
     if not exec_config.enabled:
         return []
+
+    # Preflight: validate exchange connectivity before attempting any trades
+    if exec_config.mode == "live":
+        issues = preflight_check(exec_config)
+        if issues:
+            print(f"  Preflight FAILED: {'; '.join(issues)}")
+            return []
 
     conn = get_connection()
     results = []

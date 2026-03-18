@@ -712,6 +712,24 @@ def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
         return False
 
 
+def preflight_check(exec_config: ExecutionConfig) -> list[str]:
+    """Validate execution readiness. Returns list of failures (empty = OK)."""
+    failures = []
+    # 1. Exchange auth + balance
+    try:
+        balance = fetch_balance(exec_config)
+        if balance <= 0:
+            failures.append(f"Zero balance: ${balance:.2f}")
+    except Exception as exc:
+        failures.append(f"Exchange auth/balance failed: {exc}")
+    # 2. Kill switch readable
+    try:
+        is_killed(exec_config)
+    except Exception as exc:
+        failures.append(f"Kill switch check failed: {exc}")
+    return failures
+
+
 _CRITICAL_SKIP_REASONS = frozenset({
     "position_mismatch", "reconciliation_error", "unprotected_position",
     "kill_switch", "btc_vol_gate_error", "order_count_error",
