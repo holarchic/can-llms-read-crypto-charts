@@ -153,11 +153,11 @@ def _cmd_report(config, days, mode, discord):
     report = format_execution_report(metrics, sim_vs_live, report_mode)
     print(report)
 
-    if discord and config.discord_execution_webhook_url:
+    if discord and config.discord_ops_webhook_url:
         embeds = build_execution_embeds(metrics, sim_vs_live, report_mode)
         try:
             resp = req.post(
-                config.discord_execution_webhook_url,
+                config.discord_ops_webhook_url,
                 json={"embeds": embeds},
                 timeout=10,
             )

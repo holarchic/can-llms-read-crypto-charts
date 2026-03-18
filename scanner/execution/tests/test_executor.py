@@ -45,7 +45,6 @@ def exec_config():
         wallet_address="0xwallet",
         risk_pct=1.0,
         btc_vol_gate_enabled=False,
-        discord_execution_webhook_url="https://discord.com/test",
         discord_ops_webhook_url="https://discord.com/ops",
         discord_urgent_webhook_url="https://discord.com/urgent",
     )

@@ -69,7 +69,8 @@ class TestLoadExecutionConfig:
             "EXECUTION_MAX_LONGS": "3",
             "EXECUTION_MAX_EXPOSURE_PCT": "50.0",
             "GCP_PROJECT_ID": "",
-            "DISCORD_EXECUTION_WEBHOOK_URL": "https://discord.com/hook",
+            "DISCORD_OPS_WEBHOOK_URL": "https://discord.com/ops",
+            "DISCORD_URGENT_WEBHOOK_URL": "https://discord.com/urgent",
         }
         with patch.dict("os.environ", env, clear=False):
             with patch("scanner.execution.config.get_secret_or_env", side_effect=lambda s, e, p, **kw: env.get(e, "")):
@@ -81,6 +82,8 @@ class TestLoadExecutionConfig:
         assert cfg.risk_pct == 2.0
         assert cfg.max_concurrent_positions == 5
         assert cfg.max_open_longs == 3
+        assert cfg.discord_ops_webhook_url == "https://discord.com/ops"
+        assert cfg.discord_urgent_webhook_url == "https://discord.com/urgent"
 
     def test_defaults_when_env_empty(self):
         with patch.dict("os.environ", {}, clear=True):
