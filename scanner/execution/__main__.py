@@ -38,7 +38,10 @@ Examples:
     config = load_execution_config()
 
     if args.command == "monitor":
-        _cmd_monitor(config)
+        from .discord_logging import configure_monitor_logging
+
+        discord_handler = configure_monitor_logging(config.discord_ops_webhook_url)
+        _cmd_monitor(config, discord_handler)
     elif args.command == "positions":
         _cmd_positions(config)
     elif args.command == "orders":
@@ -53,36 +56,46 @@ Examples:
         _cmd_smoke(config)
 
 
-def _cmd_monitor(config):
+def _cmd_monitor(config, discord_handler=None):
+    import traceback
+
     from scanner.storage import get_connection
 
+    from .executor import _send_ops_alert
     from .monitor import check_positions, enforce_position_timeouts, sync_order_status
 
-    conn = get_connection()
-    updated = sync_order_status(config, conn)
-    print(f"Orders updated: {updated}")
+    try:
+        conn = get_connection()
+        updated = sync_order_status(config, conn)
+        print(f"Orders updated: {updated}")
 
-    timed_out = enforce_position_timeouts(config, conn)
-    if timed_out:
-        print(f"Positions timed out: {timed_out}")
+        timed_out = enforce_position_timeouts(config, conn)
+        if timed_out:
+            print(f"Positions timed out: {timed_out}")
 
-    issues = check_positions(config, conn)
-    if issues:
-        print(f"\nHealth check issues ({len(issues)}):")
-        for issue in issues:
-            print(f"  [{issue['type']}] {issue['message']}")
+        issues = check_positions(config, conn)
+        if issues:
+            print(f"\nHealth check issues ({len(issues)}):")
+            for issue in issues:
+                print(f"  [{issue['type']}] {issue['message']}")
 
-        # Send Discord alerts for critical SL issues
-        critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
-        if critical:
-            from .executor import _send_urgent_alert
+            # Send Discord alerts for critical SL issues
+            critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
+            if critical:
+                from .executor import _send_urgent_alert
 
-            for issue in critical:
-                _send_urgent_alert(issue["message"], config)
-    else:
-        print("Health check: OK")
+                for issue in critical:
+                    _send_urgent_alert(issue["message"], config)
+        else:
+            print("Health check: OK")
 
-    conn.close()
+        conn.close()
+    except Exception as exc:
+        traceback.print_exc()
+        _send_ops_alert(f"Monitor CRASHED: {type(exc).__name__}: {exc}", config)
+    finally:
+        if discord_handler:
+            discord_handler.flush_to_discord()
 
 
 def _cmd_positions(config):

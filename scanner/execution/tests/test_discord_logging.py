@@ -123,3 +123,31 @@ class TestConfigureMonitorLogging:
         assert len(stream_handlers) >= 1
         # Cleanup
         root.handlers.clear()
+
+
+class TestMonitorCrashWrapper:
+    """Tests for crash handling in _cmd_monitor."""
+
+    @patch("scanner.execution.executor._send_ops_alert")
+    @patch("scanner.execution.monitor.sync_order_status", side_effect=RuntimeError("exchange down"))
+    def test_monitor_crash_sends_ops_alert(self, mock_sync, mock_alert):
+        from scanner.execution.__main__ import _cmd_monitor
+        from scanner.execution.config import ExecutionConfig
+
+        config = ExecutionConfig(enabled=False, mode="testnet")
+        _cmd_monitor(config)  # should not raise
+        mock_alert.assert_called_once()
+        msg = mock_alert.call_args[0][0]
+        assert "Monitor CRASHED" in msg
+        assert "exchange down" in msg
+
+    @patch("scanner.execution.executor._send_ops_alert")
+    @patch("scanner.execution.monitor.sync_order_status", side_effect=RuntimeError("boom"))
+    def test_monitor_crash_still_flushes(self, mock_sync, mock_alert):
+        from scanner.execution.__main__ import _cmd_monitor
+        from scanner.execution.config import ExecutionConfig
+
+        config = ExecutionConfig(enabled=False, mode="testnet")
+        mock_handler = MagicMock()
+        _cmd_monitor(config, discord_handler=mock_handler)
+        mock_handler.flush_to_discord.assert_called_once()
