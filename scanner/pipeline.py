@@ -458,6 +458,10 @@ def run_scan(
     exec_results = []
 
     if dry_execute and confirms:
+        # Dry-execute: preview sizing without exchange connectivity.
+        # Uses hardcoded balance=$10K, risk=1.0% — intentional for
+        # credential-less preview. Skips: price fetch, kill switch,
+        # position limits, BTC vol gate, margin guard.
         if verbose:
             print(f"\nStage 4 (dry-execute): {len(confirms)} CONFIRMs")
         from .execution.executor import validate_execution_params
