@@ -64,7 +64,7 @@ class TestLoadExecutionConfig:
             "DISCORD_EXECUTION_WEBHOOK_URL": "https://discord.com/hook",
         }
         with patch.dict("os.environ", env, clear=False):
-            with patch("scanner.execution.config.get_secret_or_env", side_effect=lambda s, e, p: env.get(e, "")):
+            with patch("scanner.execution.config.get_secret_or_env", side_effect=lambda s, e, p, **kw: env.get(e, "")):
                 cfg = load_execution_config()
 
         assert cfg.enabled is True
@@ -89,3 +89,29 @@ class TestLoadExecutionConfig:
                 with patch("scanner.execution.config.get_secret_or_env", return_value="0xtest"):
                     cfg = load_execution_config()
             assert cfg.enabled is True, f"Failed for EXECUTION_ENABLED={val}"
+
+    def test_live_mode_requires_sm_credentials(self):
+        """Live mode + GCP project → SM failure raises RuntimeError."""
+        env = {
+            "EXECUTION_MODE": "live",
+            "GCP_PROJECT_ID": "perpstrader",
+            "HL_PRIVATE_KEY": "env_fallback",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("scanner.execution.secrets.get_secret", return_value=""):
+                with pytest.raises(RuntimeError, match="require=True"):
+                    load_execution_config()
+
+    def test_testnet_mode_falls_back_to_env(self):
+        """Testnet mode → SM failure gracefully falls back to env vars."""
+        env = {
+            "EXECUTION_MODE": "testnet",
+            "GCP_PROJECT_ID": "perpstrader",
+            "HL_PRIVATE_KEY": "0xfallback",
+            "HL_WALLET_ADDRESS": "0xwallet",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("scanner.execution.secrets.get_secret", return_value=""):
+                cfg = load_execution_config()
+        assert cfg.private_key == "0xfallback"
+        assert cfg.wallet_address == "0xwallet"

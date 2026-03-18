@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scanner.execution import secrets
 from scanner.execution.secrets import get_secret_or_env
 
@@ -88,3 +90,22 @@ class TestGetSecretOrEnv:
             with patch.dict("os.environ", {"KEY": "env_val"}):
                 result = get_secret_or_env("KEY", "KEY", "proj")
                 assert result == "env_val"
+
+    def test_require_raises_when_sm_unavailable(self):
+        """require=True + SM returns empty → RuntimeError, no env fallback."""
+        with patch("scanner.execution.secrets.get_secret", return_value=""):
+            with patch.dict("os.environ", {"KEY": "env_val"}):
+                with pytest.raises(RuntimeError, match="require=True"):
+                    get_secret_or_env("KEY", "KEY", "proj", require=True)
+
+    def test_require_succeeds_when_sm_returns_value(self):
+        """require=True + SM returns value → no error."""
+        with patch("scanner.execution.secrets.get_secret", return_value="from_sm"):
+            result = get_secret_or_env("KEY", "KEY", "proj", require=True)
+            assert result == "from_sm"
+
+    def test_require_ignored_without_project(self):
+        """require=True but no project_id → skips SM, falls back to env."""
+        with patch.dict("os.environ", {"KEY": "env_val"}):
+            result = get_secret_or_env("KEY", "KEY", "", require=True)
+            assert result == "env_val"

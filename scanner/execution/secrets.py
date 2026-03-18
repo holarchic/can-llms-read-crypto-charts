@@ -27,14 +27,23 @@ def get_secret(project_id: str, secret_id: str, version: str = "latest") -> str:
         return ""
 
 
-def get_secret_or_env(secret_id: str, env_key: str, project_id: str = "") -> str:
+def get_secret_or_env(
+    secret_id: str, env_key: str, project_id: str = "", *, require: bool = False,
+) -> str:
     """Try GCP Secret Manager first, fall back to env var.
 
     If project_id is empty, skips SM lookup entirely.
+    If require=True and SM lookup fails/returns empty, raises RuntimeError
+    instead of falling back to env vars (use for live mode credentials).
     """
     if project_id:
         value = get_secret(project_id, secret_id)
         if value:
             return value
+        if require:
+            raise RuntimeError(
+                f"Secret '{secret_id}' unavailable from Secret Manager "
+                f"(project={project_id}) and require=True"
+            )
 
     return os.getenv(env_key, "")

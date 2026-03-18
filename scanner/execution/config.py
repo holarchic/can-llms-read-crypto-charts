@@ -65,13 +65,19 @@ class ExecutionConfig:
 def load_execution_config() -> ExecutionConfig:
     """Build ExecutionConfig from GCP Secret Manager / env vars."""
     gcp_project = os.getenv("GCP_PROJECT_ID", "")
+    is_live = os.getenv("EXECUTION_MODE", "testnet") == "live"
+    require_sm = is_live and bool(gcp_project)
 
     return ExecutionConfig(
         enabled=os.getenv("EXECUTION_ENABLED", "false").lower() in ("true", "1", "yes"),
         mode=os.getenv("EXECUTION_MODE", "testnet"),
         exchange=os.getenv("EXECUTION_EXCHANGE", "hyperliquid"),
-        private_key=get_secret_or_env("LT_HL_PRIVATE_KEY", "HL_PRIVATE_KEY", gcp_project),
-        wallet_address=get_secret_or_env("LT_HL_WALLET_ADDRESS", "HL_WALLET_ADDRESS", gcp_project),
+        private_key=get_secret_or_env(
+            "LT_HL_PRIVATE_KEY", "HL_PRIVATE_KEY", gcp_project, require=require_sm,
+        ),
+        wallet_address=get_secret_or_env(
+            "LT_HL_WALLET_ADDRESS", "HL_WALLET_ADDRESS", gcp_project, require=require_sm,
+        ),
         risk_pct=float(os.getenv("EXECUTION_RISK_PCT", "1.0")),
         max_notional_usd=float(os.getenv("EXECUTION_MAX_NOTIONAL_USD", "0.0")),
         max_concurrent_positions=int(os.getenv("EXECUTION_MAX_POSITIONS", "100")),
