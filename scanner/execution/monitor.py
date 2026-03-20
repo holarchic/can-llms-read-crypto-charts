@@ -534,7 +534,7 @@ def _send_fill_alert(entry: dict, order: dict, fill_price: float | None, config:
     label = type_labels.get(order["order_type"], order["order_type"])
     is_win = order["order_type"] in ("tp1", "tp2")
     emoji = "\U0001f7e2" if is_win else "\U0001f534"
-    price_str = f" @ ${fill_price:,.2f}" if fill_price else ""
+    price_str = f" @ ${fill_price:,.5f}" if fill_price else ""
     message = f"{emoji} **{label} FILLED** {entry['coin']} {entry['direction']}{price_str}"
 
     try:

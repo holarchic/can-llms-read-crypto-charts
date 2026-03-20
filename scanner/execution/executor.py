@@ -330,7 +330,7 @@ def execute_trade(
         er.skip_reason = "balance_fetch_failed"
         er.error = str(exc)
         log.warning("Balance fetch failed: %s", exc)
-        _send_ops_alert(f"Balance fetch failed: {exc}", exec_config)
+        _send_errors_alert(f"Balance fetch failed: {exc}", exec_config)
         return er
 
     # 7.6 Zero balance guard
@@ -475,7 +475,7 @@ def execute_trade(
         er.skip_reason = "entry_failed"
         er.error = str(exc)
         log.error("%s: entry order failed — %s", result.coin, exc)
-        _send_ops_alert(f"Entry order failed for {result.coin}: {exc}", exec_config)
+        _send_errors_alert(f"Entry order failed for {result.coin}: {exc}", exec_config)
         return er
 
     # 10. Stop loss (3 retries — URGENT if all fail)
@@ -749,11 +749,16 @@ _CRITICAL_SKIP_REASONS = frozenset({
     "kill_switch", "btc_vol_gate_error", "order_count_error",
 })
 
+_ERROR_SKIP_REASONS = frozenset({
+    "entry_failed", "balance_fetch_failed",
+})
+
 
 def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
     """Send Discord notification when a CONFIRM is skipped (not executed).
 
     Critical skips get @everyone + BLOCKED prefix → urgent channel.
+    Error skips (entry_failed, balance_fetch_failed) → errors channel.
     Routine skips get SKIPPED → ops channel.
     """
     if not er.skip_reason:
@@ -771,6 +776,9 @@ def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
         except Exception as exc:
             log.warning("Critical skip alert failed: %s", exc)
             return False
+    elif er.skip_reason in _ERROR_SKIP_REASONS:
+        message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
+        return _send_errors_alert(message, config)
     else:
         message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
         return _send_ops_alert(message, config)
