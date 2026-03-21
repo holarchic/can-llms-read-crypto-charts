@@ -59,21 +59,38 @@ Examples:
 def _cmd_monitor(config, discord_handler=None):
     import traceback
 
+    from ccxt.base.errors import ExchangeNotAvailable, NetworkError, RequestTimeout
+
     from scanner.storage import get_connection
 
     from .executor import _send_errors_alert
     from .monitor import check_positions, enforce_position_timeouts, sync_order_status
 
+    _TRANSIENT = (ExchangeNotAvailable, NetworkError, RequestTimeout, ConnectionError, TimeoutError)
+
     try:
         conn = get_connection()
-        updated = sync_order_status(config, conn)
-        print(f"Orders updated: {updated}")
 
-        timed_out = enforce_position_timeouts(config, conn)
-        if timed_out:
-            print(f"Positions timed out: {timed_out}")
+        # Each step isolated so a transient API blip doesn't skip the rest
+        try:
+            updated = sync_order_status(config, conn)
+            print(f"Orders updated: {updated}")
+        except _TRANSIENT as exc:
+            print(f"sync_order_status skipped (transient): {exc}")
 
-        issues = check_positions(config, conn)
+        try:
+            timed_out = enforce_position_timeouts(config, conn)
+            if timed_out:
+                print(f"Positions timed out: {timed_out}")
+        except _TRANSIENT as exc:
+            print(f"enforce_position_timeouts skipped (transient): {exc}")
+
+        try:
+            issues = check_positions(config, conn)
+        except _TRANSIENT as exc:
+            print(f"check_positions skipped (transient): {exc}")
+            issues = []
+
         if issues:
             print(f"\nHealth check issues ({len(issues)}):")
             for issue in issues:
