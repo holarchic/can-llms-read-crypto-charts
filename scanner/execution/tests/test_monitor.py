@@ -7,6 +7,7 @@ import pytest
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.monitor import (
+    _calc_r,
     _send_fill_alert,
     check_positions,
     enforce_position_timeouts,
@@ -1014,11 +1015,13 @@ class TestPositionTimeout:
         sl_result = get_order(sl["order_id"], conn)
         assert sl_result["status"] == "CANCELLED"
 
-        # Discord alert sent
+        # Discord alert sent with R value
         mock_post.assert_called()
         call_body = mock_post.call_args[1]["json"]["content"]
         assert "TIMEOUT" in call_body
         assert "BTC" in call_body
+        # entry=62000, fill=62500, sl=59800 → LONG: (62500-62000)/(62000-59800) = +0.23R
+        assert "+0.23R" in call_body
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_fresh_position_skipped(self, mock_auth, config, conn):
@@ -1138,16 +1141,40 @@ class TestPositionTimeout:
         mock_exchange.create_order.assert_not_called()
 
 
+class TestCalcR:
+    """R (risk multiple) calculation."""
+
+    def test_long_winner(self):
+        """LONG: entry=100, exit=110, sl=95 → +2.0R."""
+        assert _calc_r(100.0, 110.0, 95.0, "LONG") == pytest.approx(2.0)
+
+    def test_long_loser(self):
+        """LONG: entry=100, exit=95, sl=95 → -1.0R."""
+        assert _calc_r(100.0, 95.0, 95.0, "LONG") == pytest.approx(-1.0)
+
+    def test_short_winner(self):
+        """SHORT: entry=100, exit=90, sl=105 → +2.0R."""
+        assert _calc_r(100.0, 90.0, 105.0, "SHORT") == pytest.approx(2.0)
+
+    def test_short_loser(self):
+        """SHORT: entry=100, exit=105, sl=105 → -1.0R."""
+        assert _calc_r(100.0, 105.0, 105.0, "SHORT") == pytest.approx(-1.0)
+
+    def test_zero_risk_returns_none(self):
+        """SL at entry price → zero risk → None."""
+        assert _calc_r(100.0, 110.0, 100.0, "LONG") is None
+
+
 class TestFillAlert:
     """SL/TP fill Discord notifications."""
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_sl(self, mock_post):
-        """SL fill → red emoji, SL FILLED label."""
+        """SL fill → red emoji, SL FILLED label, R value shown."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
-        entry = {"coin": "BTC", "direction": "LONG"}
-        order = {"order_type": "stop_loss"}
+        entry = {"coin": "BTC", "direction": "LONG", "entry_price": 62000}
+        order = {"order_type": "stop_loss", "trigger_price": 59800}
 
         result = _send_fill_alert(entry, order, 59800.0, config)
 
@@ -1157,13 +1184,32 @@ class TestFillAlert:
         assert "BTC" in body
         assert "59,800.00" in body
         assert "\U0001f534" in body  # red circle
+        assert "-1.00R" in body
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_tp(self, mock_post):
-        """TP1 fill → green emoji, TP1 FILLED label."""
+        """TP1 fill → green emoji, TP1 FILLED label, R value from scan_orders SL."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
-        entry = {"coin": "ETH", "direction": "SHORT"}
+        entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
+        order = {"order_type": "tp1"}
+        scan_orders = [{"order_type": "stop_loss", "trigger_price": 3500}]
+
+        result = _send_fill_alert(entry, order, 3200.50, config, scan_orders=scan_orders)
+
+        assert result is True
+        body = mock_post.call_args[1]["json"]["content"]
+        assert "TP1 FILLED" in body
+        assert "ETH" in body
+        assert "\U0001f7e2" in body  # green circle
+        assert "+2.00R" in body
+
+    @patch("scanner.execution.monitor.requests.post")
+    def test_fill_alert_tp_no_scan_orders(self, mock_post):
+        """TP fill without scan_orders → no R shown, no crash."""
+        mock_post.return_value = MagicMock(status_code=204)
+        config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
+        entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
         order = {"order_type": "tp1"}
 
         result = _send_fill_alert(entry, order, 3200.50, config)
@@ -1171,8 +1217,22 @@ class TestFillAlert:
         assert result is True
         body = mock_post.call_args[1]["json"]["content"]
         assert "TP1 FILLED" in body
-        assert "ETH" in body
-        assert "\U0001f7e2" in body  # green circle
+        assert "R" not in body or "SHORT" in body  # no R suffix
+
+    @patch("scanner.execution.monitor.requests.post")
+    def test_fill_alert_no_entry_price(self, mock_post):
+        """No entry_price on entry dict → no R shown, no crash."""
+        mock_post.return_value = MagicMock(status_code=204)
+        config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
+        entry = {"coin": "BTC", "direction": "LONG"}
+        order = {"order_type": "stop_loss", "trigger_price": 59800}
+
+        result = _send_fill_alert(entry, order, 59800.0, config)
+
+        assert result is True
+        body = mock_post.call_args[1]["json"]["content"]
+        assert "SL FILLED" in body
+        assert "R" not in body.split("LONG")[-1]  # no R after direction
 
     def test_fill_alert_no_webhook(self):
         """No ops webhook → returns False, no request."""

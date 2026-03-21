@@ -84,7 +84,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
 
                     # Handle exit fill: route based on partial vs full close
                     if order["order_type"] in ("stop_loss", "tp1", "tp2"):
-                        _send_fill_alert(entry, order, fill_price, exec_config)
+                        _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
                         _handle_exit_fill(
                             order, entry, scan_orders,
                             symbol, exchange, exec_config, conn,
@@ -109,7 +109,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         updated += 1
 
                         if order["order_type"] in ("stop_loss", "tp1", "tp2"):
-                            _send_fill_alert(entry, order, fill_price, exec_config)
+                            _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
                             _handle_exit_fill(
                                 order, entry, scan_orders,
                                 symbol, exchange, exec_config, conn,
@@ -440,14 +440,22 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         symbol = meta["symbol_template"].format(coin=entry["coin"])
         exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
-        success = _market_close_position(
+        fill_price = _market_close_position(
             entry, symbol, exit_side, remaining_qty, exchange, exec_config, conn,
         )
 
-        if success:
+        if fill_price is not None:
+            # Fetch SL trigger for R calculation
+            sl_row = conn.execute(
+                "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' LIMIT 1",
+                (entry["scan_id"],),
+            ).fetchone()
+            sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
+
             # Cancel remaining SL/TP orders
             _cancel_remaining_orders(entry["scan_id"], "", symbol, exec_config, conn)
-            _send_timeout_alert(entry, age_hours, remaining_qty, exec_config)
+            _send_timeout_alert(entry, age_hours, remaining_qty, exec_config,
+                                fill_price=fill_price, sl_price=sl_price)
             timed_out += 1
         else:
             _send_urgent_sl_alert(entry["coin"], entry["direction"], exec_config)
@@ -472,8 +480,10 @@ def _get_remaining_qty(entry: dict, conn) -> float:
 def _market_close_position(
     entry: dict, symbol: str, exit_side: str, qty: float,
     exchange, config: ExecutionConfig, conn,
-) -> bool:
+) -> float | None:
     """Place a reduceOnly market order to close a timed-out position. 3 retries.
+
+    Returns fill price on success, None on failure.
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
     with slippage. Requires current price as the base for slippage calc.
@@ -511,7 +521,7 @@ def _market_close_position(
                 "Timeout close %s %s: qty %s at %s",
                 entry["coin"], entry["direction"], rounded_qty, fill_price,
             )
-            return True
+            return fill_price if fill_price else 0.0
         except Exception as exc:
             log.error(
                 "Timeout close attempt %d/%d for %s failed: %s",
@@ -521,10 +531,24 @@ def _market_close_position(
                 time.sleep(attempt)
 
     log.error("All timeout close attempts exhausted for %s — position still open", entry["coin"])
-    return False
+    return None
 
 
-def _send_fill_alert(entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig) -> bool:
+def _calc_r(entry_price: float, exit_price: float, sl_price: float, direction: str) -> float | None:
+    """Calculate R (risk multiple) for a closed position."""
+    risk = abs(entry_price - sl_price)
+    if risk <= 0:
+        return None
+    if direction == "LONG":
+        return (exit_price - entry_price) / risk
+    else:
+        return (entry_price - exit_price) / risk
+
+
+def _send_fill_alert(
+    entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig,
+    scan_orders: list[dict] | None = None,
+) -> bool:
     """Send Discord notification when an exit order (SL/TP) fills."""
     webhook = config.discord_ops_webhook_url
     if not webhook:
@@ -535,7 +559,25 @@ def _send_fill_alert(entry: dict, order: dict, fill_price: float | None, config:
     is_win = order["order_type"] in ("tp1", "tp2")
     emoji = "\U0001f7e2" if is_win else "\U0001f534"
     price_str = f" @ ${fill_price:,.5f}" if fill_price else ""
-    message = f"{emoji} **{label} FILLED** {entry['coin']} {entry['direction']}{price_str}"
+
+    # Calculate R value
+    r_str = ""
+    if fill_price and entry.get("entry_price"):
+        if order["order_type"] == "stop_loss":
+            sl_price = order.get("trigger_price")
+        else:
+            # TP fill — find SL trigger from scan_orders
+            sl_order = next(
+                (o for o in (scan_orders or []) if o["order_type"] == "stop_loss"),
+                None,
+            )
+            sl_price = sl_order.get("trigger_price") if sl_order else None
+        if sl_price:
+            r_val = _calc_r(float(entry["entry_price"]), fill_price, float(sl_price), entry["direction"])
+            if r_val is not None:
+                r_str = f" · {r_val:+.2f}R"
+
+    message = f"{emoji} **{label} FILLED** {entry['coin']} {entry['direction']}{price_str}{r_str}"
 
     try:
         resp = requests.post(webhook, json={"content": message}, timeout=10)
@@ -545,14 +587,24 @@ def _send_fill_alert(entry: dict, order: dict, fill_price: float | None, config:
         return False
 
 
-def _send_timeout_alert(entry: dict, age_hours: float, qty: float, config: ExecutionConfig) -> bool:
+def _send_timeout_alert(
+    entry: dict, age_hours: float, qty: float, config: ExecutionConfig,
+    *, fill_price: float | None = None, sl_price: float | None = None,
+) -> bool:
     """Send Discord notification for a timed-out position."""
     webhook = config.discord_ops_webhook_url
     if not webhook:
         return False
+
+    r_str = ""
+    if fill_price and sl_price and entry.get("entry_price"):
+        r_val = _calc_r(float(entry["entry_price"]), fill_price, sl_price, entry["direction"])
+        if r_val is not None:
+            r_str = f" · {r_val:+.2f}R"
+
     message = (
         f"**TIMEOUT**: {entry['coin']} {entry['direction']} closed after "
-        f"{age_hours:.1f}h (limit: {config.position_timeout_hours}h) — qty {qty}"
+        f"{age_hours:.1f}h (limit: {config.position_timeout_hours}h) — qty {qty}{r_str}"
     )
     try:
         resp = requests.post(webhook, json={"content": message}, timeout=10)
