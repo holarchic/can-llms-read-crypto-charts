@@ -604,7 +604,7 @@ def _place_stop_loss(
     for attempt in range(max_retries):
         try:
             return exchange.create_order(
-                symbol, "STOP_MARKET", side, quantity, trigger_price,
+                symbol, "market", side, quantity, trigger_price,
                 params,
             )
         except DuplicateOrderId:
@@ -638,7 +638,7 @@ def _place_take_profit(
         if cloid:
             params["clientOrderId"] = cloid
         return exchange.create_order(
-            symbol, "TAKE_PROFIT_MARKET", side, quantity, trigger_price,
+            symbol, "market", side, quantity, trigger_price,
             params,
         )
     except Exception as exc:

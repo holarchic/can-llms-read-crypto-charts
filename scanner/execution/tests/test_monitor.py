@@ -446,9 +446,10 @@ class TestPartialExitHandling:
         tp1_result = get_order(tp1["order_id"], conn)
         assert tp1_result["status"] == "CANCELLED"
 
+    @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_canceled_with_zero_fill_stays_cancelled(self, mock_auth, config, conn):
-        """SL canceled with filled=0 → DB shows CANCELLED. Existing behavior preserved."""
+    def test_canceled_with_zero_fill_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """SL canceled with filled=0 → auto-replaced on exchange."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -457,14 +458,16 @@ class TestPartialExitHandling:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
 
         updated = sync_order_status(config, conn)
         assert updated == 1
 
         sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "CANCELLED"
-        assert sl_result["fill_price"] is None
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
@@ -549,9 +552,10 @@ class TestPartialExitHandling:
 class TestUnknownOrderStatuses:
     """expired/rejected → CANCELLED; unknown → left PLACED with warning."""
 
+    @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_expired_order_marked_cancelled(self, mock_auth, config, conn):
-        """Exchange reports status='expired' → order becomes CANCELLED with error_message."""
+    def test_expired_order_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """Exchange reports status='expired' → exit order auto-replaced."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -560,18 +564,21 @@ class TestUnknownOrderStatuses:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "expired"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
 
         updated = sync_order_status(config, conn)
         assert updated == 1
 
         sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "CANCELLED"
-        assert "expired" in sl_result["error_message"]
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["exchange_order_id"] == "sl_exch2"
 
+    @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_rejected_order_marked_cancelled(self, mock_auth, config, conn):
-        """Exchange reports status='rejected' → order becomes CANCELLED with error_message."""
+    def test_rejected_order_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """Exchange reports status='rejected' → exit order auto-replaced."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -580,14 +587,16 @@ class TestUnknownOrderStatuses:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
 
         updated = sync_order_status(config, conn)
         assert updated == 1
 
         sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "CANCELLED"
-        assert "rejected" in sl_result["error_message"]
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_unknown_status_left_placed(self, mock_auth, config, conn, caplog):
@@ -1242,3 +1251,284 @@ class TestFillAlert:
 
         result = _send_fill_alert(entry, order, 59800.0, config)
         assert result is False
+
+
+class TestReplacementOrderTypes:
+    """Replacement orders (TP1 fill, partial fill) use type='market'."""
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp1_sl_replacement_uses_market_type(self, mock_auth, mock_cancel, mock_sleep,
+                                                   config, conn):
+        """SL replacement after TP1 fill uses type='market'."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL replacement call should use "market" type
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][1] == "market"
+        assert call_args[0][5]["stopLossPrice"] == 59800
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_partial_sl_replacement_uses_market_type(self, mock_auth, mock_cancel, mock_sleep,
+                                                       config, conn):
+        """SL + TP2 replacements after partial SL fill both use type='market'."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", trigger_price=68000, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 59750, "filled": 0.06} if oid == "sl_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.side_effect = [
+            {"id": "sl_exch2"},
+            {"id": "tp2_exch2"},
+        ]
+        mock_exchange.amount_to_precision.return_value = "0.04"
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # Both replacement calls should use "market"
+        assert mock_exchange.create_order.call_count == 2
+        for call in mock_exchange.create_order.call_args_list:
+            assert call[0][1] == "market"
+
+
+class TestRejectedExitOrderReplacement:
+    """Auto-replace rejected/cancelled/expired exit orders."""
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_sl_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """SL rejected on exchange → auto-replaced with same trigger."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Verify it used stopLossPrice param
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][5]["stopLossPrice"] == 59800.0
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_tp1_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """TP1 rejected → auto-replaced with takeProfitPrice."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", trigger_price=65000, quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "tp1_exch2"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "PLACED"
+        assert tp1_result["exchange_order_id"] == "tp1_exch2"
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][5]["takeProfitPrice"] == 65000.0
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_expired_tp2_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """TP2 expired → auto-replaced."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        # TP1 already filled
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="PLACED",
+                          exchange_order_id="tp2_exch1", trigger_price=68000, quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+        save_order(tp2, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "expired"}
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_exchange.create_order.return_value = {"id": "tp2_exch2"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        tp2_result = get_order(tp2["order_id"], conn)
+        assert tp2_result["status"] == "PLACED"
+        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_canceled_zero_fill_sl_gets_replaced(self, mock_auth, mock_sleep, config, conn):
+        """SL canceled (zero fill) → auto-replaced."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_sl_replacement_fails_sends_urgent(self, mock_auth, mock_sleep,
+                                                          mock_post, config, conn):
+        """SL rejected, all replacement retries fail → URGENT alert sent."""
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.side_effect = Exception("exchange down")
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        sync_order_status(config, conn)
+
+        # URGENT alert sent for SL failure
+        mock_post.assert_called()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "URGENT" in call_body
+        assert "BTC" in call_body
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_tp_replacement_fails_sends_errors(self, mock_auth, mock_sleep,
+                                                          mock_post, config, conn):
+        """TP1 rejected, all replacement retries fail → errors channel alert."""
+        config.discord_errors_webhook_url = "https://discord.com/errors"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", trigger_price=65000, quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.side_effect = Exception("exchange down")
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        sync_order_status(config, conn)
+
+        # Errors channel alert sent for TP failure
+        mock_post.assert_called()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "TP1 replacement FAILED" in call_body
+        assert "BTC" in call_body
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_entry_not_replaced(self, mock_auth, config, conn):
+        """Non-exit order (entry) rejected → stays CANCELLED, no replacement."""
+        # Need a FILLED entry so sync_order_status picks up the scan
+        filled_entry = _make_order(scan_id="s1", order_type="entry", status="FILLED",
+                                   exchange_order_id="entry_exch1", quantity=0.1)
+        # Simulate a second PLACED "entry" order that gets rejected (edge case)
+        extra = _make_order(scan_id="s1", order_type="entry", status="PLACED",
+                            exchange_order_id="extra_exch1", quantity=0.1)
+        save_order(filled_entry, conn)
+        save_order(extra, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "rejected"} if oid == "extra_exch1"
+            else {"status": "closed", "average": 62000}
+        )
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        extra_result = get_order(extra["order_id"], conn)
+        assert extra_result["status"] == "CANCELLED"
+        # No replacement attempted for non-exit order
+        mock_exchange.create_order.assert_not_called()
+
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_rejected_sl_skipped_if_position_closed(self, mock_auth, mock_sleep, config, conn):
+        """SL rejected but position already fully closed → skip replacement.
+
+        get_open_entry_orders excludes fully-closed positions (entry qty == filled exit qty),
+        so the SL rejection is never even checked. Verify no replacement attempted.
+        """
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        # TP2 already filled the full position
+        tp2 = _make_order(scan_id="s1", order_type="tp2", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(tp2, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        # SL stays PLACED — fully closed position not visited by sync_order_status
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["status"] == "PLACED"
+        mock_exchange.create_order.assert_not_called()
+        # fetch_order never called — entry excluded from open_entries
+        mock_exchange.fetch_order.assert_not_called()

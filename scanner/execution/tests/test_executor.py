@@ -11,6 +11,8 @@ from ccxt.base.errors import DuplicateOrderId
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import (
     ExecutionResult,
+    _place_stop_loss,
+    _place_take_profit,
     current_open_notional,
     execute_trade,
     preflight_check,
@@ -1161,3 +1163,37 @@ class TestPreflightCheck:
         failures = preflight_check(exec_config)
         assert len(failures) == 1
         assert "Zero balance" in failures[0]
+
+
+class TestOrderTypeMarket:
+    """SL and TP trigger orders must use type='market' for ccxt isMarket=True."""
+
+    @patch("scanner.execution.executor.get_auth_exchange")
+    def test_stop_loss_uses_market_type(self, mock_auth, exec_config):
+        """_place_stop_loss passes type='market' with stopLossPrice in params."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "sl_123"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        result = _place_stop_loss(exec_config, "BTC/USDC:USDC", "sell", 0.1, 59800.0)
+
+        assert result is not None
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][1] == "market"
+        assert call_args[1] is not None or call_args[0][5]["stopLossPrice"] == 59800.0
+
+    @patch("scanner.execution.executor.get_auth_exchange")
+    def test_take_profit_uses_market_type(self, mock_auth, exec_config):
+        """_place_take_profit passes type='market' with takeProfitPrice in params."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "tp_123"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        result = _place_take_profit(exec_config, "BTC/USDC:USDC", "sell", 0.05, 65000.0)
+
+        assert result is not None
+        call_args = mock_exchange.create_order.call_args
+        assert call_args[0][1] == "market"
+        assert call_args[1] is not None or call_args[0][5]["takeProfitPrice"] == 65000.0

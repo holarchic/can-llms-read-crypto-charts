@@ -119,6 +119,10 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                     else:
                         update_order_status(order["order_id"], "CANCELLED", conn)
                         updated += 1
+                        if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                            _attempt_exit_order_replacement(
+                                order, entry, symbol, exchange, exec_config, conn,
+                            )
 
                 elif exch_status in ("expired", "rejected"):
                     update_order_status(
@@ -130,6 +134,10 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                         "%s %s %s on exchange (oid=%s)",
                         entry["coin"], order["order_type"], exch_status, exch_oid,
                     )
+                    if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                        _attempt_exit_order_replacement(
+                            order, entry, symbol, exchange, exec_config, conn,
+                        )
 
                 elif exch_status not in ("open", "pending", "new"):
                     log.warning(
@@ -242,7 +250,7 @@ def _handle_partial_exit_fill(
     if sl_order:
         sl_trigger = sl_order.get("trigger_price")
         _place_replacement_order(
-            sl_order, "STOP_MARKET", sl_trigger,
+            sl_order, "market", sl_trigger,
             {"stopLossPrice": sl_trigger, "reduceOnly": True},
             rounded_qty, residual_qty, exit_side,
             symbol, exchange, entry, config, conn,
@@ -265,7 +273,7 @@ def _handle_partial_exit_fill(
     if tp2_order:
             tp2_trigger = tp2_order.get("trigger_price")
             _place_replacement_order(
-                tp2_order, "TAKE_PROFIT_MARKET", tp2_trigger,
+                tp2_order, "market", tp2_trigger,
                 {"takeProfitPrice": tp2_trigger, "reduceOnly": True},
                 rounded_qty, residual_qty, exit_side,
                 symbol, exchange, entry, config, conn,
@@ -307,6 +315,9 @@ def _place_replacement_order(
                           order["order_type"], entry["coin"])
                 if order["order_type"] == "stop_loss":
                     _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+                elif order["order_type"] in ("tp1", "tp2"):
+                    _send_errors_tp_alert(entry["coin"], entry["direction"],
+                                          order["order_type"], config)
 
 
 def _handle_tp1_fill(
@@ -359,7 +370,7 @@ def _handle_tp1_fill(
     for attempt in range(1, max_retries + 1):
         try:
             sl_resp = exchange.create_order(
-                symbol, "STOP_MARKET", exit_side, rounded_qty, sl_trigger,
+                symbol, "market", exit_side, rounded_qty, sl_trigger,
                 {"stopLossPrice": sl_trigger, "reduceOnly": True, "clientOrderId": cloid},
             )
             new_exch_oid = sl_resp.get("id", "")
@@ -394,6 +405,75 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
     except Exception as exc:
         log.error("URGENT SL alert send failed: %s", exc)
         return False
+
+
+def _send_errors_tp_alert(
+    coin: str, direction: str, order_type: str, config: ExecutionConfig,
+) -> bool:
+    """Send Discord errors-channel alert when TP replacement exhausts retries."""
+    webhook = config.discord_errors_webhook_url
+    if not webhook:
+        return False
+    label = order_type.upper()
+    message = (f"**{label} replacement FAILED** for {coin} {direction} "
+               f"after 3 attempts — profit target removed")
+    try:
+        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.error("TP errors alert send failed: %s", exc)
+        return False
+
+
+def _attempt_exit_order_replacement(
+    order: dict, entry: dict, symbol: str, exchange,
+    config: ExecutionConfig, conn,
+) -> None:
+    """Re-place a rejected/cancelled exit order (SL, TP1, TP2).
+
+    Guards: only exit orders, skip if position closed, skip if no trigger_price.
+    """
+    if order["order_type"] not in ("stop_loss", "tp1", "tp2"):
+        return
+
+    remaining_qty = _get_remaining_qty(entry, conn)
+    if remaining_qty <= 0:
+        log.info("Skipping %s replacement for %s — position fully closed",
+                 order["order_type"], entry["coin"])
+        return
+
+    trigger_price = order.get("trigger_price")
+    if not trigger_price:
+        log.error("Cannot replace %s for %s — no trigger_price on order",
+                  order["order_type"], entry["coin"])
+        if order["order_type"] == "stop_loss":
+            _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+        return
+
+    trigger_price = float(trigger_price)
+    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
+    rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
+
+    if order["order_type"] == "stop_loss":
+        extra_params = {"stopLossPrice": trigger_price, "reduceOnly": True}
+    else:
+        extra_params = {"takeProfitPrice": trigger_price, "reduceOnly": True}
+
+    try:
+        _place_replacement_order(
+            order, "market", trigger_price,
+            extra_params, rounded_qty, remaining_qty, exit_side,
+            symbol, exchange, entry, config, conn,
+            suffix=":rejected",
+        )
+    except Exception as exc:
+        log.error("Unexpected error replacing %s for %s: %s",
+                  order["order_type"], entry["coin"], exc)
+        if order["order_type"] == "stop_loss":
+            _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+        else:
+            _send_errors_tp_alert(entry["coin"], entry["direction"],
+                                  order["order_type"], config)
 
 
 def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
