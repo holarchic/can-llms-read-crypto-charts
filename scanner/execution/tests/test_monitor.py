@@ -1350,10 +1350,12 @@ class TestRejectedExitOrderReplacement:
         call_args = mock_exchange.create_order.call_args
         assert call_args[0][5]["stopLossPrice"] == 59800.0
 
+    @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_rejected_tp1_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """TP1 rejected → auto-replaced with takeProfitPrice."""
+    def test_rejected_tp1_not_replaced(self, mock_auth, mock_sleep, mock_post, config, conn):
+        """TP1 rejected → stays CANCELLED, no replacement attempted."""
+        config.discord_errors_webhook_url = "https://discord.com/errors"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
                           exchange_order_id="tp1_exch1", trigger_price=65000, quantity=0.05)
@@ -1362,22 +1364,21 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
-        mock_exchange.amount_to_precision.return_value = "0.1"
-        mock_exchange.create_order.return_value = {"id": "tp1_exch2"}
         mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
 
         sync_order_status(config, conn)
 
         tp1_result = get_order(tp1["order_id"], conn)
-        assert tp1_result["status"] == "PLACED"
-        assert tp1_result["exchange_order_id"] == "tp1_exch2"
-        call_args = mock_exchange.create_order.call_args
-        assert call_args[0][5]["takeProfitPrice"] == 65000.0
+        assert tp1_result["status"] == "CANCELLED"
+        mock_exchange.create_order.assert_not_called()
 
+    @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_expired_tp2_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """TP2 expired → auto-replaced."""
+    def test_expired_tp2_not_replaced(self, mock_auth, mock_sleep, mock_post, config, conn):
+        """TP2 expired → stays CANCELLED, no replacement attempted."""
+        config.discord_errors_webhook_url = "https://discord.com/errors"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         # TP1 already filled
         tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
@@ -1389,15 +1390,14 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "expired"}
-        mock_exchange.amount_to_precision.return_value = "0.05"
-        mock_exchange.create_order.return_value = {"id": "tp2_exch2"}
         mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
 
         sync_order_status(config, conn)
 
         tp2_result = get_order(tp2["order_id"], conn)
-        assert tp2_result["status"] == "PLACED"
-        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+        assert tp2_result["status"] == "CANCELLED"
+        mock_exchange.create_order.assert_not_called()
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
@@ -1452,9 +1452,9 @@ class TestRejectedExitOrderReplacement:
     @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_rejected_tp_replacement_fails_sends_errors(self, mock_auth, mock_sleep,
-                                                          mock_post, config, conn):
-        """TP1 rejected, all replacement retries fail → errors channel alert."""
+    def test_rejected_tp_sends_errors_alert(self, mock_auth, mock_sleep,
+                                             mock_post, config, conn):
+        """TP1 rejected → errors alert sent immediately, no replacement."""
         config.discord_errors_webhook_url = "https://discord.com/errors"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
@@ -1464,18 +1464,17 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
-        mock_exchange.amount_to_precision.return_value = "0.1"
-        mock_exchange.create_order.side_effect = Exception("exchange down")
         mock_auth.return_value = mock_exchange
         mock_post.return_value = MagicMock(status_code=204)
 
         sync_order_status(config, conn)
 
-        # Errors channel alert sent for TP failure
+        # Errors channel alert sent, no replacement attempted
         mock_post.assert_called()
         call_body = mock_post.call_args[1]["json"]["content"]
         assert "TP1 replacement FAILED" in call_body
         assert "BTC" in call_body
+        mock_exchange.create_order.assert_not_called()
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_rejected_entry_not_replaced(self, mock_auth, config, conn):

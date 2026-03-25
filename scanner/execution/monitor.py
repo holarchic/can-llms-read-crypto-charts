@@ -455,6 +455,13 @@ def _attempt_exit_order_replacement(
             _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
         return
 
+    if order["order_type"] in ("tp1", "tp2"):
+        log.warning("Skipping %s replacement for %s — TP rejection not auto-replaced",
+                    order["order_type"], entry["coin"])
+        _send_errors_tp_alert(entry["coin"], entry["direction"],
+                              order["order_type"], config)
+        return
+
     trigger_price = float(trigger_price)
     exit_side = "sell" if entry["direction"] == "LONG" else "buy"
     rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))

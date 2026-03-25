@@ -21,7 +21,7 @@ from .exchange import (
 )
 from .kill_switch import is_killed
 from .sanity import check_price_sanity, is_price_in_entry_zone
-from .sizing import PositionSize, calculate_position
+from .sizing import PositionSize, calculate_position, reanchor_exit_prices
 from .storage import (
     count_open_longs,
     count_open_positions,
@@ -458,18 +458,16 @@ def execute_trade(
             "created_at": now,
         }, conn)
 
-        # Log risk delta: sizing uses entry_mid but fill is at market price
-        intended_stop_dist = pos.stop_distance
-        actual_stop_dist = abs(fill_price - mb["stop_loss"])
-        if intended_stop_dist > 0:
-            risk_delta_pct = (actual_stop_dist - intended_stop_dist) / intended_stop_dist * 100
-            actual_risk = pos.risk_amount * (actual_stop_dist / intended_stop_dist)
-            entry_mid = pos.notional_value / pos.quantity
+        # Reanchor SL/TP to fill price so actual R matches intended R
+        reanchored = reanchor_exit_prices(mb, fill_price)
+        if reanchored["delta"] != 0:
             log.info(
-                "%s risk delta: intended $%.2f, actual $%.2f (%+.1f%%) | "
-                "entry_mid=%.4f fill=%.4f sl=%.4f",
-                result.coin, pos.risk_amount, actual_risk, risk_delta_pct,
-                entry_mid, fill_price, mb["stop_loss"],
+                "%s reanchored exits: delta=%+.4f fill=%.4f | "
+                "sl %.4f→%.4f tp1 %s→%s tp2 %s→%s",
+                result.coin, reanchored["delta"], fill_price,
+                mb["stop_loss"], reanchored["stop_loss"],
+                mb.get("tp1"), reanchored.get("tp1"),
+                mb.get("tp2"), reanchored.get("tp2"),
             )
     except Exception as exc:
         er.skip_reason = "entry_failed"
@@ -480,7 +478,7 @@ def execute_trade(
 
     # 10. Stop loss (3 retries — URGENT if all fail)
     exit_side = "sell" if er.direction == "LONG" else "buy"
-    sl_price = mb["stop_loss"]
+    sl_price = reanchored["stop_loss"]
     sl_oid = new_order_id()
     sl_resp = _place_stop_loss(
         exec_config, symbol, exit_side, filled_qty, sl_price,
@@ -512,10 +510,11 @@ def execute_trade(
         )
 
     # 11. Take profits (non-fatal)
-    if mb.get("tp1") and actual_tp1_qty > 0:
+    tp1_price = reanchored.get("tp1", mb.get("tp1"))
+    if tp1_price and actual_tp1_qty > 0:
         tp1_oid = new_order_id()
         tp1_resp = _place_take_profit(
-            exec_config, symbol, exit_side, actual_tp1_qty, mb["tp1"],
+            exec_config, symbol, exit_side, actual_tp1_qty, tp1_price,
             cloid=make_cloid(tp1_oid),
         )
         if tp1_resp:
@@ -528,7 +527,7 @@ def execute_trade(
                 "order_type": "tp1",
                 "exchange_order_id": tp1_resp.get("id", ""),
                 "status": "PLACED",
-                "trigger_price": mb["tp1"],
+                "trigger_price": tp1_price,
                 "quantity": actual_tp1_qty,
                 "exchange": exec_config.exchange,
                 "execution_mode": exec_config.mode,
@@ -536,10 +535,11 @@ def execute_trade(
                 "created_at": now,
             }, conn)
 
-    if mb.get("tp2") and actual_tp2_qty > 0:
+    tp2_price = reanchored.get("tp2", mb.get("tp2"))
+    if tp2_price and actual_tp2_qty > 0:
         tp2_oid = new_order_id()
         tp2_resp = _place_take_profit(
-            exec_config, symbol, exit_side, actual_tp2_qty, mb["tp2"],
+            exec_config, symbol, exit_side, actual_tp2_qty, tp2_price,
             cloid=make_cloid(tp2_oid),
         )
         if tp2_resp:
@@ -552,7 +552,7 @@ def execute_trade(
                 "order_type": "tp2",
                 "exchange_order_id": tp2_resp.get("id", ""),
                 "status": "PLACED",
-                "trigger_price": mb["tp2"],
+                "trigger_price": tp2_price,
                 "quantity": actual_tp2_qty,
                 "exchange": exec_config.exchange,
                 "execution_mode": exec_config.mode,

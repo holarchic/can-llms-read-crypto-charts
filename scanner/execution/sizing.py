@@ -98,3 +98,29 @@ def calculate_position(
         tp1_quantity=tp1_quantity,
         tp2_quantity=tp2_quantity,
     )
+
+
+def reanchor_exit_prices(machine_block: dict, fill_price: float) -> dict:
+    """Shift SL/TP levels by the delta between fill price and entry_mid.
+
+    The LLM picks absolute levels based on the chart at scan time. Entry fills
+    at market, which may differ from entry_mid. This reanchors exits so the
+    actual R matches the intended R.
+
+    Returns dict with stop_loss, delta, and tp1/tp2 if present in machine_block.
+    """
+    entry_low = machine_block.get("entry_low", 0)
+    entry_high = machine_block.get("entry_high", 0)
+    entry_mid = (entry_low + entry_high) / 2
+
+    delta = fill_price - entry_mid
+
+    result = {
+        "stop_loss": machine_block["stop_loss"] + delta,
+        "delta": delta,
+    }
+    if machine_block.get("tp1") is not None:
+        result["tp1"] = machine_block["tp1"] + delta
+    if machine_block.get("tp2") is not None:
+        result["tp2"] = machine_block["tp2"] + delta
+    return result

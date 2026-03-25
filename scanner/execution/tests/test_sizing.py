@@ -2,7 +2,7 @@
 
 import pytest
 
-from scanner.execution.sizing import calculate_position
+from scanner.execution.sizing import calculate_position, reanchor_exit_prices
 
 
 def _long_block(**overrides):
@@ -152,3 +152,66 @@ class TestCalculatePosition:
             )
             assert result is not None
             assert result.tp1_quantity + result.tp2_quantity == result.quantity
+
+
+class TestReanchorExitPrices:
+    def test_long_positive_delta(self):
+        """LONG filled above entry_mid → all levels shift up."""
+        mb = _long_block()  # entry_mid=62000, sl=59800, tp1=65000, tp2=68000
+        result = reanchor_exit_prices(mb, fill_price=62300)
+        assert result["delta"] == 300
+        assert result["stop_loss"] == 60100  # 59800 + 300
+        assert result["tp1"] == 65300        # 65000 + 300
+        assert result["tp2"] == 68300        # 68000 + 300
+
+    def test_long_negative_delta(self):
+        """LONG filled below entry_mid → all levels shift down."""
+        mb = _long_block()
+        result = reanchor_exit_prices(mb, fill_price=61700)
+        assert result["delta"] == -300
+        assert result["stop_loss"] == 59500
+        assert result["tp1"] == 64700
+        assert result["tp2"] == 67700
+
+    def test_short_positive_delta(self):
+        """SHORT filled above entry_mid → levels shift up (wider SL, closer TP)."""
+        mb = _short_block()  # entry_mid=62000, sl=64200, tp1=59000, tp2=56000
+        result = reanchor_exit_prices(mb, fill_price=62500)
+        assert result["delta"] == 500
+        assert result["stop_loss"] == 64700
+        assert result["tp1"] == 59500
+        assert result["tp2"] == 56500
+
+    def test_short_negative_delta(self):
+        """SHORT filled below entry_mid → levels shift down."""
+        mb = _short_block()
+        result = reanchor_exit_prices(mb, fill_price=61500)
+        assert result["delta"] == -500
+        assert result["stop_loss"] == 63700
+        assert result["tp1"] == 58500
+        assert result["tp2"] == 55500
+
+    def test_zero_delta(self):
+        """Fill at entry_mid → no shift."""
+        mb = _long_block()
+        result = reanchor_exit_prices(mb, fill_price=62000)
+        assert result["delta"] == 0
+        assert result["stop_loss"] == 59800
+        assert result["tp1"] == 65000
+        assert result["tp2"] == 68000
+
+    def test_missing_tp2(self):
+        """Only tp1 present → tp2 not in result."""
+        mb = _long_block(tp2=None)
+        result = reanchor_exit_prices(mb, fill_price=62300)
+        assert "tp1" in result
+        assert "tp2" not in result
+        assert result["tp1"] == 65300
+
+    def test_missing_both_tps(self):
+        """No TPs → only stop_loss and delta returned."""
+        mb = _long_block(tp1=None, tp2=None)
+        result = reanchor_exit_prices(mb, fill_price=62300)
+        assert result["stop_loss"] == 60100
+        assert "tp1" not in result
+        assert "tp2" not in result
