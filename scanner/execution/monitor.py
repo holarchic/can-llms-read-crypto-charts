@@ -157,7 +157,12 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
 def _cancel_remaining_orders(
     scan_id: str, filled_order_id: str, symbol: str, config: ExecutionConfig, conn,
 ) -> None:
-    """Cancel all other PLACED orders for a scan after one exit fills."""
+    """Cancel all other PLACED orders for a scan after one exit fills.
+
+    Always marks DB as CANCELLED — the position is closing, so these orders
+    are dead regardless of whether the exchange cancel succeeds (exchange may
+    have already auto-cancelled them when the position closed).
+    """
     orders = get_orders_for_scan(scan_id, conn)
     for order in orders:
         if order["order_id"] == filled_order_id:
@@ -166,9 +171,9 @@ def _cancel_remaining_orders(
             continue
         exch_oid = order.get("exchange_order_id")
         if exch_oid:
-            if cancel_order(exch_oid, symbol, config):
-                update_order_status(order["order_id"], "CANCELLED", conn)
-                log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
+            cancel_order(exch_oid, symbol, config)
+        update_order_status(order["order_id"], "CANCELLED", conn)
+        log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
 
 
 def _handle_exit_fill(
