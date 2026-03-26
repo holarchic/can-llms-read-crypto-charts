@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "5"
+PROMPT_VERSION = "6"
 
 import uuid
 from datetime import datetime, timezone
@@ -116,27 +116,18 @@ def analyze_for_scanner(
     strategy = load_strategy()
     system_text = SYSTEM_PROMPT.format(ruleset=strategy) + (
         "\n\n## SCANNER MODE\n"
-        "Perform the full 8-step analysis procedure in your thinking. "
-        "In your written response, output ONLY the DECISION block "
-        "(from //////////// to ////////////). No step-by-step walkthrough.\n\n"
-        "## DECISION CLASSIFICATION (scanner: CONFIRM or REJECT only — no WAIT)\n"
+        "In your written response, output ONLY the decision block. "
+        "No step-by-step walkthrough.\n\n"
+        "## DECISION CLASSIFICATION (CONFIRM or REJECT only — no WAIT)\n"
         "- CONFIRM: An actionable trade exists RIGHT NOW at current price. "
-        "Entry zone, stop loss, and take profit are all defined.\n"
-        "- REJECT: Everything else — no valid setup, price not at a level, "
-        "conditions unmet, or setup needs a trigger that hasn't fired yet. "
-        "If you would not enter this trade right now, REJECT.\n\n"
-        "## LLM CONFIDENCE (CONFIRM only)\n"
-        "Include the **LLM Confidence:** field only for CONFIRM decisions. "
-        "Score 1-10 reflects your conviction in the trade. "
-        "1 is the weakest possible CONFIRM; anything weaker should be REJECT.\n\n"
+        "Entry zone must bracket the current price for immediate market order.\n"
+        "- REJECT: Everything else.\n\n"
         "## INVALIDATION FIELDS (CONFIRM only)\n"
-        "Include these fields in the decision block:\n"
-        "- **Expected Hold:** How long this trade should take (e.g. '1-2 days', '3-5 days')\n"
-        "- **Time Invalidation:** When to abandon if neither SL nor TP hit "
-        "(e.g. '4 days' = 2x expected hold). Stale trades lose their edge.\n\n"
+        "Include in the decision block:\n"
+        "- **Expected Hold:** How long this trade should take (e.g. '1-2 days')\n"
+        "- **Time Invalidation:** When to abandon if neither SL nor TP hit\n\n"
         "## MACHINE-READABLE OUTPUT (CONFIRM only)\n"
-        "After the decision block, include a JSON machine block for automated parsing.\n"
-        "Use this exact format — HTML comment wrapper, one line of JSON, no markdown:\n\n"
+        "After the decision block, include a JSON machine block:\n\n"
         '<!-- MACHINE_BLOCK\n'
         '{"entry_low": 61500.0, "entry_high": 62000.0, "stop_loss": 59800.0, '
         '"tp1": 65000.0, "tp1_exit_pct": 50, "tp2": 68000.0, "tp2_exit_pct": 50, '
@@ -145,14 +136,11 @@ def analyze_for_scanner(
         "Rules:\n"
         "- Include ONLY for CONFIRM decisions\n"
         "- All prices as plain numbers (no $ signs, no commas)\n"
-        "- entry_low/entry_high: the range where a MARKET ORDER should fill right now. "
-        "This must bracket the current price (right edge of chart). "
-        "Do NOT use ideal limit-order levels — the system executes immediately at market. "
-        "A narrow range around current price is correct (e.g. within 0.5% of last candle close).\n"
-        "- entry_low/entry_high: if single price, set both equal\n"
+        "- entry_low/entry_high: bracket current price for market order "
+        "(within 0.5% of last candle close). NOT ideal limit-order levels.\n"
         "- tp1_exit_pct: 30-70 (percentage to close at TP1)\n"
-        "- tp2/tp2_exit_pct: include when multi-target appropriate; tp2_exit_pct is remainder\n"
-        "- If any target is a trailing stop (no fixed price), omit machine block entirely"
+        "- tp2/tp2_exit_pct: include when multi-target appropriate\n"
+        "- If target is a trailing stop (no fixed price), omit machine block"
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
