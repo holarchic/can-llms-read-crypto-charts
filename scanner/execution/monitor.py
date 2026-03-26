@@ -25,9 +25,16 @@ log = logging.getLogger(__name__)
 
 
 def _extract_fill_price(exch_order: dict) -> float | None:
-    """Extract fill price from exchange order. Returns None if unavailable."""
-    raw = exch_order.get("average") or exch_order.get("price")
-    return float(raw) if raw else None
+    """Extract fill price from exchange order. Returns None if unavailable.
+
+    Uses 'average' (avg fill price) only. The 'price' field is unreliable for
+    trigger orders (TP/SL) on HyperLiquid — it may return the mark price
+    instead of the actual fill price.
+    """
+    raw = exch_order.get("average")
+    if raw is not None and float(raw) > 0:
+        return float(raw)
+    return None
 
 
 def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
@@ -64,8 +71,35 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                 exch_status = exch_order.get("status", "").lower()
 
                 if exch_status == "closed":
+                    filled_raw = exch_order.get("filled")
+                    if filled_raw is not None and float(filled_raw) == 0:
+                        # "closed" with explicit zero fill = exchange auto-cancelled
+                        # (e.g. position closed by another order). Not a real fill.
+                        log.warning(
+                            "%s %s closed with zero fill — treating as cancel (oid=%s)",
+                            entry["coin"], order["order_type"], exch_oid,
+                        )
+                        update_order_status(
+                            order["order_id"], "CANCELLED", conn,
+                            error_message="Closed with zero fill",
+                        )
+                        updated += 1
+                        if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                            _attempt_exit_order_replacement(
+                                order, entry, symbol, exchange, exec_config, conn,
+                            )
+                        continue
+
+                    fill_qty = float(filled_raw) if filled_raw is not None else float(order["quantity"])
                     fill_price = _extract_fill_price(exch_order)
-                    fill_qty = float(exch_order.get("filled") or order["quantity"])
+                    if fill_price is None and order.get("trigger_price"):
+                        # Trigger orders (TP/SL) on HyperLiquid may not populate
+                        # 'average'. Use trigger_price as reasonable approximation.
+                        fill_price = float(order["trigger_price"])
+                        log.warning(
+                            "%s %s no fill price from exchange — using trigger_price %.5f",
+                            entry["coin"], order["order_type"], fill_price,
+                        )
                     if fill_qty < order["quantity"]:
                         log.warning(
                             "%s %s partial fill: expected %s, got %s",
@@ -97,6 +131,8 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
                     if partial_fill > 0:
                         # Partial fill before cancel — treat as fill for the filled amount
                         fill_price = _extract_fill_price(exch_order)
+                        if fill_price is None and order.get("trigger_price"):
+                            fill_price = float(order["trigger_price"])
                         log.warning(
                             "%s %s canceled with partial fill: %s of %s at %s",
                             entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,
@@ -173,10 +209,12 @@ def _cancel_remaining_orders(
             exch_oid = order.get("exchange_order_id")
             if exch_oid:
                 cancel_order(exch_oid, symbol, config)
-            update_order_status(order["order_id"], "CANCELLED", conn)
-            log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
         except Exception as exc:
-            log.error("Failed to cancel %s for %s: %s", order["order_type"], scan_id, exc)
+            log.error("Failed to cancel %s on exchange for %s: %s",
+                      order["order_type"], scan_id, exc)
+        # Always mark DB as cancelled — position is closing regardless
+        update_order_status(order["order_id"], "CANCELLED", conn)
+        log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
 
 
 def _handle_exit_fill(
@@ -423,8 +461,8 @@ def _send_errors_tp_alert(
     if not webhook:
         return False
     label = order_type.upper()
-    message = (f"**{label} replacement FAILED** for {coin} {direction} "
-               f"after 3 attempts — profit target removed")
+    message = (f"**{label} rejected by exchange** for {coin} {direction} "
+               f"— profit target not placed")
     try:
         resp = requests.post(webhook, json={"content": message}, timeout=10)
         return resp.status_code == 204

@@ -87,7 +87,7 @@ class TestSyncOrderStatus:
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_detects_fill_with_none_price_fields(self, mock_auth, config, conn):
-        """HL trigger orders return None for average/price — should not crash."""
+        """HL trigger orders return None for average/price — falls back to trigger_price."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800)
@@ -108,7 +108,39 @@ class TestSyncOrderStatus:
 
         sl_order = get_order(sl["order_id"], conn)
         assert sl_order["status"] == "FILLED"
-        assert sl_order["fill_price"] is None  # no price available, recorded as NULL
+        assert sl_order["fill_price"] == 59800.0  # falls back to trigger_price
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_closed_with_zero_fill_treated_as_cancel(self, mock_auth, config, conn):
+        """Exchange returns 'closed' with filled=0 (auto-cancelled trigger order).
+
+        This happens on HyperLiquid when a TP/SL trigger order is cancelled
+        because the position was closed by another order. The exchange marks
+        the lifecycle as 'closed' but nothing actually filled.
+        """
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", trigger_price=65000,
+                          quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed",
+            "average": 0,
+            "price": 70000,  # junk market price — must not be used
+            "filled": 0,
+        }
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)
+        assert updated >= 1
+
+        order = get_order(tp1["order_id"], conn)
+        assert order["status"] == "CANCELLED"
+        assert order["error_message"] == "Closed with zero fill"
+        assert order["fill_price"] is None  # no phantom fill recorded
 
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
@@ -1472,7 +1504,7 @@ class TestRejectedExitOrderReplacement:
         # Errors channel alert sent, no replacement attempted
         mock_post.assert_called()
         call_body = mock_post.call_args[1]["json"]["content"]
-        assert "TP1 replacement FAILED" in call_body
+        assert "TP1 rejected by exchange" in call_body
         assert "BTC" in call_body
         mock_exchange.create_order.assert_not_called()
 
