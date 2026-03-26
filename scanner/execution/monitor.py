@@ -169,11 +169,14 @@ def _cancel_remaining_orders(
             continue
         if order["status"] != "PLACED":
             continue
-        exch_oid = order.get("exchange_order_id")
-        if exch_oid:
-            cancel_order(exch_oid, symbol, config)
-        update_order_status(order["order_id"], "CANCELLED", conn)
-        log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
+        try:
+            exch_oid = order.get("exchange_order_id")
+            if exch_oid:
+                cancel_order(exch_oid, symbol, config)
+            update_order_status(order["order_id"], "CANCELLED", conn)
+            log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
+        except Exception as exc:
+            log.error("Failed to cancel %s for %s: %s", order["order_type"], scan_id, exc)
 
 
 def _handle_exit_fill(
