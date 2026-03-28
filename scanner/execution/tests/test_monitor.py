@@ -8,6 +8,7 @@ import pytest
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.monitor import (
     _calc_r,
+    _get_remaining_qty,
     _send_fill_alert,
     check_positions,
     enforce_position_timeouts,
@@ -1563,3 +1564,29 @@ class TestRejectedExitOrderReplacement:
         mock_exchange.create_order.assert_not_called()
         # fetch_order never called — entry excluded from open_entries
         mock_exchange.fetch_order.assert_not_called()
+
+
+class TestGetRemainingQtyPrecision:
+    """IEEE 754 floating-point residuals must clamp to 0.0."""
+
+    def test_clamps_fp_residual_to_zero(self, conn):
+        """BCH scenario: 0.043 + 0.042 must yield remaining_qty == 0.0, not 1.4e-17."""
+        entry = _make_order(scan_id="bch1", order_type="entry", status="FILLED", quantity=0.085)
+        tp1 = _make_order(scan_id="bch1", order_type="tp1", status="FILLED", quantity=0.043)
+        timeout = _make_order(scan_id="bch1", order_type="timeout_close", status="FILLED", quantity=0.042)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+        save_order(timeout, conn)
+
+        remaining = _get_remaining_qty(entry, conn)
+        assert remaining == 0.0
+
+    def test_genuine_partial_returns_remainder(self, conn):
+        """Real partial exit returns actual remaining quantity."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+
+        remaining = _get_remaining_qty(entry, conn)
+        assert remaining == pytest.approx(0.05)

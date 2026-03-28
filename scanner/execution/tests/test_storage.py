@@ -9,9 +9,11 @@ from scanner.execution.storage import (
     count_open_positions,
     ensure_orders_table,
     get_open_entry_orders,
+    get_open_position_coins,
     get_order,
     get_orders_for_scan,
     has_open_position,
+    has_unprotected_positions,
     make_cloid,
     new_order_id,
     save_order,
@@ -362,3 +364,51 @@ class TestUpdateOrderQuantity:
         result = get_order(order["order_id"], conn)
         assert result["quantity"] == 0.05
         assert result["exchange_order_id"] == "new_exch"
+
+
+class TestFloatingPointPrecision:
+    """IEEE 754 floating-point residuals must not create ghost positions."""
+
+    def _setup_open_position(self, conn, scan_id="scan1", coin="BTC", direction="SHORT",
+                             quantity=0.085):
+        entry = _make_order(
+            scan_id=scan_id, coin=coin, direction=direction,
+            order_type="entry", status="FILLED",
+            entry_price=476.89, quantity=quantity,
+        )
+        save_order(entry, conn)
+        return entry
+
+    def test_tp1_plus_timeout_closes_position(self, conn):
+        """BCH scenario: 0.043 + 0.042 = 0.085 must close 0.085 entry."""
+        self._setup_open_position(conn, scan_id="bch1", quantity=0.085)
+        tp1 = _make_order(scan_id="bch1", order_type="tp1", status="FILLED", quantity=0.043)
+        timeout = _make_order(scan_id="bch1", order_type="timeout_close", status="FILLED", quantity=0.042)
+        save_order(tp1, conn)
+        save_order(timeout, conn)
+
+        assert count_open_positions(conn) == 0
+        assert get_open_entry_orders(conn) == []
+        assert has_open_position("BTC", "SHORT", conn) is False
+        assert sum_open_notional(conn) == 0.0
+        assert get_open_position_coins(conn) == []
+        assert has_unprotected_positions(conn) is False
+
+    def test_three_exit_fills_close_position(self, conn):
+        """Multiple small exits that sum to entry qty must close position."""
+        self._setup_open_position(conn, scan_id="s1", quantity=0.1)
+        for qty in [0.033, 0.033, 0.034]:
+            exit_order = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=qty)
+            save_order(exit_order, conn)
+
+        assert count_open_positions(conn) == 0
+
+    def test_genuine_partial_still_open(self, conn):
+        """A real partial exit (not just FP residual) keeps position open."""
+        self._setup_open_position(conn, scan_id="s1", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="FILLED", quantity=0.05)
+        save_order(tp1, conn)
+
+        assert count_open_positions(conn) == 1
+        assert len(get_open_entry_orders(conn)) == 1
+        assert len(get_open_position_coins(conn)) == 1

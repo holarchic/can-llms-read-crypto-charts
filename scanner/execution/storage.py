@@ -15,6 +15,10 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "CANCELLED": {"PLACED"},  # SL replacement: CANCELLED → re-PLACED
 }
 
+# Minimum qty threshold for "position open" checks.
+# Prevents IEEE 754 residuals (e.g. 1e-17) from creating ghost positions.
+OPEN_QTY_EPSILON = 1e-9
+
 CREATE_ORDERS_TABLE = """
 CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT PRIMARY KEY,
@@ -201,16 +205,16 @@ def get_open_entry_orders(
 ) -> list[dict]:
     """Get filled entry orders with remaining open quantity (partial or full)."""
     rows = conn.execute(
-        """SELECT e.* FROM orders e
+        f"""SELECT e.* FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ? AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
              AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x.status = 'FILLED'),
             0
-        )""",
+        )) > {OPEN_QTY_EPSILON}""",
         (exchange, execution_mode),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -221,16 +225,16 @@ def count_open_positions(
 ) -> int:
     """Count positions with remaining open quantity."""
     row = conn.execute(
-        """SELECT COUNT(*) as cnt FROM orders e
+        f"""SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ? AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
              AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x.status = 'FILLED'),
             0
-        )""",
+        )) > {OPEN_QTY_EPSILON}""",
         (exchange, execution_mode),
     ).fetchone()
     return row["cnt"]
@@ -242,30 +246,30 @@ def has_open_position(
 ) -> bool:
     """Check if there's already an open position for this coin (optionally filtered by direction)."""
     if direction:
-        query = """SELECT COUNT(*) as cnt FROM orders e
+        query = f"""SELECT COUNT(*) as cnt FROM orders e
             WHERE e.order_type = 'entry' AND e.status = 'FILLED'
             AND e.coin = ? AND e.direction = ? AND e.exchange = ?
             AND e.execution_mode = ?
-            AND e.quantity > COALESCE(
+            AND (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
                  AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
                  AND x.status = 'FILLED'),
                 0
-            )"""
+            )) > {OPEN_QTY_EPSILON}"""
         params = (coin, direction, exchange, execution_mode)
     else:
-        query = """SELECT COUNT(*) as cnt FROM orders e
+        query = f"""SELECT COUNT(*) as cnt FROM orders e
             WHERE e.order_type = 'entry' AND e.status = 'FILLED'
             AND e.coin = ? AND e.exchange = ?
             AND e.execution_mode = ?
-            AND e.quantity > COALESCE(
+            AND (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
                  AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
                  AND x.status = 'FILLED'),
                 0
-            )"""
+            )) > {OPEN_QTY_EPSILON}"""
         params = (coin, exchange, execution_mode)
     row = conn.execute(query, params).fetchone()
     return row["cnt"] > 0
@@ -276,17 +280,17 @@ def count_open_longs(
 ) -> int:
     """Count open LONG positions (for black swan cap)."""
     row = conn.execute(
-        """SELECT COUNT(*) as cnt FROM orders e
+        f"""SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.direction = 'LONG' AND e.exchange = ?
         AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
              AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x.status = 'FILLED'),
             0
-        )""",
+        )) > {OPEN_QTY_EPSILON}""",
         (exchange, execution_mode),
     ).fetchone()
     return row["cnt"]
@@ -297,7 +301,7 @@ def sum_open_notional(
 ) -> float:
     """Total notional value of remaining open quantity (entry_price * remaining_qty)."""
     row = conn.execute(
-        """SELECT COALESCE(SUM(e.entry_price * (
+        f"""SELECT COALESCE(SUM(e.entry_price * (
             e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
@@ -308,13 +312,13 @@ def sum_open_notional(
         FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ? AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x2.quantity) FROM orders x2
              WHERE x2.scan_id = e.scan_id
              AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x2.status = 'FILLED'),
             0
-        )""",
+        )) > {OPEN_QTY_EPSILON}""",
         (exchange, execution_mode),
     ).fetchone()
     return float(row["total"])
@@ -325,7 +329,7 @@ def get_open_position_coins(
 ) -> list[dict]:
     """Get coin, direction, remaining_qty, entry_price for open positions."""
     rows = conn.execute(
-        """SELECT e.coin, e.direction, e.entry_price,
+        f"""SELECT e.coin, e.direction, e.entry_price,
             (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
@@ -336,13 +340,13 @@ def get_open_position_coins(
         FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ? AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x2.quantity) FROM orders x2
              WHERE x2.scan_id = e.scan_id
              AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x2.status = 'FILLED'),
             0
-        )""",
+        )) > {OPEN_QTY_EPSILON}""",
         (exchange, execution_mode),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -353,14 +357,15 @@ def has_unprotected_positions(
 ) -> bool:
     """Check if any open position has no PLACED stop_loss — blocks new entries."""
     row = conn.execute(
-        """SELECT COUNT(*) as cnt FROM orders e
+        f"""SELECT COUNT(*) as cnt FROM orders e
         WHERE e.order_type = 'entry' AND e.status = 'FILLED'
         AND e.exchange = ? AND e.execution_mode = ?
-        AND e.quantity > COALESCE(
+        AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
              AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
              AND x.status = 'FILLED'), 0)
+        ) > {OPEN_QTY_EPSILON}
         AND NOT EXISTS (
             SELECT 1 FROM orders sl
             WHERE sl.scan_id = e.scan_id

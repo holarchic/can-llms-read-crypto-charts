@@ -12,6 +12,7 @@ from scanner.storage import get_connection
 from .config import ExecutionConfig
 from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions
 from .storage import (
+    OPEN_QTY_EPSILON,
     get_open_entry_orders,
     get_orders_for_scan,
     make_cloid,
@@ -600,14 +601,19 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
 
 
 def _get_remaining_qty(entry: dict, conn) -> float:
-    """Calculate remaining open quantity for an entry (entry qty minus filled exits)."""
+    """Calculate remaining open quantity for an entry (entry qty minus filled exits).
+
+    Clamps to 0.0 when the residual is below OPEN_QTY_EPSILON to avoid
+    IEEE 754 floating-point artifacts creating ghost positions.
+    """
     row = conn.execute(
         """SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
         WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
         AND status = 'FILLED'""",
         (entry["scan_id"],),
     ).fetchone()
-    return entry.get("quantity", 0) - float(row["filled_qty"])
+    remaining = entry.get("quantity", 0) - float(row["filled_qty"])
+    return remaining if remaining > OPEN_QTY_EPSILON else 0.0
 
 
 def _market_close_position(
