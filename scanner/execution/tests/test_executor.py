@@ -360,18 +360,19 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
-    def test_sl_retry_exhausted_urgent_alert(self, mock_killed, mock_price, mock_balance,
-                                             mock_auth, mock_discord, conn, exec_config, scanner_config):
-        """All SL retries fail -> URGENT alert, trade still marked executed."""
+    def test_sl_fails_emergency_close_succeeds(self, mock_killed, mock_price, mock_balance,
+                                               mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """SL fails 3x -> emergency close succeeds -> early return, no TPs."""
         mock_exchange = MagicMock()
         mock_exchange.create_order.side_effect = [
             _mock_exchange_success(),  # entry
             Exception("timeout"),      # SL attempt 1
             Exception("timeout"),      # SL attempt 2
             Exception("timeout"),      # SL attempt 3
-            _mock_exchange_success(),  # TP1
-            _mock_exchange_success(),  # TP2
+            # Emergency close — needs get_auth_exchange again
+            _mock_exchange_success(),  # emergency close
         ]
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
         mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
@@ -379,11 +380,65 @@ class TestExecuteTrade:
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_failed is True
-        assert result.sl_order_id == ""  # No SL placed
+        assert result.sl_order_id == ""
 
-        # Verify URGENT alert was sent
+        # FAILED SL saved to DB
+        orders = get_orders_for_scan("test123", conn)
+        sl_orders = [o for o in orders if o["order_type"] == "stop_loss"]
+        assert len(sl_orders) == 1
+        assert sl_orders[0]["status"] == "FAILED"
+        assert sl_orders[0]["trigger_price"] is not None
+
+        # Emergency close saved to DB
+        ec_orders = [o for o in orders if o["order_type"] == "emergency_close"]
+        assert len(ec_orders) == 1
+        assert ec_orders[0]["status"] == "FILLED"
+
+        # No TP orders placed (early return)
+        tp_orders = [o for o in orders if o["order_type"] in ("tp1", "tp2")]
+        assert len(tp_orders) == 0
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_sl_fails_emergency_close_also_fails(self, mock_killed, mock_price, mock_balance,
+                                                 mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """SL fails 3x, emergency close fails 3x -> URGENT alert, TPs still attempted."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),  # entry
+            Exception("timeout"),      # SL attempt 1
+            Exception("timeout"),      # SL attempt 2
+            Exception("timeout"),      # SL attempt 3
+            # Emergency close fails
+            Exception("rate limit"),   # emergency attempt 1
+            Exception("rate limit"),   # emergency attempt 2
+            Exception("rate limit"),   # emergency attempt 3
+            _mock_exchange_success(),  # TP1
+            _mock_exchange_success(),  # TP2
+        ]
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+        assert result.sl_failed is True
+
+        # FAILED SL saved, no emergency close
+        orders = get_orders_for_scan("test123", conn)
+        sl_orders = [o for o in orders if o["order_type"] == "stop_loss"]
+        assert len(sl_orders) == 1
+        assert sl_orders[0]["status"] == "FAILED"
+        ec_orders = [o for o in orders if o["order_type"] == "emergency_close"]
+        assert len(ec_orders) == 0
+
+        # URGENT alert mentions emergency close failure
         urgent_calls = [c for c in mock_discord.call_args_list
-                       if "URGENT" in str(c)]
+                       if "Emergency close also FAILED" in str(c)]
         assert len(urgent_calls) > 0
 
     @patch("scanner.execution.executor.requests.post")

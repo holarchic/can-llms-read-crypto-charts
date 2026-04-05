@@ -1590,3 +1590,104 @@ class TestGetRemainingQtyPrecision:
 
         remaining = _get_remaining_qty(entry, conn)
         assert remaining == pytest.approx(0.05)
+
+    def test_emergency_close_reduces_remaining(self, conn):
+        """Emergency close is counted as a filled exit."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        ec = _make_order(scan_id="s1", order_type="emergency_close", status="FILLED", quantity=0.1)
+        save_order(entry, conn)
+        save_order(ec, conn)
+
+        remaining = _get_remaining_qty(entry, conn)
+        assert remaining == 0.0
+
+
+class TestAttemptSlRecovery:
+    """Tests for attempt_sl_recovery — monitor places missing SL."""
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_recovery_with_failed_sl_record(self, mock_auth, config, conn):
+        """FAILED SL in DB -> recovery uses its trigger_price."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        failed_sl = _make_order(scan_id="scan1", order_type="stop_loss", status="FAILED",
+                                trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(failed_sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "new-sl-123"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+
+        assert result is True
+        orders = get_orders_for_scan("scan1", conn)
+        placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
+        assert len(placed_sls) == 1
+        assert placed_sls[0]["trigger_price"] == 59800
+
+        # Old FAILED SL marked CANCELLED
+        failed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "CANCELLED"]
+        assert len(failed_sls) == 1
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_recovery_fails_all_retries(self, mock_auth, config, conn):
+        """SL placement fails 3x -> returns False."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        failed_sl = _make_order(scan_id="scan1", order_type="stop_loss", status="FAILED",
+                                trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(failed_sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = Exception("rate limit")
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+
+        assert result is False
+        # No PLACED SL in DB
+        orders = get_orders_for_scan("scan1", conn)
+        placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
+        assert len(placed_sls) == 0
+
+    def test_recovery_position_already_closed(self, config, conn):
+        """Position fully exited -> recovery returns True (no action needed)."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        ec = _make_order(scan_id="scan1", order_type="emergency_close", status="FILLED",
+                         quantity=0.1)
+        save_order(entry, conn)
+        save_order(ec, conn)
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+        assert result is True
+
+    def test_recovery_no_trigger_price(self, config, conn):
+        """No FAILED SL and no scan data -> returns False."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        save_order(entry, conn)
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+        assert result is False

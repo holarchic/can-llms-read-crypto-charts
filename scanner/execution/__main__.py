@@ -96,12 +96,18 @@ def _cmd_monitor(config, discord_handler=None):
             for issue in issues:
                 print(f"  [{issue['type']}] {issue['message']}")
 
-            # Send Discord alerts for critical SL issues
+            # Attempt SL recovery, then alert if still unprotected
             critical = [i for i in issues if i["type"] in ("missing_sl", "phantom_sl")]
             if critical:
                 from .executor import _send_urgent_alert
+                from .monitor import attempt_sl_recovery
 
                 for issue in critical:
+                    if issue["type"] == "missing_sl":
+                        recovered = attempt_sl_recovery(issue, config, conn)
+                        if recovered:
+                            print(f"  SL recovery SUCCESS: {issue['coin']} {issue['direction']}")
+                            continue
                     _send_urgent_alert(issue["message"], config)
         else:
             print("Health check: OK")

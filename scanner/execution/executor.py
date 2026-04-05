@@ -503,11 +503,41 @@ def execute_trade(
         }, conn)
     else:
         er.sl_failed = True
-        _send_urgent_alert(
-            f"URGENT: SL placement FAILED for {result.coin} {er.direction} "
-            f"after 3 retries. Position WITHOUT stop loss!",
-            exec_config,
+        # Save FAILED SL so monitor can recover trigger_price later
+        save_order({
+            "order_id": sl_oid,
+            "scan_id": result.scan_id,
+            "coin": result.coin,
+            "direction": er.direction,
+            "order_type": "stop_loss",
+            "status": "FAILED",
+            "trigger_price": sl_price,
+            "quantity": filled_qty,
+            "exchange": exec_config.exchange,
+            "execution_mode": exec_config.mode,
+            "created_at": now,
+        }, conn)
+
+        # Emergency close — naked positions are unacceptable
+        close_price = _emergency_close_position(
+            exec_config, symbol, exit_side, filled_qty, result, er, conn, now,
         )
+        if close_price:
+            _send_urgent_alert(
+                f"SL FAILED for {result.coin} {er.direction} — "
+                f"emergency closed at {close_price}",
+                exec_config,
+            )
+            er.executed = True
+            _send_execution_alert(er, result, exec_config)
+            return er
+        else:
+            _send_urgent_alert(
+                f"URGENT: SL placement FAILED for {result.coin} {er.direction} "
+                f"after 3 retries. Emergency close also FAILED. "
+                f"Position WITHOUT stop loss!",
+                exec_config,
+            )
 
     # 11. Take profits (non-fatal)
     tp1_price = reanchored.get("tp1", mb.get("tp1"))
@@ -644,6 +674,60 @@ def _place_take_profit(
     except Exception as exc:
         log.warning("TP placement failed for %s: %s", symbol, exc)
         return None
+
+
+def _emergency_close_position(
+    config: ExecutionConfig, symbol: str, exit_side: str, quantity: float,
+    scan_result: ScanResult, er: ExecutionResult, conn, now: str,
+    max_retries: int = 3,
+) -> float | None:
+    """Market-close a position after SL placement fails. Returns fill price or None."""
+    exchange = get_auth_exchange(config)
+    quantity = _round_quantity(exchange, symbol, quantity)
+    order_id = new_order_id()
+    cloid = make_cloid(order_id)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            price = ticker["last"]
+            resp = exchange.create_order(
+                symbol, "market", exit_side, quantity, price,
+                {"reduceOnly": True, "clientOrderId": cloid},
+            )
+            fill_price = float(
+                resp.get("average") or resp.get("price") or 0
+            )
+            save_order({
+                "order_id": order_id,
+                "scan_id": scan_result.scan_id,
+                "coin": scan_result.coin,
+                "direction": er.direction,
+                "order_type": "emergency_close",
+                "exchange_order_id": resp.get("id", ""),
+                "status": "FILLED",
+                "fill_price": fill_price,
+                "quantity": quantity,
+                "exchange": config.exchange,
+                "execution_mode": config.mode,
+                "filled_at": now,
+                "created_at": now,
+            }, conn)
+            log.info(
+                "Emergency close %s %s: qty %s at %s",
+                scan_result.coin, er.direction, quantity, fill_price,
+            )
+            return fill_price if fill_price else 0.0
+        except Exception as exc:
+            log.error(
+                "Emergency close attempt %d/%d for %s failed: %s",
+                attempt, max_retries, scan_result.coin, exc,
+            )
+            if attempt < max_retries:
+                time.sleep(5)
+
+    log.error("All emergency close attempts exhausted for %s", scan_result.coin)
+    return None
 
 
 def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult, config: ExecutionConfig) -> bool:

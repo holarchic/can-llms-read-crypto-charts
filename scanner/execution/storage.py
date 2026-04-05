@@ -13,6 +13,7 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "PLACED": {"FILLED", "CANCELLED"},
     "FILLED": {"PLACED"},  # partial fill re-placement only; FILLED→CANCELLED blocked
     "CANCELLED": {"PLACED"},  # SL replacement: CANCELLED → re-PLACED
+    "FAILED": {"CANCELLED"},  # Superseded by monitor SL recovery
 }
 
 # Minimum qty threshold for "position open" checks.
@@ -211,7 +212,7 @@ def get_open_entry_orders(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
-             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x.status = 'FILLED'),
             0
         )) > {OPEN_QTY_EPSILON}""",
@@ -231,7 +232,7 @@ def count_open_positions(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
-             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x.status = 'FILLED'),
             0
         )) > {OPEN_QTY_EPSILON}""",
@@ -253,7 +254,7 @@ def has_open_position(
             AND (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
-                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
                  AND x.status = 'FILLED'),
                 0
             )) > {OPEN_QTY_EPSILON}"""
@@ -266,7 +267,7 @@ def has_open_position(
             AND (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
-                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
                  AND x.status = 'FILLED'),
                 0
             )) > {OPEN_QTY_EPSILON}"""
@@ -287,7 +288,7 @@ def count_open_longs(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
-             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x.status = 'FILLED'),
             0
         )) > {OPEN_QTY_EPSILON}""",
@@ -305,7 +306,7 @@ def sum_open_notional(
             e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
-                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
                  AND x.status = 'FILLED'),
                 0)
         )), 0) as total
@@ -315,7 +316,7 @@ def sum_open_notional(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x2.quantity) FROM orders x2
              WHERE x2.scan_id = e.scan_id
-             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x2.status = 'FILLED'),
             0
         )) > {OPEN_QTY_EPSILON}""",
@@ -333,7 +334,7 @@ def get_open_position_coins(
             (e.quantity - COALESCE(
                 (SELECT SUM(x.quantity) FROM orders x
                  WHERE x.scan_id = e.scan_id
-                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+                 AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
                  AND x.status = 'FILLED'),
                 0
             )) as remaining_qty
@@ -343,7 +344,7 @@ def get_open_position_coins(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x2.quantity) FROM orders x2
              WHERE x2.scan_id = e.scan_id
-             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x2.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x2.status = 'FILLED'),
             0
         )) > {OPEN_QTY_EPSILON}""",
@@ -363,7 +364,7 @@ def has_unprotected_positions(
         AND (e.quantity - COALESCE(
             (SELECT SUM(x.quantity) FROM orders x
              WHERE x.scan_id = e.scan_id
-             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+             AND x.order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
              AND x.status = 'FILLED'), 0)
         ) > {OPEN_QTY_EPSILON}
         AND NOT EXISTS (

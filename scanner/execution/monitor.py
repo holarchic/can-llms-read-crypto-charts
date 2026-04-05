@@ -608,7 +608,7 @@ def _get_remaining_qty(entry: dict, conn) -> float:
     """
     row = conn.execute(
         """SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
-        WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close')
+        WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
         AND status = 'FILLED'""",
         (entry["scan_id"],),
     ).fetchone()
@@ -817,3 +817,112 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
         conn.close()
 
     return issues
+
+
+def attempt_sl_recovery(
+    issue: dict, config: ExecutionConfig, conn,
+) -> bool:
+    """Try to place a missing SL for an unprotected position.
+
+    Looks up trigger_price from the FAILED SL order in DB (saved by executor).
+    If none found, falls back to the scan's machine_block + reanchor.
+    Returns True if SL successfully placed.
+    """
+    scan_id = issue["scan_id"]
+    coin = issue["coin"]
+    direction = issue["direction"]
+
+    # Get the entry order for qty / fill_price
+    scan_orders = get_orders_for_scan(scan_id, conn)
+    entry = next(
+        (o for o in scan_orders if o["order_type"] == "entry" and o["status"] == "FILLED"),
+        None,
+    )
+    if not entry:
+        log.error("SL recovery: no filled entry for scan %s", scan_id)
+        return False
+
+    remaining_qty = _get_remaining_qty(entry, conn)
+    if remaining_qty <= 0:
+        log.info("SL recovery: position already closed for %s", coin)
+        return True
+
+    # Find trigger_price from FAILED SL record
+    sl_order = next(
+        (o for o in scan_orders if o["order_type"] == "stop_loss"),
+        None,
+    )
+    trigger_price = float(sl_order["trigger_price"]) if sl_order and sl_order.get("trigger_price") else None
+
+    if trigger_price is None:
+        # Fallback: recompute from scan machine_block
+        try:
+            import json
+
+            from scanner.storage import get_connection as get_scanner_conn
+            scanner_conn = get_scanner_conn()
+            row = scanner_conn.execute(
+                "SELECT machine_block, stop_loss FROM scans WHERE scan_id = ?", (scan_id,),
+            ).fetchone()
+            scanner_conn.close()
+            if row and row["machine_block"]:
+                mb = json.loads(row["machine_block"])
+                fill_price = float(entry.get("fill_price") or entry.get("entry_price") or 0)
+                if fill_price and mb.get("stop_loss"):
+                    from .sizing import reanchor_exit_prices
+                    reanchored = reanchor_exit_prices(mb, fill_price)
+                    trigger_price = reanchored["stop_loss"]
+            elif row and row["stop_loss"]:
+                # Parse "$37.10" format
+                trigger_price = float(str(row["stop_loss"]).replace("$", "").replace(",", ""))
+        except Exception as exc:
+            log.error("SL recovery: failed to get trigger_price from scan: %s", exc)
+
+    if trigger_price is None:
+        log.error("SL recovery: no trigger_price available for %s", coin)
+        return False
+
+    # Place SL
+    meta = get_exchange_meta(config.exchange)
+    symbol = meta["symbol_template"].format(coin=coin)
+    exit_side = "sell" if direction == "LONG" else "buy"
+    exchange = get_auth_exchange(config)
+    rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
+
+    order_id = new_order_id()
+    cloid = make_cloid(order_id)
+    params = {"stopLossPrice": trigger_price, "reduceOnly": True, "clientOrderId": cloid}
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = exchange.create_order(
+                symbol, "market", exit_side, rounded_qty, trigger_price, params,
+            )
+            # Mark old FAILED SL as superseded
+            if sl_order and sl_order["status"] == "FAILED":
+                update_order_status(sl_order["order_id"], "CANCELLED", conn)
+            save_order({
+                "order_id": order_id,
+                "scan_id": scan_id,
+                "coin": coin,
+                "direction": direction,
+                "order_type": "stop_loss",
+                "exchange_order_id": resp.get("id", ""),
+                "status": "PLACED",
+                "trigger_price": trigger_price,
+                "quantity": rounded_qty,
+                "exchange": config.exchange,
+                "execution_mode": config.mode,
+                "placed_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }, conn)
+            log.info("SL recovery SUCCESS for %s %s: SL at %s", coin, direction, trigger_price)
+            return True
+        except Exception as exc:
+            log.error("SL recovery attempt %d/%d for %s failed: %s", attempt, max_retries, coin, exc)
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+
+    log.error("SL recovery exhausted for %s %s — position still unprotected", coin, direction)
+    return False
