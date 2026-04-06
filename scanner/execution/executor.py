@@ -722,7 +722,7 @@ def _emergency_close_position(
                 "Emergency close %s %s: qty %s at %s",
                 scan_result.coin, er.direction, quantity, fill_price,
             )
-            return fill_price if fill_price is not None else 0.01
+            return fill_price or 0.01
         except Exception as exc:
             log.error(
                 "Emergency close attempt %d/%d for %s failed: %s",
