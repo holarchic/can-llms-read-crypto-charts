@@ -121,3 +121,16 @@ def cancel_order(exchange_order_id: str, symbol: str, config) -> bool:
     except Exception as exc:
         log.warning("Failed to cancel order %s: %s", exchange_order_id, exc)
         return False
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Detect HyperLiquid cumulative rate limit errors.
+
+    HL rate-limits API requests proportional to trading volume. ccxt may raise
+    RateLimitExceeded, but often wraps it in a generic ExchangeError — so we
+    also check the message string.
+    """
+    return (
+        isinstance(exc, ccxt.RateLimitExceeded)
+        or "Too many cumulative requests" in str(exc)
+    )

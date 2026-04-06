@@ -405,7 +405,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_sl_fails_emergency_close_also_fails(self, mock_killed, mock_price, mock_balance,
                                                  mock_auth, mock_discord, conn, exec_config, scanner_config):
-        """SL fails 3x, emergency close fails 3x -> URGENT alert, TPs still attempted."""
+        """SL fails 3x, emergency close fails 3x -> URGENT alert, returns early (no TPs)."""
         mock_exchange = MagicMock()
         mock_exchange.create_order.side_effect = [
             _mock_exchange_success(),  # entry
@@ -413,11 +413,9 @@ class TestExecuteTrade:
             Exception("timeout"),      # SL attempt 2
             Exception("timeout"),      # SL attempt 3
             # Emergency close fails
-            Exception("rate limit"),   # emergency attempt 1
-            Exception("rate limit"),   # emergency attempt 2
-            Exception("rate limit"),   # emergency attempt 3
-            _mock_exchange_success(),  # TP1
-            _mock_exchange_success(),  # TP2
+            Exception("exchange error"),  # emergency attempt 1
+            Exception("exchange error"),  # emergency attempt 2
+            Exception("exchange error"),  # emergency attempt 3
         ]
         mock_exchange.fetch_ticker.return_value = {"last": 62000}
         mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
@@ -425,7 +423,7 @@ class TestExecuteTrade:
         mock_discord.return_value = MagicMock(status_code=204)
 
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
-        assert result.executed is True
+        assert result.executed is False
         assert result.sl_failed is True
 
         # FAILED SL saved, no emergency close
@@ -436,10 +434,82 @@ class TestExecuteTrade:
         ec_orders = [o for o in orders if o["order_type"] == "emergency_close"]
         assert len(ec_orders) == 0
 
+        # No TP orders placed (early return)
+        tp_orders = [o for o in orders if o["order_type"] in ("tp1", "tp2")]
+        assert len(tp_orders) == 0
+
         # URGENT alert mentions emergency close failure
         urgent_calls = [c for c in mock_discord.call_args_list
                        if "Emergency close also FAILED" in str(c)]
         assert len(urgent_calls) > 0
+
+    @patch("scanner.execution.executor.time.sleep")
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_sl_rate_limited_skips_to_emergency_close(self, mock_killed, mock_price, mock_balance,
+                                                       mock_auth, mock_discord, mock_sleep,
+                                                       conn, exec_config, scanner_config):
+        """SL rate-limited on attempt 1 -> breaks immediately -> emergency close succeeds."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),  # entry
+            Exception('hyperliquid {"status":"err","response":"Too many cumulative requests sent (12530 > 12268)"}'),
+            _mock_exchange_success(),  # emergency close
+        ]
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+        assert result.sl_failed is True
+
+        # Only 1 SL attempt (not 3) — rate limit broke the retry loop
+        sl_calls = [c for c in mock_exchange.create_order.call_args_list
+                    if "stopLossPrice" in str(c)]
+        assert len(sl_calls) == 1
+
+        # Emergency close saved
+        orders = get_orders_for_scan("test123", conn)
+        ec_orders = [o for o in orders if o["order_type"] == "emergency_close"]
+        assert len(ec_orders) == 1
+        assert ec_orders[0]["status"] == "FILLED"
+
+    @patch("scanner.execution.executor.time.sleep")
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_emergency_close_rate_limited_uses_longer_backoff(self, mock_killed, mock_price, mock_balance,
+                                                              mock_auth, mock_discord, mock_sleep,
+                                                              conn, exec_config, scanner_config):
+        """Emergency close rate-limited -> uses 20s backoff instead of 5s."""
+        rl_exc = Exception('Too many cumulative requests sent (12530 > 12268)')
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),  # entry
+            rl_exc,                    # SL attempt 1 (rate limited, breaks)
+            rl_exc,                    # emergency attempt 1
+            rl_exc,                    # emergency attempt 2
+            rl_exc,                    # emergency attempt 3
+        ]
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is False
+        assert result.sl_failed is True
+
+        # Emergency close used 20s backoff (2 sleeps for 3 attempts)
+        sleep_calls = [c[0][0] for c in mock_sleep.call_args_list]
+        assert 20 in sleep_calls
 
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
@@ -479,25 +549,27 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_sl_duplicate_cloid_not_found_triggers_urgent(self, mock_killed, mock_price, mock_balance,
                                                            mock_auth, mock_discord, conn, exec_config, scanner_config):
-        """SL DuplicateOrderId but order not found on exchange -> URGENT alert."""
+        """SL DuplicateOrderId but order not found on exchange -> emergency close -> URGENT alert."""
         mock_exchange = MagicMock()
         mock_exchange.create_order.side_effect = [
             _mock_exchange_success(),        # entry
             Exception("timeout"),            # SL attempt 1
             DuplicateOrderId("duplicate"),   # SL attempt 2
+            # Emergency close fails (mock runs out of side_effect)
         ]
         mock_exchange.fetch_open_orders.return_value = []  # Not found
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
         mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
-        assert result.executed is True
+        assert result.executed is False  # SL + emergency close both failed → early return
 
-        # URGENT alert — SL ambiguous
+        # URGENT alert — SL ambiguous / emergency close failure
         urgent_calls = [c for c in mock_discord.call_args_list
                        if "URGENT" in str(c)]
-        assert len(urgent_calls) == 1
+        assert len(urgent_calls) >= 1
 
     @patch("scanner.execution.executor.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")

@@ -10,7 +10,7 @@ from scanner.config import get_exchange_meta
 from scanner.storage import get_connection
 
 from .config import ExecutionConfig
-from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions
+from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions, is_rate_limit_error
 from .storage import (
     OPEN_QTY_EPSILON,
     get_open_entry_orders,
@@ -355,6 +355,15 @@ def _place_replacement_order(
         except Exception as exc:
             log.error("%s replacement attempt %d/%d for %s failed: %s",
                       order["order_type"], attempt, max_retries, entry["coin"], exc)
+            if is_rate_limit_error(exc):
+                log.error("Rate limited — aborting %s replacement for %s",
+                          order["order_type"], entry["coin"])
+                if order["order_type"] == "stop_loss":
+                    _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+                elif order["order_type"] in ("tp1", "tp2"):
+                    _send_errors_tp_alert(entry["coin"], entry["direction"],
+                                          order["order_type"], config)
+                break
             if attempt < max_retries:
                 time.sleep(attempt)
             else:
@@ -921,6 +930,9 @@ def attempt_sl_recovery(
             return True
         except Exception as exc:
             log.error("SL recovery attempt %d/%d for %s failed: %s", attempt, max_retries, coin, exc)
+            if is_rate_limit_error(exc):
+                log.error("Rate limited — aborting SL recovery for %s", coin)
+                break
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
 

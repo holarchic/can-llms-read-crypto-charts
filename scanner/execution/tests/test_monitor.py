@@ -1691,3 +1691,71 @@ class TestAttemptSlRecovery:
                  "type": "missing_sl", "message": "test"}
         result = attempt_sl_recovery(issue, config, conn)
         assert result is False
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_recovery_rate_limited_breaks_immediately(self, mock_auth, config, conn):
+        """Rate limit on first attempt -> breaks immediately, returns False."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        failed_sl = _make_order(scan_id="scan1", order_type="stop_loss", status="FAILED",
+                                trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(failed_sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = Exception(
+            "Too many cumulative requests sent (12530 > 12268)"
+        )
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+
+        assert result is False
+        # Only 1 attempt, not 3 — rate limit broke retry loop
+        assert mock_exchange.create_order.call_count == 1
+        # No PLACED SL in DB
+        orders = get_orders_for_scan("scan1", conn)
+        placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
+        assert len(placed_sls) == 0
+
+
+class TestRateLimitInReplacement:
+    """Rate limit errors abort retries immediately to conserve API budget."""
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sl_replacement_rate_limited_breaks_and_alerts(self, mock_auth, mock_sleep,
+                                                            mock_post, config, conn):
+        """SL replacement rate-limited → 1 attempt, URGENT alert, no further retries."""
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.amount_to_precision.return_value = "0.1"
+        mock_exchange.create_order.side_effect = Exception(
+            "Too many cumulative requests sent (12530 > 12268)"
+        )
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        sync_order_status(config, conn)
+
+        # Only 1 replacement attempt (not 3)
+        assert mock_exchange.create_order.call_count == 1
+        # No sleep calls — broke immediately
+        mock_sleep.assert_not_called()
+        # URGENT alert sent
+        mock_post.assert_called()
+        call_body = mock_post.call_args[1]["json"]["content"]
+        assert "URGENT" in call_body

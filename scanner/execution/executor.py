@@ -18,6 +18,7 @@ from .exchange import (
     get_auth_exchange,
     get_exchange_open_orders,
     get_open_positions,
+    is_rate_limit_error,
 )
 from .kill_switch import is_killed
 from .sanity import check_price_sanity, is_price_in_entry_zone
@@ -538,6 +539,7 @@ def execute_trade(
                 f"Position WITHOUT stop loss!",
                 exec_config,
             )
+            return er
 
     # 11. Take profits (non-fatal)
     tp1_price = reanchored.get("tp1", mb.get("tp1"))
@@ -651,6 +653,9 @@ def _place_stop_loss(
             return None  # Triggers urgent alert — better than phantom record
         except Exception as exc:
             log.warning("SL attempt %d/%d failed for %s: %s", attempt + 1, max_retries, symbol, exc)
+            if is_rate_limit_error(exc):
+                log.error("Rate limited — aborting SL retries for %s", symbol)
+                break
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
     return None
@@ -717,14 +722,15 @@ def _emergency_close_position(
                 "Emergency close %s %s: qty %s at %s",
                 scan_result.coin, er.direction, quantity, fill_price,
             )
-            return fill_price if fill_price else 0.0
+            return fill_price if fill_price is not None else 0.01
         except Exception as exc:
             log.error(
                 "Emergency close attempt %d/%d for %s failed: %s",
                 attempt, max_retries, scan_result.coin, exc,
             )
             if attempt < max_retries:
-                time.sleep(5)
+                delay = 20 if is_rate_limit_error(exc) else 5
+                time.sleep(delay)
 
     log.error("All emergency close attempts exhausted for %s", scan_result.coin)
     return None

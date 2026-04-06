@@ -11,6 +11,7 @@ from scanner.execution.exchange import (
     fetch_current_price,
     get_auth_exchange,
     get_open_positions,
+    is_rate_limit_error,
     reset_auth_exchange,
 )
 
@@ -245,5 +246,30 @@ class TestCancelOrder:
         mock_get_auth.return_value = mock_exchange
 
         assert cancel_order("bad_id", "BTC/USDC:USDC", testnet_config) is False
+
+
+class TestIsRateLimitError:
+    def test_ccxt_rate_limit_exceeded(self):
+        import ccxt
+        assert is_rate_limit_error(ccxt.RateLimitExceeded("rate limit")) is True
+
+    def test_hyperliquid_cumulative_message(self):
+        exc = Exception("Too many cumulative requests sent (12530 > 12268)")
+        assert is_rate_limit_error(exc) is True
+
+    def test_hl_message_in_generic_exchange_error(self):
+        import ccxt
+        exc = ccxt.ExchangeError(
+            'hyperliquid {"status":"err","response":"Too many cumulative requests sent (12530 > 12268)"}'
+        )
+        assert is_rate_limit_error(exc) is True
+
+    def test_normal_exception_not_detected(self):
+        assert is_rate_limit_error(Exception("timeout")) is False
+        assert is_rate_limit_error(Exception("network error")) is False
+
+    def test_ccxt_network_error_not_detected(self):
+        import ccxt
+        assert is_rate_limit_error(ccxt.NetworkError("timeout")) is False
 
 
