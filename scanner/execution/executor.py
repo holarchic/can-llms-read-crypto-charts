@@ -870,5 +870,21 @@ def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
         message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
         return _send_errors_alert(message, config)
     else:
-        message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
-        return _send_ops_alert(message, config)
+        webhook = config.discord_ops_webhook_url
+        if not webhook:
+            return False
+        fields = [{"name": "Reason", "value": er.skip_reason, "inline": True}]
+        if er.error:
+            fields.append({"name": "Detail", "value": er.error, "inline": True})
+        embed = {
+            "title": f"\u23ed\ufe0f SKIPPED — {er.coin} {er.direction}",
+            "color": 0x999999,
+            "fields": fields,
+            "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+        }
+        try:
+            resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
+            return resp.status_code == 204
+        except Exception as exc:
+            log.warning("Skip alert failed: %s", exc)
+            return False

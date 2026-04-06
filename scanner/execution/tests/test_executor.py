@@ -1320,15 +1320,32 @@ class TestSkipAlertSeverity:
         assert "BLOCKED" in body["content"]
 
     @patch("scanner.execution.executor.requests.post")
-    def test_skip_alert_routine_no_everyone(self, mock_post, exec_config):
-        """position_limit → no @everyone, SKIPPED prefix."""
+    def test_skip_alert_routine_embed(self, mock_post, exec_config):
+        """position_limit → embed with SKIPPED title, no @everyone."""
         mock_post.return_value = MagicMock(status_code=204)
         er = ExecutionResult(coin="ETH", direction="SHORT", skip_reason="position_limit")
         send_skip_alert(er, exec_config)
         call_args = mock_post.call_args
         body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert "@everyone" not in body["content"]
-        assert "SKIPPED" in body["content"]
+        assert "content" not in body  # embed, not plain text
+        embed = body["embeds"][0]
+        assert "SKIPPED" in embed["title"]
+        assert "ETH" in embed["title"]
+        assert embed["color"] == 0x999999
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert field_values["Reason"] == "position_limit"
+
+    @patch("scanner.execution.executor.requests.post")
+    def test_skip_alert_routine_with_detail(self, mock_post, exec_config):
+        """Routine skip with error detail → Detail field in embed."""
+        mock_post.return_value = MagicMock(status_code=204)
+        er = ExecutionResult(coin="JUP", direction="SHORT", skip_reason="price_outside_zone",
+                             error="Price 0.156 outside [0.16, 0.162]")
+        send_skip_alert(er, exec_config)
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "price_outside_zone" in field_values["Reason"]
+        assert "0.156" in field_values["Detail"]
 
 
 class TestPreflightCheck:

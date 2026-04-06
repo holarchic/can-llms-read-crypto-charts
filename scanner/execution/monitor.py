@@ -697,7 +697,7 @@ def _send_fill_alert(
     entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig,
     scan_orders: list[dict] | None = None,
 ) -> bool:
-    """Send Discord notification when an exit order (SL/TP) fills."""
+    """Send Discord embed when an exit order (SL/TP) fills."""
     webhook = config.discord_ops_webhook_url
     if not webhook:
         return False
@@ -706,15 +706,14 @@ def _send_fill_alert(
     label = type_labels.get(order["order_type"], order["order_type"])
     is_win = order["order_type"] in ("tp1", "tp2")
     emoji = "\U0001f7e2" if is_win else "\U0001f534"
-    price_str = f" @ ${fill_price:,.5f}" if fill_price else ""
+    color = 0x26A69A if is_win else 0xEF5350
 
     # Calculate R value
-    r_str = ""
+    r_val = None
     if fill_price and entry.get("entry_price"):
         if order["order_type"] == "stop_loss":
             sl_price = order.get("trigger_price")
         else:
-            # TP fill — find SL trigger from scan_orders
             sl_order = next(
                 (o for o in (scan_orders or []) if o["order_type"] == "stop_loss"),
                 None,
@@ -722,13 +721,22 @@ def _send_fill_alert(
             sl_price = sl_order.get("trigger_price") if sl_order else None
         if sl_price:
             r_val = _calc_r(float(entry["entry_price"]), fill_price, float(sl_price), entry["direction"])
-            if r_val is not None:
-                r_str = f" · {r_val:+.2f}R"
 
-    message = f"{emoji} **{label} FILLED** {entry['coin']} {entry['direction']}{price_str}{r_str}"
+    fields = []
+    if fill_price:
+        fields.append({"name": "Fill Price", "value": f"${fill_price:,.5f}", "inline": True})
+    if r_val is not None:
+        fields.append({"name": "R Value", "value": f"{r_val:+.2f}R", "inline": True})
+
+    embed = {
+        "title": f"{emoji} {label} FILLED — {entry['coin']} {entry['direction']}",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+    }
 
     try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
         return resp.status_code == 204
     except Exception as exc:
         log.warning("Fill alert failed: %s", exc)
@@ -739,23 +747,30 @@ def _send_timeout_alert(
     entry: dict, age_hours: float, qty: float, config: ExecutionConfig,
     *, fill_price: float | None = None, sl_price: float | None = None,
 ) -> bool:
-    """Send Discord notification for a timed-out position."""
+    """Send Discord embed for a timed-out position."""
     webhook = config.discord_ops_webhook_url
     if not webhook:
         return False
 
-    r_str = ""
+    fields = [
+        {"name": "Duration", "value": f"{age_hours:.1f}h / {config.position_timeout_hours}h limit", "inline": True},
+        {"name": "Quantity", "value": str(qty), "inline": True},
+    ]
+
     if fill_price and sl_price and entry.get("entry_price"):
         r_val = _calc_r(float(entry["entry_price"]), fill_price, sl_price, entry["direction"])
         if r_val is not None:
-            r_str = f" · {r_val:+.2f}R"
+            fields.append({"name": "R Value", "value": f"{r_val:+.2f}R", "inline": True})
 
-    message = (
-        f"**TIMEOUT**: {entry['coin']} {entry['direction']} closed after "
-        f"{age_hours:.1f}h (limit: {config.position_timeout_hours}h) — qty {qty}{r_str}"
-    )
+    embed = {
+        "title": f"\u23f0 TIMEOUT — {entry['coin']} {entry['direction']}",
+        "color": 0xFFA726,
+        "fields": fields,
+        "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+    }
+
     try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
+        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
         return resp.status_code == 204
     except Exception as exc:
         log.error("Timeout alert send failed: %s", exc)

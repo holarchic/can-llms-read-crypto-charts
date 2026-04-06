@@ -1057,13 +1057,14 @@ class TestPositionTimeout:
         sl_result = get_order(sl["order_id"], conn)
         assert sl_result["status"] == "CANCELLED"
 
-        # Discord alert sent with R value
+        # Discord embed sent with R value
         mock_post.assert_called()
-        call_body = mock_post.call_args[1]["json"]["content"]
-        assert "TIMEOUT" in call_body
-        assert "BTC" in call_body
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert "TIMEOUT" in embed["title"]
+        assert "BTC" in embed["title"]
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
         # entry=62000, fill=62500, sl=59800 → LONG: (62500-62000)/(62000-59800) = +0.23R
-        assert "+0.23R" in call_body
+        assert "+0.23R" in field_values["R Value"]
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_fresh_position_skipped(self, mock_auth, config, conn):
@@ -1208,11 +1209,11 @@ class TestCalcR:
 
 
 class TestFillAlert:
-    """SL/TP fill Discord notifications."""
+    """SL/TP fill Discord embed notifications."""
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_sl(self, mock_post):
-        """SL fill → red emoji, SL FILLED label, R value shown."""
+        """SL fill → red embed, SL FILLED title, R value field."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "BTC", "direction": "LONG", "entry_price": 62000}
@@ -1221,16 +1222,17 @@ class TestFillAlert:
         result = _send_fill_alert(entry, order, 59800.0, config)
 
         assert result is True
-        body = mock_post.call_args[1]["json"]["content"]
-        assert "SL FILLED" in body
-        assert "BTC" in body
-        assert "59,800.00" in body
-        assert "\U0001f534" in body  # red circle
-        assert "-1.00R" in body
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert "SL FILLED" in embed["title"]
+        assert "BTC" in embed["title"]
+        assert embed["color"] == 0xEF5350  # red
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "59,800.00" in field_values["Fill Price"]
+        assert "-1.00R" in field_values["R Value"]
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_tp(self, mock_post):
-        """TP1 fill → green emoji, TP1 FILLED label, R value from scan_orders SL."""
+        """TP1 fill → green embed, TP1 FILLED title, R value from scan_orders SL."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
@@ -1240,15 +1242,16 @@ class TestFillAlert:
         result = _send_fill_alert(entry, order, 3200.50, config, scan_orders=scan_orders)
 
         assert result is True
-        body = mock_post.call_args[1]["json"]["content"]
-        assert "TP1 FILLED" in body
-        assert "ETH" in body
-        assert "\U0001f7e2" in body  # green circle
-        assert "+2.00R" in body
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert "TP1 FILLED" in embed["title"]
+        assert "ETH" in embed["title"]
+        assert embed["color"] == 0x26A69A  # green
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "+2.00R" in field_values["R Value"]
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_tp_no_scan_orders(self, mock_post):
-        """TP fill without scan_orders → no R shown, no crash."""
+        """TP fill without scan_orders → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
@@ -1257,13 +1260,14 @@ class TestFillAlert:
         result = _send_fill_alert(entry, order, 3200.50, config)
 
         assert result is True
-        body = mock_post.call_args[1]["json"]["content"]
-        assert "TP1 FILLED" in body
-        assert "R" not in body or "SHORT" in body  # no R suffix
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert "TP1 FILLED" in embed["title"]
+        field_names = [f["name"] for f in embed["fields"]]
+        assert "R Value" not in field_names
 
     @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_no_entry_price(self, mock_post):
-        """No entry_price on entry dict → no R shown, no crash."""
+        """No entry_price on entry dict → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "BTC", "direction": "LONG"}
@@ -1272,9 +1276,10 @@ class TestFillAlert:
         result = _send_fill_alert(entry, order, 59800.0, config)
 
         assert result is True
-        body = mock_post.call_args[1]["json"]["content"]
-        assert "SL FILLED" in body
-        assert "R" not in body.split("LONG")[-1]  # no R after direction
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        assert "SL FILLED" in embed["title"]
+        field_names = [f["name"] for f in embed["fields"]]
+        assert "R Value" not in field_names
 
     def test_fill_alert_no_webhook(self):
         """No ops webhook → returns False, no request."""
