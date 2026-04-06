@@ -69,7 +69,8 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         filled_exit_qty = sum(x.get("quantity", 0) for x in exits)
 
         # Skip partially open positions (not fully closed yet)
-        if filled_exit_qty < entry_qty:
+        # Use epsilon to handle IEEE 754 artifacts (e.g. 0.043+0.042 = 0.08499...99)
+        if entry_qty - filled_exit_qty > 1e-9:
             continue
 
         # Sum PnL across all exit legs
