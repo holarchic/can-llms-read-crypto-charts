@@ -38,8 +38,13 @@ def _extract_fill_price(exch_order: dict) -> float | None:
     return None
 
 
-def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
+def sync_order_status(exec_config: ExecutionConfig, conn=None,
+                      exchange_open_orders: list[dict] | None = None) -> int:
     """Poll exchange for order fills, update DB. Cancel counterpart orders on fill.
+
+    When exchange_open_orders is provided, uses it to skip orders still open
+    on exchange (avoiding per-order fetch_order calls). Only orders that
+    disappeared from the open set get individually fetched for fill details.
 
     Returns count of orders updated.
     """
@@ -50,6 +55,13 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
     updated = 0
     exchange = get_auth_exchange(exec_config)
     meta = get_exchange_meta(exec_config.exchange)
+
+    # Batch fetch: build set of exchange order IDs still open
+    if exchange_open_orders is not None:
+        _open_orders = exchange_open_orders
+    else:
+        _open_orders = exchange.fetch_open_orders()
+    open_oid_set = {str(o.get("id", "")) for o in _open_orders}
 
     # Check all open entries for position closure
     open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
@@ -62,11 +74,15 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None) -> int:
             if order["status"] not in ("PLACED",):
                 continue
 
-            # Check if this order has been filled on exchange
             exch_oid = order.get("exchange_order_id")
             if not exch_oid:
                 continue
 
+            # Still open on exchange — skip (no API call needed)
+            if exch_oid in open_oid_set:
+                continue
+
+            # Order disappeared from exchange — fetch details for fill/cancel
             try:
                 exch_order = exchange.fetch_order(exch_oid, symbol)
                 exch_status = exch_order.get("status", "").lower()
@@ -777,10 +793,11 @@ def _send_timeout_alert(
         return False
 
 
-def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None) -> list[dict]:
+def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None,
+                    exchange_open_orders: list[dict] | None = None) -> list[dict]:
     """Health check: verify open positions have SL orders, detect orphans.
 
-    Batch-fetches open orders from exchange to verify PLACED SLs actually exist.
+    When exchange_open_orders is provided, uses it instead of fetching.
     Returns list of issues found.
     """
     own_conn = conn is None
@@ -789,19 +806,22 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
 
     issues = []
 
-    # Fetch all open orders from exchange in one call
-    try:
-        exchange_orders = get_exchange_open_orders(exec_config)
-        exchange_oids = {str(o.get("id", "")) for o in exchange_orders}
-    except Exception as exc:
-        log.warning("Could not fetch exchange orders for health check: %s", exc)
-        exchange_oids = None  # Skip verification if exchange unreachable
-        issues.append({
-            "type": "exchange_fetch_failed",
-            "coin": "",
-            "scan_id": "",
-            "message": f"Exchange order fetch failed: {exc} — SL verification skipped",
-        })
+    # Build exchange order ID set — use shared data or fetch our own
+    if exchange_open_orders is not None:
+        exchange_oids = {str(o.get("id", "")) for o in exchange_open_orders}
+    else:
+        try:
+            exchange_orders = get_exchange_open_orders(exec_config)
+            exchange_oids = {str(o.get("id", "")) for o in exchange_orders}
+        except Exception as exc:
+            log.warning("Could not fetch exchange orders for health check: %s", exc)
+            exchange_oids = None  # Skip verification if exchange unreachable
+            issues.append({
+                "type": "exchange_fetch_failed",
+                "coin": "",
+                "scan_id": "",
+                "message": f"Exchange order fetch failed: {exc} — SL verification skipped",
+            })
 
     open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
 

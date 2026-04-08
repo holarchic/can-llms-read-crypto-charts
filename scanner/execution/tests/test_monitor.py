@@ -260,6 +260,88 @@ class TestPhantomSLDetection:
         assert len(issues) == 0
 
 
+class TestBatchFetchOptimization:
+    """Batch fetch_open_orders reduces per-cycle API calls."""
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sync_skips_open_orders(self, mock_auth, config, conn):
+        """Orders still in exchange open set are not individually fetched."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_auth.return_value = mock_exchange
+
+        exchange_open_orders = [{"id": "sl_exch1", "status": "open"}]
+        updated = sync_order_status(config, conn,
+                                    exchange_open_orders=exchange_open_orders)
+
+        assert updated == 0
+        mock_exchange.fetch_order.assert_not_called()
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sync_fetches_disappeared_orders(self, mock_auth, config, conn):
+        """Orders not in exchange open set get individual fetch_order calls."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "average": 59750, "filled": 0.1,
+        }
+        mock_auth.return_value = mock_exchange
+
+        exchange_open_orders = []  # SL disappeared
+        updated = sync_order_status(config, conn,
+                                    exchange_open_orders=exchange_open_orders)
+
+        assert updated >= 1
+        mock_exchange.fetch_order.assert_called_once_with("sl_exch1", "BTC/USDC:USDC")
+
+        sl_order = get_order(sl["order_id"], conn)
+        assert sl_order["status"] == "FILLED"
+
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_sync_fallback_when_none(self, mock_auth, config, conn):
+        """When exchange_open_orders=None, sync fetches its own open orders."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_open_orders.return_value = [{"id": "sl_exch1"}]
+        mock_auth.return_value = mock_exchange
+
+        updated = sync_order_status(config, conn)  # no exchange_open_orders
+
+        assert updated == 0
+        mock_exchange.fetch_open_orders.assert_called_once()
+        mock_exchange.fetch_order.assert_not_called()
+
+    @patch("scanner.execution.monitor.get_exchange_open_orders")
+    def test_check_positions_uses_passed_orders(self, mock_get_orders, config, conn):
+        """check_positions skips fetch when exchange_open_orders is passed."""
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED")
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1")
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        issues = check_positions(config, conn,
+                                 exchange_open_orders=[{"id": "sl_exch1"}])
+
+        assert len(issues) == 0
+        mock_get_orders.assert_not_called()
+
+
 class TestStaleListSafety:
     """Exit fill breaks the inner loop to avoid stale-list corruption."""
 

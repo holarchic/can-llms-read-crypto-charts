@@ -71,9 +71,19 @@ def _cmd_monitor(config, discord_handler=None):
     try:
         conn = get_connection()
 
+        # Fetch exchange open orders once — shared by sync and health check
+        # to reduce API calls (HL counts per-user info requests against rate limit)
+        exchange_open_orders = None
+        try:
+            from .exchange import get_exchange_open_orders
+            exchange_open_orders = get_exchange_open_orders(config)
+        except Exception as exc:
+            print(f"Exchange open orders fetch failed: {exc}")
+
         # Each step isolated so a transient API blip doesn't skip the rest
         try:
-            updated = sync_order_status(config, conn)
+            updated = sync_order_status(config, conn,
+                                        exchange_open_orders=exchange_open_orders)
             print(f"Orders updated: {updated}")
         except _TRANSIENT as exc:
             print(f"sync_order_status skipped (transient): {exc}")
@@ -86,7 +96,8 @@ def _cmd_monitor(config, discord_handler=None):
             print(f"enforce_position_timeouts skipped (transient): {exc}")
 
         try:
-            issues = check_positions(config, conn)
+            issues = check_positions(config, conn,
+                                     exchange_open_orders=exchange_open_orders)
         except _TRANSIENT as exc:
             print(f"check_positions skipped (transient): {exc}")
             issues = []
