@@ -85,6 +85,13 @@ def _cmd_monitor(config, discord_handler=None):
             updated = sync_order_status(config, conn,
                                         exchange_open_orders=exchange_open_orders)
             print(f"Orders updated: {updated}")
+            # Re-fetch after sync if orders changed (e.g. SL replaced after
+            # TP1 fill) so check_positions sees the current exchange state
+            if updated > 0:
+                try:
+                    exchange_open_orders = get_exchange_open_orders(config)
+                except Exception as exc:
+                    print(f"Exchange re-fetch after sync failed: {exc}")
         except _TRANSIENT as exc:
             print(f"sync_order_status skipped (transient): {exc}")
 

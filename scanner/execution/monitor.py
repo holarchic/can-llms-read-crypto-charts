@@ -724,7 +724,7 @@ def _send_fill_alert(
     emoji = "\U0001f7e2" if is_win else "\U0001f534"
     color = 0x26A69A if is_win else 0xEF5350
 
-    # Calculate R value
+    # Calculate R value — scaled by fraction of original position this fill covers
     r_val = None
     if fill_price and entry.get("entry_price"):
         if order["order_type"] == "stop_loss":
@@ -737,6 +737,11 @@ def _send_fill_alert(
             sl_price = sl_order.get("trigger_price") if sl_order else None
         if sl_price:
             r_val = _calc_r(float(entry["entry_price"]), fill_price, float(sl_price), entry["direction"])
+            # Scale by position fraction (e.g. SL on half position after TP1 = -0.5R not -1R)
+            if r_val is not None and order.get("quantity") and entry.get("quantity"):
+                frac = float(order["quantity"]) / float(entry["quantity"])
+                if frac < 1.0 - 1e-9:
+                    r_val *= frac
 
     fields = []
     if fill_price:
