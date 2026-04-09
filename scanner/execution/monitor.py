@@ -978,3 +978,65 @@ def attempt_sl_recovery(
 
     log.error("SL recovery exhausted for %s %s — position still unprotected", coin, direction)
     return False
+
+
+def send_open_positions_report(exec_config: ExecutionConfig, conn=None) -> bool:
+    """Send daily Discord embed showing open positions and time remaining until timeout."""
+    webhook = exec_config.discord_ops_webhook_url
+    if not webhook:
+        return False
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    open_entries = get_open_entry_orders(conn, exec_config.exchange, exec_config.mode)
+    now = datetime.now(timezone.utc)
+    timeout_hours = exec_config.position_timeout_hours
+
+    if not open_entries:
+        embed = {
+            "title": "\U0001f4cb Daily Positions — No Open Positions",
+            "color": 0x999999,
+            "footer": {"text": now.strftime("%Y-%m-%d %H:%M UTC")},
+        }
+    else:
+        lines = []
+        for entry in open_entries:
+            entry_time_str = entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at")
+            if entry_time_str:
+                try:
+                    entry_time = datetime.fromisoformat(entry_time_str)
+                    if entry_time.tzinfo is None:
+                        entry_time = entry_time.replace(tzinfo=timezone.utc)
+                    age_hours = (now - entry_time).total_seconds() / 3600
+                    remaining = max(0, timeout_hours - age_hours)
+                    remaining_str = f"{remaining:.1f}h left" if remaining > 0 else "EXPIRED"
+                except (ValueError, TypeError):
+                    age_hours = 0
+                    remaining_str = "unknown"
+            else:
+                age_hours = 0
+                remaining_str = "unknown"
+
+            lines.append(
+                f"**{entry['coin']}** {entry['direction']} — "
+                f"{age_hours:.1f}h open, {remaining_str}"
+            )
+
+        embed = {
+            "title": f"\U0001f4cb Daily Positions — {len(open_entries)} Open",
+            "description": "\n".join(lines),
+            "color": 0x42A5F5,
+            "footer": {"text": f"Timeout: {timeout_hours}h | {now.strftime('%Y-%m-%d %H:%M UTC')}"},
+        }
+
+    if own_conn:
+        conn.close()
+
+    try:
+        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.error("Open positions report failed: %s", exc)
+        return False

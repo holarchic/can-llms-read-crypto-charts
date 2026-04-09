@@ -28,7 +28,7 @@ Examples:
   python -m scanner.execution unkill          # Deactivate kill switch
         """,
     )
-    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "smoke"],
+    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "open-positions", "smoke"],
                         help="Subcommand to run")
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
     parser.add_argument("--mode", choices=["testnet", "live"], help="Filter by execution mode")
@@ -52,6 +52,8 @@ Examples:
         _cmd_kill(config, active=False)
     elif args.command == "report":
         _cmd_report(config, args.days, args.mode, args.discord)
+    elif args.command == "open-positions":
+        _cmd_open_positions(config, args.discord)
     elif args.command == "smoke":
         _cmd_smoke(config)
 
@@ -219,6 +221,48 @@ def _cmd_report(config, days, mode, discord):
             print("\nReport sent to Discord.")
         except Exception as exc:
             print(f"\nDiscord send failed: {exc}")
+
+
+def _cmd_open_positions(config, discord):
+    from datetime import datetime, timezone
+
+    from scanner.storage import get_connection
+
+    from .monitor import send_open_positions_report
+    from .storage import get_open_entry_orders
+
+    conn = get_connection()
+    entries = get_open_entry_orders(conn, config.exchange, config.mode)
+    now = datetime.now(timezone.utc)
+    timeout = config.position_timeout_hours
+
+    if not entries:
+        print("No open positions.")
+    else:
+        print(f"\nOpen Positions ({len(entries)}):")
+        print(f"{'Coin':>8} {'Dir':>5} {'Age (h)':>8} {'Remaining':>10}")
+        print("-" * 35)
+        for e in entries:
+            ts = e.get("filled_at") or e.get("placed_at") or e.get("created_at")
+            if ts:
+                try:
+                    t = datetime.fromisoformat(ts)
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=timezone.utc)
+                    age = (now - t).total_seconds() / 3600
+                    left = max(0, timeout - age)
+                    left_str = f"{left:.1f}h" if left > 0 else "EXPIRED"
+                except (ValueError, TypeError):
+                    age, left_str = 0, "?"
+            else:
+                age, left_str = 0, "?"
+            print(f"{e['coin']:>8} {e['direction']:>5} {age:>8.1f} {left_str:>10}")
+
+    if discord:
+        ok = send_open_positions_report(config, conn)
+        print("Sent to Discord." if ok else "Discord send failed.")
+
+    conn.close()
 
 
 def _cmd_smoke(config):
