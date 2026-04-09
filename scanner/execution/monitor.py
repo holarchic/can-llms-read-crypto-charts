@@ -982,7 +982,9 @@ def attempt_sl_recovery(
 
 def send_open_positions_report(exec_config: ExecutionConfig, conn=None) -> bool:
     """Send daily Discord embed showing open positions and time remaining until timeout."""
-    webhook = exec_config.discord_ops_webhook_url
+    from scanner.config import ScannerConfig
+    cfg = ScannerConfig()
+    webhook = cfg.discord_reports_webhook_url or exec_config.discord_ops_webhook_url
     if not webhook:
         return False
 
