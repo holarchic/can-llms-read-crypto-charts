@@ -1404,3 +1404,102 @@ class TestOrderTypeMarket:
         call_args = mock_exchange.create_order.call_args
         assert call_args[0][1] == "market"
         assert call_args[1] is not None or call_args[0][5]["takeProfitPrice"] == 65000.0
+
+
+class TestBatchExitOrders:
+    """Tests for batch exit order placement (SL + TP1 + TP2 in one API call)."""
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_batch_success_places_all_exits(self, mock_killed, mock_price, mock_balance,
+                                             mock_auth, mock_discord, conn, exec_config, scanner_config):
+        """When batch succeeds, SL + TP1 + TP2 placed via create_orders, not create_order."""
+        mock_exchange = MagicMock()
+        # Entry via create_order
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        # Batch exit via create_orders — returns list of order responses
+        mock_exchange.create_orders.return_value = [
+            {"id": "sl-batch-1", "status": "open"},
+            {"id": "tp1-batch-1", "status": "open"},
+            {"id": "tp2-batch-1", "status": "open"},
+        ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        assert result.sl_order_id != ""
+        assert result.tp1_order_id != ""
+        assert result.tp2_order_id != ""
+
+        # create_orders called once (batch), create_order called once (entry only)
+        assert mock_exchange.create_orders.call_count == 1
+        assert mock_exchange.create_order.call_count == 1  # entry only
+
+        # All orders saved to DB
+        orders = get_orders_for_scan("test123", conn)
+        order_types = {o["order_type"] for o in orders}
+        assert {"entry", "stop_loss", "tp1", "tp2"} == order_types
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_batch_failure_falls_back_to_sequential(self, mock_killed, mock_price, mock_balance,
+                                                     mock_auth, mock_discord, conn, exec_config,
+                                                     scanner_config):
+        """When batch raises, falls back to sequential create_order calls."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_orders.side_effect = Exception("batch API error")
+        # Sequential fallback: entry, SL, TP1, TP2
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        assert result.sl_order_id != ""
+        # Sequential used: entry + SL + TP1 + TP2 = 4 create_order calls
+        assert mock_exchange.create_order.call_count == 4
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_batch_partial_sl_missing_falls_back(self, mock_killed, mock_price, mock_balance,
+                                                   mock_auth, mock_discord, conn, exec_config,
+                                                   scanner_config):
+        """Batch returns TP but no SL id → falls back to sequential SL with retries."""
+        mock_exchange = MagicMock()
+        # Batch returns: SL missing id, TP1 OK, TP2 OK
+        mock_exchange.create_orders.return_value = [
+            {"status": "error"},  # SL failed — no 'id'
+            {"id": "tp1-batch-1", "status": "open"},
+            {"id": "tp2-batch-1", "status": "open"},
+        ]
+        # Sequential fallback for SL
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),  # entry
+            _mock_exchange_success(),  # SL sequential fallback
+        ]
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        assert result.sl_order_id != ""
+        assert result.tp1_order_id != ""
+        assert result.tp2_order_id != ""
+        # SL placed sequentially (entry + SL = 2 create_order calls)
+        assert mock_exchange.create_order.call_count == 2

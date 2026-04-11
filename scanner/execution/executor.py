@@ -477,14 +477,46 @@ def execute_trade(
         _send_errors_alert(f"Entry order failed for {result.coin}: {exc}", exec_config)
         return er
 
-    # 10. Stop loss (3 retries — URGENT if all fail)
+    # --- Exit orders: batch SL + TP1 + TP2 (single API call, ~1s faster) ---
     exit_side = "sell" if er.direction == "LONG" else "buy"
     sl_price = reanchored["stop_loss"]
     sl_oid = new_order_id()
-    sl_resp = _place_stop_loss(
-        exec_config, symbol, exit_side, filled_qty, sl_price,
-        cloid=make_cloid(sl_oid),
-    )
+    sl_cloid = make_cloid(sl_oid)
+
+    tp1_price = reanchored.get("tp1", mb.get("tp1"))
+    tp1_oid = new_order_id() if tp1_price and actual_tp1_qty > 0 else None
+    tp1_cloid = make_cloid(tp1_oid) if tp1_oid else None
+
+    tp2_price = reanchored.get("tp2", mb.get("tp2"))
+    tp2_oid = new_order_id() if tp2_price and actual_tp2_qty > 0 else None
+    tp2_cloid = make_cloid(tp2_oid) if tp2_oid else None
+
+    # Try batch first — single API call for all exit orders
+    sl_resp = tp1_resp = tp2_resp = None
+    try:
+        batch = _place_exit_orders_batch(
+            exec_config, symbol, exit_side,
+            filled_qty, sl_price, sl_cloid,
+            tp1_price, actual_tp1_qty, tp1_cloid,
+            tp2_price, actual_tp2_qty, tp2_cloid,
+        )
+        sl_resp = batch["sl"]
+        tp1_resp = batch["tp1"]
+        tp2_resp = batch["tp2"]
+        if sl_resp:
+            log.info("Batch exit placement OK for %s: SL + %d TPs",
+                     result.coin, sum(1 for r in [tp1_resp, tp2_resp] if r))
+    except Exception as exc:
+        log.warning("Batch exit placement failed for %s: %s — sequential fallback",
+                    result.coin, exc)
+
+    # 10. SL: fall back to sequential with retries if batch didn't produce SL
+    if sl_resp is None:
+        sl_resp = _place_stop_loss(
+            exec_config, symbol, exit_side, filled_qty, sl_price,
+            cloid=sl_cloid,
+        )
+
     if sl_resp:
         er.sl_order_id = sl_oid
         save_order({
@@ -541,14 +573,13 @@ def execute_trade(
             )
             return er
 
-    # 11. Take profits (non-fatal)
-    tp1_price = reanchored.get("tp1", mb.get("tp1"))
+    # 11. Take profits (non-fatal) — use batch response or fall back to sequential
     if tp1_price and actual_tp1_qty > 0:
-        tp1_oid = new_order_id()
-        tp1_resp = _place_take_profit(
-            exec_config, symbol, exit_side, actual_tp1_qty, tp1_price,
-            cloid=make_cloid(tp1_oid),
-        )
+        if tp1_resp is None:
+            tp1_resp = _place_take_profit(
+                exec_config, symbol, exit_side, actual_tp1_qty, tp1_price,
+                cloid=tp1_cloid,
+            )
         if tp1_resp:
             er.tp1_order_id = tp1_oid
             save_order({
@@ -567,13 +598,12 @@ def execute_trade(
                 "created_at": now,
             }, conn)
 
-    tp2_price = reanchored.get("tp2", mb.get("tp2"))
     if tp2_price and actual_tp2_qty > 0:
-        tp2_oid = new_order_id()
-        tp2_resp = _place_take_profit(
-            exec_config, symbol, exit_side, actual_tp2_qty, tp2_price,
-            cloid=make_cloid(tp2_oid),
-        )
+        if tp2_resp is None:
+            tp2_resp = _place_take_profit(
+                exec_config, symbol, exit_side, actual_tp2_qty, tp2_price,
+                cloid=tp2_cloid,
+            )
         if tp2_resp:
             er.tp2_order_id = tp2_oid
             save_order({
@@ -681,6 +711,69 @@ def _place_take_profit(
     except Exception as exc:
         log.warning("TP placement failed for %s: %s", symbol, exc)
         return None
+
+
+def _place_exit_orders_batch(
+    config, symbol: str, exit_side: str,
+    sl_qty: float, sl_price: float, sl_cloid: str,
+    tp1_price: float | None, tp1_qty: float, tp1_cloid: str | None,
+    tp2_price: float | None, tp2_qty: float, tp2_cloid: str | None,
+) -> dict[str, dict | None]:
+    """Batch SL + TP1 + TP2 in one create_orders() call (~1s faster).
+
+    Returns {"sl": resp|None, "tp1": resp|None, "tp2": resp|None}.
+    Raises on total batch failure (caller falls back to sequential).
+    """
+    exchange = get_auth_exchange(config)
+    orders = []
+    labels = []
+
+    # SL (always included)
+    orders.append({
+        "symbol": symbol, "type": "market", "side": exit_side,
+        "amount": _round_quantity(exchange, symbol, sl_qty),
+        "price": sl_price,
+        "params": {
+            "stopLossPrice": sl_price, "reduceOnly": True,
+            "clientOrderId": sl_cloid,
+        },
+    })
+    labels.append("sl")
+
+    # TP1 (optional)
+    if tp1_price and tp1_qty > 0 and tp1_cloid:
+        orders.append({
+            "symbol": symbol, "type": "market", "side": exit_side,
+            "amount": _round_quantity(exchange, symbol, tp1_qty),
+            "price": tp1_price,
+            "params": {
+                "takeProfitPrice": tp1_price, "reduceOnly": True,
+                "clientOrderId": tp1_cloid,
+            },
+        })
+        labels.append("tp1")
+
+    # TP2 (optional)
+    if tp2_price and tp2_qty > 0 and tp2_cloid:
+        orders.append({
+            "symbol": symbol, "type": "market", "side": exit_side,
+            "amount": _round_quantity(exchange, symbol, tp2_qty),
+            "price": tp2_price,
+            "params": {
+                "takeProfitPrice": tp2_price, "reduceOnly": True,
+                "clientOrderId": tp2_cloid,
+            },
+        })
+        labels.append("tp2")
+
+    responses = exchange.create_orders(orders)
+
+    result = {"sl": None, "tp1": None, "tp2": None}
+    for i, label in enumerate(labels):
+        if i < len(responses) and responses[i] and responses[i].get("id"):
+            result[label] = responses[i]
+
+    return result
 
 
 def _emergency_close_position(
