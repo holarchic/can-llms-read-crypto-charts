@@ -45,6 +45,7 @@ def get_auth_exchange(config):
         "privateKey": config.private_key,
         "walletAddress": config.wallet_address,
         "timeout": 30000,
+        "options": {"builderFee": False},
     })
 
     if config.mode == "testnet":
