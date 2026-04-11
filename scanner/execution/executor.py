@@ -769,9 +769,26 @@ def _place_exit_orders_batch(
     responses = exchange.create_orders(orders)
 
     result = {"sl": None, "tp1": None, "tp2": None}
+    cloids: dict[str, str] = {}  # label → clientOrderId for recovery
     for i, label in enumerate(labels):
+        cloids[label] = orders[i].get("params", {}).get("clientOrderId", "")
         if i < len(responses) and responses[i] and responses[i].get("id"):
             result[label] = responses[i]
+
+    # HL trigger orders return "waitingForTrigger" with no OID in batch responses.
+    # Recover by matching clientOrderId in open orders.
+    missing = [label for label in labels if result[label] is None and cloids.get(label)]
+    if missing:
+        try:
+            open_orders = exchange.fetch_open_orders(symbol)
+            by_cloid = {o.get("clientOrderId"): o for o in open_orders if o.get("clientOrderId")}
+            for label in missing:
+                matched = by_cloid.get(cloids[label])
+                if matched and matched.get("id"):
+                    result[label] = matched
+                    log.info("OID recovery: %s %s matched by cloid → %s", symbol, label, matched["id"])
+        except Exception as exc:
+            log.warning("OID recovery: failed to fetch open orders for %s: %s", symbol, exc)
 
     return result
 

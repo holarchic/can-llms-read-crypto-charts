@@ -1478,7 +1478,7 @@ class TestBatchExitOrders:
     def test_batch_partial_sl_missing_falls_back(self, mock_killed, mock_price, mock_balance,
                                                    mock_auth, mock_discord, conn, exec_config,
                                                    scanner_config):
-        """Batch returns TP but no SL id → falls back to sequential SL with retries."""
+        """Batch returns TP but no SL id → OID recovery finds nothing → falls back to sequential SL."""
         mock_exchange = MagicMock()
         # Batch returns: SL missing id, TP1 OK, TP2 OK
         mock_exchange.create_orders.return_value = [
@@ -1486,6 +1486,7 @@ class TestBatchExitOrders:
             {"id": "tp1-batch-1", "status": "open"},
             {"id": "tp2-batch-1", "status": "open"},
         ]
+        mock_exchange.fetch_open_orders.return_value = []  # OID recovery finds nothing
         # Sequential fallback for SL
         mock_exchange.create_order.side_effect = [
             _mock_exchange_success(),  # entry
