@@ -391,7 +391,7 @@ def execute_trade(
         entry_oid = new_order_id()
         entry_resp = _place_market_order(
             exec_config, symbol, side, pos.quantity, pos.leverage,
-            cloid=make_cloid(entry_oid),
+            cloid=make_cloid(entry_oid), price=current_price,
         )
         er.entry_order_id = entry_oid
 
@@ -605,18 +605,20 @@ def _round_quantity(exchange, symbol: str, quantity: float) -> float:
 
 def _place_market_order(
     config, symbol: str, side: str, quantity: float, leverage: int,
-    cloid: str | None = None,
+    cloid: str | None = None, price: float | None = None,
 ) -> dict:
     """Set leverage + place market order.
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
     with 5% slippage. Requires current price as the base for slippage calc.
+    Pass price to skip the redundant fetch_ticker() call.
     """
     exchange = get_auth_exchange(config)
     exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
     quantity = _round_quantity(exchange, symbol, quantity)
-    ticker = exchange.fetch_ticker(symbol)
-    price = ticker["last"]
+    if price is None:
+        ticker = exchange.fetch_ticker(symbol)
+        price = ticker["last"]
     params = {}
     if cloid:
         params["clientOrderId"] = cloid
