@@ -49,6 +49,15 @@ class ExecutionConfig:
     # Position timeout
     position_timeout_hours: int = 72  # 0 = disabled
 
+    # Drift invalidation (hybrid_inv strategy on 4H candles)
+    drift_enabled: bool = False
+    drift_grace_hours: float = 12.0           # hours after entry before any trigger fires
+    drift_consec_threshold: int = 6           # consecutive 4H closes in drift zone for stagnation
+    drift_momentum_check_hours: float = 24.0  # hours after entry for no_momentum one-shot check
+    drift_momentum_pct: float = 40.0          # min % progress toward TP1 at momentum check
+    drift_reversal_best_pct: float = 50.0     # best progress threshold for reversal trigger
+    drift_reversal_current_pct: float = 15.0  # current progress threshold for reversal trigger
+
     # Discord
     discord_ops_webhook_url: str = ""
     discord_urgent_webhook_url: str = ""
@@ -91,6 +100,7 @@ def load_execution_config() -> ExecutionConfig:
         max_portfolio_exposure_pct=float(os.getenv("EXECUTION_MAX_EXPOSURE_PCT", "100.0")),
         gcp_project_id=gcp_project,
         position_timeout_hours=int(os.getenv("EXECUTION_POSITION_TIMEOUT_HOURS", "72")),
+        drift_enabled=os.getenv("DRIFT_ENABLED", "false").lower() in ("true", "1", "yes"),
         discord_ops_webhook_url=os.getenv("DISCORD_OPS_WEBHOOK_URL", ""),
         discord_urgent_webhook_url=os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""),
         discord_errors_webhook_url=os.getenv("DISCORD_ERRORS_WEBHOOK_URL", ""),
