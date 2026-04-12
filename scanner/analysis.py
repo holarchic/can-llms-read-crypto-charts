@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "6.02"
+PROMPT_VERSION = "7.00"
 
 import uuid
 from datetime import datetime, timezone
