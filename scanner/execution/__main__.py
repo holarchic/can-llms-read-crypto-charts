@@ -98,6 +98,19 @@ def _cmd_monitor(config, discord_handler=None):
             print(f"sync_order_status skipped (transient): {exc}")
 
         try:
+            if config.drift_enabled:
+                from .drift import check_drift_positions
+                drift_acted = check_drift_positions(config, conn)
+                if drift_acted:
+                    print(f"Drift invalidation: {drift_acted} position(s) acted on")
+                    try:
+                        exchange_open_orders = get_exchange_open_orders(config)
+                    except Exception as exc:
+                        print(f"Exchange re-fetch after drift failed: {exc}")
+        except _TRANSIENT as exc:
+            print(f"check_drift_positions skipped (transient): {exc}")
+
+        try:
             timed_out = enforce_position_timeouts(config, conn)
             if timed_out:
                 print(f"Positions timed out: {timed_out}")

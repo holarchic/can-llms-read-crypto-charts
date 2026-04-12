@@ -12,6 +12,7 @@ from scanner.storage import get_connection
 from .config import ExecutionConfig
 from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions, is_rate_limit_error
 from .storage import (
+    EXIT_ORDER_TYPES_SQL,
     OPEN_QTY_EPSILON,
     get_open_entry_orders,
     get_orders_for_scan,
@@ -632,8 +633,8 @@ def _get_remaining_qty(entry: dict, conn) -> float:
     IEEE 754 floating-point artifacts creating ghost positions.
     """
     row = conn.execute(
-        """SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
-        WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
+        f"""SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
+        WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
         AND status = 'FILLED'""",
         (entry["scan_id"],),
     ).fetchone()
