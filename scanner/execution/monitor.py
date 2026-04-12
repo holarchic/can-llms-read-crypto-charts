@@ -207,7 +207,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
     return updated
 
 
-def _cancel_remaining_orders(
+def cancel_remaining_orders(
     scan_id: str, filled_order_id: str, symbol: str, config: ExecutionConfig, conn,
 ) -> None:
     """Cancel all other PLACED orders for a scan after one exit fills.
@@ -255,7 +255,7 @@ def _handle_exit_fill(
             )
         else:
             # Full close — cancel everything
-            _cancel_remaining_orders(
+            cancel_remaining_orders(
                 entry["scan_id"], filled_order["order_id"],
                 symbol, config, conn,
             )
@@ -294,7 +294,7 @@ def _handle_partial_exit_fill(
     )
 
     # Cancel all remaining PLACED orders on exchange
-    _cancel_remaining_orders(
+    cancel_remaining_orders(
         entry["scan_id"], filled_order["order_id"],
         symbol, config, conn,
     )
@@ -406,7 +406,7 @@ def _handle_tp1_fill(
 
     if remaining_qty <= 0:
         # TP1 was full size — treat as full close
-        _cancel_remaining_orders(
+        cancel_remaining_orders(
             entry["scan_id"], tp1_order["order_id"],
             symbol, config, conn,
         )
@@ -599,7 +599,7 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         symbol = meta["symbol_template"].format(coin=entry["coin"])
         exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
-        fill_price = _market_close_position(
+        fill_price = market_close_position(
             entry, symbol, exit_side, remaining_qty, exchange, exec_config, conn,
         )
 
@@ -612,7 +612,7 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
             sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
 
             # Cancel remaining SL/TP orders
-            _cancel_remaining_orders(entry["scan_id"], "", symbol, exec_config, conn)
+            cancel_remaining_orders(entry["scan_id"], "", symbol, exec_config, conn)
             _send_timeout_alert(entry, age_hours, remaining_qty, exec_config,
                                 fill_price=fill_price, sl_price=sl_price)
             timed_out += 1
@@ -641,11 +641,12 @@ def _get_remaining_qty(entry: dict, conn) -> float:
     return remaining if remaining > OPEN_QTY_EPSILON else 0.0
 
 
-def _market_close_position(
+def market_close_position(
     entry: dict, symbol: str, exit_side: str, qty: float,
     exchange, config: ExecutionConfig, conn,
+    order_type: str = "timeout_close",
 ) -> float | None:
-    """Place a reduceOnly market order to close a timed-out position. 3 retries.
+    """Place a reduceOnly market order to close a position. 3 retries.
 
     Returns fill price on success, None on failure.
 
@@ -671,7 +672,7 @@ def _market_close_position(
                 "scan_id": entry["scan_id"],
                 "coin": entry["coin"],
                 "direction": entry["direction"],
-                "order_type": "timeout_close",
+                "order_type": order_type,
                 "exchange_order_id": resp.get("id", ""),
                 "status": "FILLED",
                 "fill_price": fill_price,
@@ -682,19 +683,19 @@ def _market_close_position(
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }, conn)
             log.info(
-                "Timeout close %s %s: qty %s at %s",
-                entry["coin"], entry["direction"], rounded_qty, fill_price,
+                "%s %s %s: qty %s at %s",
+                order_type, entry["coin"], entry["direction"], rounded_qty, fill_price,
             )
             return fill_price if fill_price else 0.0
         except Exception as exc:
             log.error(
-                "Timeout close attempt %d/%d for %s failed: %s",
-                attempt, max_retries, entry["coin"], exc,
+                "%s attempt %d/%d for %s failed: %s",
+                order_type, attempt, max_retries, entry["coin"], exc,
             )
             if attempt < max_retries:
                 time.sleep(attempt)
 
-    log.error("All timeout close attempts exhausted for %s — position still open", entry["coin"])
+    log.error("All %s attempts exhausted for %s — position still open", order_type, entry["coin"])
     return None
 
 
