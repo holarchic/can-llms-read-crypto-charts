@@ -1,4 +1,4 @@
-"""Chart generation via mplfinance — dark theme with S/R + indicator overlays."""
+"""Chart generation via mplfinance — light theme with S/R + indicator overlays."""
 
 import matplotlib
 
@@ -12,9 +12,9 @@ import pandas as pd
 from .config import CHARTS_DIR
 from .models import SetupSignal
 
-# Dark theme matching TradingView
+# Light theme — better LLM visual acuity on white backgrounds
 STYLE = mpf.make_mpf_style(
-    base_mpf_style="nightclouds",
+    base_mpf_style="charles",
     marketcolors=mpf.make_marketcolors(
         up="#26a69a",
         down="#ef5350",
@@ -22,11 +22,6 @@ STYLE = mpf.make_mpf_style(
         wick="inherit",
         volume={"up": "#26a69a80", "down": "#ef535080"},
     ),
-    rc={
-        "axes.labelcolor": "#999999",
-        "xtick.color": "#999999",
-        "ytick.color": "#999999",
-    },
 )
 
 
