@@ -473,6 +473,25 @@ def run_scan(
             print("\nNo signals to analyze.")
         return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
 
+    # Skip LLM for coins with active pending conditional entries
+    if exec_config and exec_config.conditional_entry_enabled:
+        from .execution.storage import get_active_pending_entries
+        pending_conn = get_connection()
+        pending = get_active_pending_entries(pending_conn, exec_config.exchange, exec_config.mode)
+        pending_conn.close()
+        pending_coins = {p["coin"] for p in pending}
+        if pending_coins:
+            before = len(signals)
+            signals = [s for s in signals if s.coin not in pending_coins]
+            skipped = before - len(signals)
+            if skipped and verbose:
+                print(f"Skipped {skipped} signal(s) — pending conditional entry: "
+                      f"{', '.join(sorted(pending_coins))}")
+        if not signals:
+            if verbose:
+                print("\nNo signals remaining after pending filter.")
+            return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
+
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
                                  btc_structure=btc_structure, btc_context=btc_context,
