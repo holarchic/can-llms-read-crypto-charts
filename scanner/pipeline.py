@@ -378,6 +378,27 @@ def stage4_execute(
 
     for confirm in confirms:
         try:
+            # Route conditional entries to pending if feature enabled
+            mb = confirm.machine_block
+            if (exec_config.conditional_entry_enabled
+                    and mb
+                    and mb.get("entry_trigger")
+                    and mb.get("entry_trigger_price")
+                    and mb.get("invalidation_price")):
+                from .execution.entry_monitor import save_conditional_entry
+                saved = save_conditional_entry(confirm, exec_config, conn)
+                if saved:
+                    direction = mb.get("direction", "?")
+                    print(f"  {confirm.coin} {direction}: PENDING conditional entry "
+                          f"({mb['entry_trigger']} @ {mb['entry_trigger_price']})")
+                    results.append(ExecutionResult(
+                        scan_id=confirm.scan_id,
+                        coin=confirm.coin,
+                        direction=direction,
+                        skip_reason="conditional_pending",
+                    ))
+                    continue
+
             er = execute_trade(confirm, exec_config, scanner_config, conn)
             results.append(er)
             # Always print execution outcomes — critical ops info, never silenced by -q

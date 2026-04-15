@@ -28,7 +28,7 @@ Examples:
   python -m scanner.execution unkill          # Deactivate kill switch
         """,
     )
-    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "open-positions", "smoke"],
+    parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "open-positions", "pending", "smoke"],
                         help="Subcommand to run")
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
     parser.add_argument("--mode", choices=["testnet", "live"], help="Filter by execution mode")
@@ -54,8 +54,32 @@ Examples:
         _cmd_report(config, args.days, args.mode, args.discord)
     elif args.command == "open-positions":
         _cmd_open_positions(config, args.discord)
+    elif args.command == "pending":
+        _cmd_pending(config)
     elif args.command == "smoke":
         _cmd_smoke(config)
+
+
+def _cmd_pending(config):
+    """List active pending conditional entries."""
+    from scanner.storage import get_connection
+
+    from .storage import get_active_pending_entries
+
+    conn = get_connection()
+    entries = get_active_pending_entries(conn, config.exchange, config.mode)
+    conn.close()
+
+    if not entries:
+        print("No active pending entries.")
+        return
+
+    print(f"\n{len(entries)} active pending entries:\n")
+    for e in entries:
+        print(f"  {e['coin']} {e['direction']} — {e['entry_trigger']} @ "
+              f"${e['entry_trigger_price']:.5f} | inv: ${e['invalidation_price']:.5f} | "
+              f"checked: {e['candles_checked']}/{e['expiry_candles']} | "
+              f"since: {e['created_at'][:16]}")
 
 
 def _cmd_monitor(config, discord_handler=None):
@@ -109,6 +133,19 @@ def _cmd_monitor(config, discord_handler=None):
                         print(f"Exchange re-fetch after drift failed: {exc}")
         except _TRANSIENT as exc:
             print(f"check_drift_positions skipped (transient): {exc}")
+
+        try:
+            if config.conditional_entry_enabled:
+                from .entry_monitor import check_pending_entries
+                entry_acted = check_pending_entries(config, conn)
+                if entry_acted:
+                    print(f"Conditional entries: {entry_acted} acted on")
+                    try:
+                        exchange_open_orders = get_exchange_open_orders(config)
+                    except Exception as exc:
+                        print(f"Exchange re-fetch after conditional entry failed: {exc}")
+        except _TRANSIENT as exc:
+            print(f"check_pending_entries skipped (transient): {exc}")
 
         try:
             timed_out = enforce_position_timeouts(config, conn)
