@@ -218,7 +218,7 @@ def _move_sl_to_breakeven(
                 {"stopLossPrice": new_sl, "reduceOnly": True, "clientOrderId": cloid},
             )
             new_exch_oid = resp.get("id", "")
-            update_order_quantity(sl_order["order_id"], qty, new_exch_oid, conn)
+            update_order_quantity(sl_order["order_id"], qty, new_exch_oid, conn, new_trigger_price=new_sl)
             update_order_status(sl_order["order_id"], "PLACED", conn)
             log.info("Drift SL moved for %s %s: %s → %s (breakeven)",
                       entry["coin"], direction, current_trigger, new_sl)

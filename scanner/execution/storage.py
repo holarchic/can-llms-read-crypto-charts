@@ -386,10 +386,17 @@ def update_order_quantity(
     new_quantity: float,
     new_exchange_order_id: str,
     conn: sqlite3.Connection,
+    new_trigger_price: float | None = None,
 ) -> None:
-    """Update order quantity and exchange order ID (for SL replacement after TP1 fill)."""
-    conn.execute(
-        "UPDATE orders SET quantity = ?, exchange_order_id = ? WHERE order_id = ?",
-        (new_quantity, new_exchange_order_id, order_id),
-    )
+    """Update order quantity, exchange order ID, and optionally trigger price."""
+    if new_trigger_price is not None:
+        conn.execute(
+            "UPDATE orders SET quantity = ?, exchange_order_id = ?, trigger_price = ? WHERE order_id = ?",
+            (new_quantity, new_exchange_order_id, new_trigger_price, order_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE orders SET quantity = ?, exchange_order_id = ? WHERE order_id = ?",
+            (new_quantity, new_exchange_order_id, order_id),
+        )
     conn.commit()
