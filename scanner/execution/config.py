@@ -58,6 +58,10 @@ class ExecutionConfig:
     drift_reversal_best_pct: float = 50.0     # best progress threshold for reversal trigger
     drift_reversal_current_pct: float = 15.0  # current progress threshold for reversal trigger
 
+    # Conditional entry (monitor 1H candle closes for trigger/invalidation)
+    conditional_entry_enabled: bool = False
+    conditional_entry_max_expiry: int = 24    # max 1H candles before setup expires
+
     # Discord
     discord_ops_webhook_url: str = ""
     discord_urgent_webhook_url: str = ""
@@ -101,6 +105,8 @@ def load_execution_config() -> ExecutionConfig:
         gcp_project_id=gcp_project,
         position_timeout_hours=int(os.getenv("EXECUTION_POSITION_TIMEOUT_HOURS", "72")),
         drift_enabled=os.getenv("DRIFT_ENABLED", "false").lower() in ("true", "1", "yes"),
+        conditional_entry_enabled=os.getenv("CONDITIONAL_ENTRY_ENABLED", "false").lower() in ("true", "1", "yes"),
+        conditional_entry_max_expiry=int(os.getenv("CONDITIONAL_ENTRY_MAX_EXPIRY", "24")),
         discord_ops_webhook_url=os.getenv("DISCORD_OPS_WEBHOOK_URL", ""),
         discord_urgent_webhook_url=os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""),
         discord_errors_webhook_url=os.getenv("DISCORD_ERRORS_WEBHOOK_URL", ""),
