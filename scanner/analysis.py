@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "7.00"
+PROMPT_VERSION = "8.00"
 
 import uuid
 from datetime import datetime, timezone
@@ -119,8 +119,11 @@ def analyze_for_scanner(
         "In your written response, output ONLY the decision block. "
         "No step-by-step walkthrough.\n\n"
         "## DECISION CLASSIFICATION (CONFIRM or REJECT only — no WAIT)\n"
-        "- CONFIRM: An actionable trade exists RIGHT NOW at current price. "
-        "Entry zone must bracket the current price for immediate market order.\n"
+        "- CONFIRM: A valid trade setup exists. Either:\n"
+        "  (a) Price is at the entry level now → immediate entry "
+        "(entry_low/entry_high bracket current price)\n"
+        "  (b) Setup is valid but entry needs confirmation → conditional entry "
+        "(include entry_trigger, entry_trigger_price, invalidation_price, expiry_candles)\n"
         "- REJECT: Everything else.\n\n"
         "## INVALIDATION FIELDS (CONFIRM only)\n"
         "Include in the decision block:\n"
@@ -136,11 +139,20 @@ def analyze_for_scanner(
         "Rules:\n"
         "- Include ONLY for CONFIRM decisions\n"
         "- All prices as plain numbers (no $ signs, no commas)\n"
-        "- entry_low/entry_high: bracket current price for market order "
-        "(within 0.5% of last candle close). NOT ideal limit-order levels.\n"
+        "- entry_low/entry_high: for immediate entry, bracket current price "
+        "(within 0.5% of last candle close). For conditional entry, bracket "
+        "the trigger level.\n"
         "- tp1_exit_pct: 30-70 (percentage to close at TP1)\n"
         "- tp2/tp2_exit_pct: include when multi-target appropriate\n"
-        "- If target is a trailing stop (no fixed price), omit machine block"
+        "- If target is a trailing stop (no fixed price), omit machine block\n\n"
+        "CONDITIONAL ENTRY (optional — use when setup is valid but price "
+        "hasn't confirmed the trigger yet):\n"
+        "- entry_trigger: 'candle_close_above' or 'candle_close_below'\n"
+        "- entry_trigger_price: the 1H candle close level that confirms entry\n"
+        "- invalidation_price: what kills the setup before entry "
+        "(must be beyond stop_loss — further from entry than SL)\n"
+        "- expiry_candles: 1H candles to wait before setup expires (1-24)\n"
+        "Omit these fields for immediate entries where price is already at the level."
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
