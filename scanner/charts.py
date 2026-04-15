@@ -82,7 +82,7 @@ def generate_chart(
         type="candle",
         style=STYLE,
         title=title,
-        volume=False,
+        volume=True,
         figsize=(13.5, 8),
         savefig=dict(fname=str(filepath), dpi=70, bbox_inches="tight"),
         warn_too_much_data=500,
