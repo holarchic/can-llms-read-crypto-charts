@@ -55,10 +55,38 @@ ON orders (scan_id)
 """
 
 
+CREATE_PENDING_ENTRIES_TABLE = """
+CREATE TABLE IF NOT EXISTS pending_entries (
+    pending_id TEXT PRIMARY KEY,
+    scan_id TEXT NOT NULL UNIQUE,
+    coin TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    machine_block TEXT NOT NULL,
+    entry_trigger TEXT NOT NULL,
+    entry_trigger_price REAL NOT NULL,
+    invalidation_price REAL NOT NULL,
+    expiry_candles INTEGER NOT NULL,
+    candles_checked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    exchange TEXT NOT NULL DEFAULT 'hyperliquid',
+    execution_mode TEXT NOT NULL DEFAULT 'testnet',
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+)
+"""
+
+CREATE_PENDING_ENTRIES_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_pending_status
+ON pending_entries (status, exchange, execution_mode)
+"""
+
+
 def ensure_orders_table(conn: sqlite3.Connection) -> None:
-    """Create orders table if it doesn't exist. Called from get_connection()."""
+    """Create orders + pending_entries tables if they don't exist."""
     conn.execute(CREATE_ORDERS_TABLE)
     conn.execute(CREATE_ORDERS_INDEX)
+    conn.execute(CREATE_PENDING_ENTRIES_TABLE)
+    conn.execute(CREATE_PENDING_ENTRIES_INDEX)
 
 
 def new_order_id() -> str:
@@ -400,3 +428,87 @@ def update_order_quantity(
             (new_quantity, new_exchange_order_id, order_id),
         )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Pending entries — conditional entry setups waiting for trigger
+# ---------------------------------------------------------------------------
+
+def save_pending_entry(entry: dict, conn: sqlite3.Connection) -> None:
+    """Insert a new pending entry record."""
+    conn.execute(
+        """INSERT INTO pending_entries
+        (pending_id, scan_id, coin, direction, machine_block,
+         entry_trigger, entry_trigger_price, invalidation_price,
+         expiry_candles, exchange, execution_mode, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            entry["pending_id"],
+            entry["scan_id"],
+            entry["coin"],
+            entry["direction"],
+            entry["machine_block"],
+            entry["entry_trigger"],
+            entry["entry_trigger_price"],
+            entry["invalidation_price"],
+            entry["expiry_candles"],
+            entry.get("exchange", "hyperliquid"),
+            entry.get("execution_mode", "testnet"),
+            entry["created_at"],
+        ),
+    )
+    conn.commit()
+
+
+def get_active_pending_entries(
+    conn: sqlite3.Connection, exchange: str, mode: str,
+) -> list[dict]:
+    """Fetch all ACTIVE pending entries for a given exchange/mode."""
+    rows = conn.execute(
+        """SELECT * FROM pending_entries
+        WHERE status = 'ACTIVE' AND exchange = ? AND execution_mode = ?
+        ORDER BY created_at""",
+        (exchange, mode),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_pending_status(
+    pending_id: str, status: str, conn: sqlite3.Connection,
+) -> None:
+    """Update pending entry status and set resolved_at timestamp."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE pending_entries SET status = ?, resolved_at = ? WHERE pending_id = ?",
+        (status, now, pending_id),
+    )
+    conn.commit()
+
+
+def increment_candles_checked(
+    pending_id: str, conn: sqlite3.Connection,
+) -> int:
+    """Increment candles_checked by 1. Returns new value."""
+    conn.execute(
+        "UPDATE pending_entries SET candles_checked = candles_checked + 1 WHERE pending_id = ?",
+        (pending_id,),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT candles_checked FROM pending_entries WHERE pending_id = ?",
+        (pending_id,),
+    ).fetchone()
+    return int(row["candles_checked"]) if row else 0
+
+
+def has_active_pending(
+    coin: str, conn: sqlite3.Connection, exchange: str, mode: str,
+) -> bool:
+    """Check if an ACTIVE pending entry already exists for this coin."""
+    row = conn.execute(
+        """SELECT 1 FROM pending_entries
+        WHERE coin = ? AND status = 'ACTIVE' AND exchange = ? AND execution_mode = ?
+        LIMIT 1""",
+        (coin, exchange, mode),
+    ).fetchone()
+    return row is not None
