@@ -278,3 +278,81 @@ class TestParseDecisionBlock:
         assert result["decision"] == "CONFIRM"
         assert result["asset"] == "BTC"
         assert "entry_zone" not in result
+
+
+# --- Conditional entry fields ---
+
+class TestConditionalEntryParsing:
+
+    def test_trigger_fields_parsed(self):
+        block = _valid_block(
+            entry_trigger="candle_close_above",
+            entry_trigger_price=62500.0,
+            invalidation_price=59000.0,
+            expiry_candles=12,
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["entry_trigger"] == "candle_close_above"
+        assert result["entry_trigger_price"] == 62500.0
+        assert result["invalidation_price"] == 59000.0
+        assert result["expiry_candles"] == 12
+
+    def test_trigger_fields_optional(self):
+        """Machine block without trigger fields still parses fine."""
+        result = parse_machine_block(_wrap(_valid_block()))
+        assert result is not None
+        assert "entry_trigger" not in result
+
+    def test_invalid_trigger_type_rejected(self):
+        block = _valid_block(
+            entry_trigger="limit_order",  # not in allowed list
+            entry_trigger_price=62500.0,
+            invalidation_price=59000.0,
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is None
+
+    def test_partial_trigger_fields_rejected(self):
+        """All-or-none: having entry_trigger without price fails validation."""
+        block = _valid_block(entry_trigger="candle_close_above")
+        # Missing entry_trigger_price and invalidation_price
+        valid, errors = validate_execution_params(block)
+        assert valid is False
+        assert any("must all be present" in e for e in errors)
+
+    def test_expiry_capped_at_24(self):
+        block = _valid_block(
+            entry_trigger="candle_close_above",
+            entry_trigger_price=62500.0,
+            invalidation_price=59000.0,
+            expiry_candles=48,
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["expiry_candles"] == 24
+
+    def test_long_invalidation_above_stop_rejected(self):
+        """LONG: invalidation_price should be below stop_loss."""
+        block = _valid_block(
+            entry_trigger="candle_close_above",
+            entry_trigger_price=62500.0,
+            invalidation_price=60000.0,  # above stop_loss of 59800
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is False
+        assert any("invalidation_price" in e for e in errors)
+
+    def test_short_invalidation_below_stop_rejected(self):
+        """SHORT: invalidation_price should be above stop_loss."""
+        block = _valid_block(
+            direction="SHORT",
+            stop_loss=65000.0,
+            tp1=59000.0,
+            entry_trigger="candle_close_below",
+            entry_trigger_price=61000.0,
+            invalidation_price=64000.0,  # below stop_loss of 65000
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is False
+        assert any("invalidation_price" in e for e in errors)

@@ -183,6 +183,21 @@ def parse_machine_block(text: str) -> dict | None:
             return None
         data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
 
+    # Coerce optional conditional entry fields
+    _VALID_TRIGGERS = ("candle_close_above", "candle_close_below")
+    if "entry_trigger" in data:
+        if data["entry_trigger"] not in _VALID_TRIGGERS:
+            return None
+    for opt_num in ("entry_trigger_price", "invalidation_price"):
+        if opt_num in data:
+            if not isinstance(data[opt_num], (int, float)):
+                return None
+            data[opt_num] = float(data[opt_num])
+    if "expiry_candles" in data:
+        if not isinstance(data["expiry_candles"], (int, float)):
+            return None
+        data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
+
     # Business-rule validation — reject blocks with bad geometry/ranges
     valid, _errors = validate_execution_params(data)
     if not valid:
@@ -255,5 +270,20 @@ def validate_execution_params(
         errors.append(f"leverage must be positive: {leverage}")
     if max_leverage is not None and leverage > max_leverage:
         errors.append(f"leverage ({leverage}) exceeds max ({max_leverage})")
+
+    # Conditional entry cross-validation (all-or-none for trigger fields)
+    trigger = params.get("entry_trigger")
+    trigger_price = params.get("entry_trigger_price")
+    inv_price = params.get("invalidation_price")
+    has_any = any(v is not None for v in (trigger, trigger_price, inv_price))
+    has_all = all(v is not None for v in (trigger, trigger_price, inv_price))
+
+    if has_any and not has_all:
+        errors.append("conditional entry: entry_trigger, entry_trigger_price, and invalidation_price must all be present together")
+    elif has_all and direction in ("LONG", "SHORT"):
+        if direction == "LONG" and inv_price >= stop:
+            errors.append(f"LONG invalidation_price ({inv_price}) should be below stop_loss ({stop})")
+        if direction == "SHORT" and inv_price <= stop:
+            errors.append(f"SHORT invalidation_price ({inv_price}) should be above stop_loss ({stop})")
 
     return (len(errors) == 0, errors)
