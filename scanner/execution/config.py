@@ -76,6 +76,15 @@ class ExecutionConfig:
     discord_urgent_webhook_url: str = ""
     discord_errors_webhook_url: str = ""
 
+    def __repr__(self):
+        safe = {k: v for k, v in self.__dict__.items()}
+        for key in ("private_key", "wallet_address", "discord_ops_webhook_url",
+                     "discord_urgent_webhook_url", "discord_errors_webhook_url"):
+            if safe.get(key):
+                safe[key] = f"{safe[key][:4]}***"
+        fields = ", ".join(f"{k}={v!r}" for k, v in safe.items())
+        return f"ExecutionConfig({fields})"
+
     def __post_init__(self):
         if self.mode not in ("testnet", "live"):
             raise ValueError(f"Invalid execution mode: '{self.mode}'. Must be 'testnet' or 'live'.")
