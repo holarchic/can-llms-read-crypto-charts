@@ -77,8 +77,12 @@ def _make_machine_block(**overrides):
 _UNSET = object()
 
 
-def _make_scan_result(machine_block=_UNSET, coin="BTC", **overrides):
+def _make_scan_result(machine_block=_UNSET, coin="BTC", screener_direction=None, **overrides):
     mb = _make_machine_block() if machine_block is _UNSET else machine_block
+    # Default screener direction matches machine_block to avoid unintended counter-trend
+    if screener_direction is None:
+        mb_dir = mb.get("direction", "LONG").upper() if mb else "LONG"
+        screener_direction = Direction.LONG if mb_dir == "LONG" else Direction.SHORT
     ctx = MarketContext(
         structure=Structure.BULLISH,
         swings=[], sr_levels=[], msbs=[],
@@ -88,7 +92,7 @@ def _make_scan_result(machine_block=_UNSET, coin="BTC", **overrides):
     signal = SetupSignal(
         coin=coin,
         setup_type=SetupType.A,
-        direction=Direction.LONG,
+        direction=screener_direction,
         confidence=0.8,
         key_level=61800,
         context=ctx,

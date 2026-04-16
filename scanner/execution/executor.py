@@ -216,6 +216,14 @@ def execute_trade(
 
     er.direction = mb.get("direction", "").upper()
 
+    # 1b. Detect counter-trend (screener direction ≠ LLM direction)
+    screener_dir = result.setup_signal.direction.value if result.setup_signal else ""
+    counter_trend = bool(screener_dir and er.direction and screener_dir != er.direction)
+    risk_mult = exec_config.counter_trend_risk_mult if counter_trend else 1.0
+    if counter_trend:
+        log.info("%s: counter-trend (%s screener vs %s LLM) — risk_mult=%.2f",
+                 result.coin, screener_dir, er.direction, risk_mult)
+
     # 2. Validate params
     param_errors = validate_execution_params(mb)
     if param_errors:
@@ -351,15 +359,28 @@ def execute_trade(
             log.info("Exposure limit %.1f%% — skipping %s", exposure_pct, result.coin)
             return er
 
-    # 8. Calculate position size
+    # 8. Calculate position size (reduced risk for counter-trend)
     max_lev = result.setup_signal.max_leverage if result.setup_signal else None
-    pos = calculate_position(mb, balance, exec_config.risk_pct, max_lev)
+    effective_risk = exec_config.risk_pct * risk_mult
+    pos = calculate_position(mb, balance, effective_risk, max_lev)
     if pos is None or pos.quantity <= 0:
         er.skip_reason = "sizing_fail"
         er.error = f"balance=${balance:.2f}" if balance <= 0 else "quantity=0"
         log.warning("%s: position sizing failed (balance=$%.2f, qty=%s)",
                     result.coin, balance, f"{pos.quantity}" if pos else "None")
         return er
+
+    # 8a. Counter-trend adjustments: min R:R + single TP (FTA only)
+    if counter_trend:
+        if pos.rr_ratio < exec_config.counter_trend_min_rr:
+            er.skip_reason = "counter_trend_rr"
+            er.error = f"R:R {pos.rr_ratio:.2f} < {exec_config.counter_trend_min_rr} (counter-trend min)"
+            log.info("%s %s: counter-trend R:R too low — skipping", result.coin, er.direction)
+            return er
+        pos.tp1_quantity = pos.quantity
+        pos.tp2_quantity = 0
+        log.info("%s %s: counter-trend — %.0f%% risk, single TP, min R:R %.1f",
+                 result.coin, er.direction, risk_mult * 100, exec_config.counter_trend_min_rr)
 
     er.position_size = pos
 
@@ -457,6 +478,7 @@ def execute_trade(
             "exchange": exec_config.exchange,
             "execution_mode": exec_config.mode,
             "created_at": now,
+            "risk_mult": risk_mult,
         }, conn)
 
         # Reanchor SL/TP to fill price so actual R matches intended R
