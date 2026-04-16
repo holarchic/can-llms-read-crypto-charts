@@ -21,13 +21,14 @@ def _get_replay_timestamps(
     since: str,
     until: str,
     coins: list[str] | None = None,
+    exchange: str = "hyperliquid",
 ) -> list[tuple[str, str]]:
     """Get distinct (coin, timestamp) pairs from cached 4H candles in range.
 
     Returns sorted list of (coin, timestamp) tuples.
     """
-    clauses = ["interval = '4h'", "timestamp >= ?", "timestamp <= ?"]
-    params: list = [since, until]
+    clauses = ["interval = '4h'", "timestamp >= ?", "timestamp <= ?", "exchange = ?"]
+    params: list = [since, until, exchange]
 
     if coins:
         placeholders = ",".join("?" for _ in coins)
@@ -81,13 +82,14 @@ def _detect_setups(
     ts_groups: dict[str, list[str]],
     conn: sqlite3.Connection,
     verbose: bool = False,
+    exchange: str = "hyperliquid",
 ) -> list[tuple[SetupSignal, str]]:
     """Run screener on cached 4H candles for each timestamp group."""
     all_pairs: list[tuple[SetupSignal, str]] = []
 
     for ts_idx, (timestamp, ts_coins) in enumerate(sorted(ts_groups.items())):
         for coin in ts_coins:
-            df = _get_trailing_candles(coin, timestamp, 200, conn)
+            df = _get_trailing_candles(coin, timestamp, 200, conn, exchange=exchange)
             if df is None:
                 continue
 
@@ -118,6 +120,7 @@ def _resolve_replay_signals(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str = "hyperliquid",
 ) -> MetricsReport | None:
     """Walk-forward resolve replay signals and compute metrics."""
     if verbose:
@@ -144,7 +147,7 @@ def _resolve_replay_signals(
 
         try:
             outcome = fetch_and_resolve(
-                setup, conn, timeout_bars, fee_rate,
+                setup, conn, timeout_bars, fee_rate, exchange=exchange,
             )
             outcomes.append(outcome)
         except (ValueError, KeyError, IndexError, OSError, ccxt.NetworkError, ccxt.ExchangeError) as e:
@@ -172,6 +175,7 @@ def replay(
     timeout_bars: int = 72,
     fee_rate: float = 0.00035,
     verbose: bool = False,
+    exchange: str = "hyperliquid",
 ) -> tuple[list[dict], MetricsReport | None]:
     """Re-run screener on cached 4H candles for a given strategy.
 
@@ -196,7 +200,7 @@ def replay(
     conn.commit()
 
     # Get unique timestamps per coin in the range
-    points = _get_replay_timestamps(conn, since, until, coins)
+    points = _get_replay_timestamps(conn, since, until, coins, exchange=exchange)
     if verbose:
         unique_coins = len(set(c for c, _ in points))
         unique_ts = len(set(t for _, t in points))
@@ -208,7 +212,7 @@ def replay(
         ts_groups.setdefault(ts, []).append(coin)
 
     # Detect setups
-    all_pairs = _detect_setups(strategy, ts_groups, conn, verbose)
+    all_pairs = _detect_setups(strategy, ts_groups, conn, verbose, exchange=exchange)
     batch_id = uuid4().hex[:8]
 
     # Persist signals
@@ -239,6 +243,7 @@ def replay(
     if resolve and all_pairs:
         metrics = _resolve_replay_signals(
             all_pairs, strategy, conn, timeout_bars, fee_rate, verbose,
+            exchange=exchange,
         )
 
     return signal_rows, metrics

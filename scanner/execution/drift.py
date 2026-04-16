@@ -106,7 +106,6 @@ def evaluate_triggers(
     # Walk candles from entry to latest, tracking state
     consecutive_in_zone = 0
     best_progress = 0.0
-    momentum_checked = False
 
     for candle in candles_4h:
         try:
@@ -144,9 +143,8 @@ def evaluate_triggers(
 
     # --- Trigger checks (priority order) ---
 
-    # 1. No momentum — one-shot check at momentum_check_hours
-    if not momentum_checked and age_hours >= config.drift_momentum_check_hours:
-        momentum_checked = True
+    # 1. No momentum — fires if still below threshold after momentum_check_hours
+    if age_hours >= config.drift_momentum_check_hours:
         if best_progress < config.drift_momentum_pct:
             return ("no_momentum", "force_close")
 

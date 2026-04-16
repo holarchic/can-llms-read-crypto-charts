@@ -316,7 +316,7 @@ def _handle_partial_exit_fill(
         _place_replacement_order(
             sl_order, "market", sl_trigger,
             {"stopLossPrice": sl_trigger, "reduceOnly": True},
-            rounded_qty, residual_qty, exit_side,
+            rounded_qty, exit_side,
             symbol, exchange, entry, config, conn,
             suffix=":partial",
         )
@@ -339,7 +339,7 @@ def _handle_partial_exit_fill(
             _place_replacement_order(
                 tp2_order, "market", tp2_trigger,
                 {"takeProfitPrice": tp2_trigger, "reduceOnly": True},
-                rounded_qty, residual_qty, exit_side,
+                rounded_qty, exit_side,
                 symbol, exchange, entry, config, conn,
                 suffix=":partial",
             )
@@ -347,7 +347,7 @@ def _handle_partial_exit_fill(
 
 def _place_replacement_order(
     order: dict, order_type_str: str, trigger_price: float,
-    extra_params: dict, rounded_qty: float, residual_qty: float,
+    extra_params: dict, rounded_qty: float,
     exit_side: str, symbol: str, exchange, entry: dict,
     config: ExecutionConfig, conn, suffix: str = ":replaced",
 ) -> None:
@@ -362,11 +362,11 @@ def _place_replacement_order(
                 symbol, order_type_str, exit_side, rounded_qty, trigger_price, params,
             )
             new_exch_oid = resp.get("id", "")
-            update_order_quantity(order["order_id"], residual_qty, new_exch_oid, conn)
+            update_order_quantity(order["order_id"], rounded_qty, new_exch_oid, conn)
             update_order_status(order["order_id"], "PLACED", conn)
             log.info(
                 "Replaced %s for %s: qty %s → %s (partial fill)",
-                order["order_type"], entry["coin"], order["quantity"], residual_qty,
+                order["order_type"], entry["coin"], order["quantity"], rounded_qty,
             )
             break
         except Exception as exc:
@@ -543,7 +543,7 @@ def _attempt_exit_order_replacement(
     try:
         _place_replacement_order(
             order, "market", trigger_price,
-            extra_params, rounded_qty, remaining_qty, exit_side,
+            extra_params, rounded_qty, exit_side,
             symbol, exchange, entry, config, conn,
             suffix=":rejected",
         )

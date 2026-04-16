@@ -129,7 +129,11 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         slippage_r = _calculate_slippage_r(entry, last_exit, entry_fill, last_exit_fill, risk_amount, conn)
 
         # Map order_type to exit_type label (last exit determines label)
-        exit_type_map = {"stop_loss": "SL", "tp1": "TP1", "tp2": "TP2", "timeout_close": "TIMEOUT", "emergency_close": "EMERGENCY"}
+        exit_type_map = {
+            "stop_loss": "SL", "tp1": "TP1", "tp2": "TP2",
+            "timeout_close": "TIMEOUT", "emergency_close": "EMERGENCY",
+            "drift_close": "DRIFT",
+        }
         exit_type = exit_type_map.get(last_exit["order_type"], last_exit["order_type"])
 
         trades.append(TradeRecord(

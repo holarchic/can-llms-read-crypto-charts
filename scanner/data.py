@@ -1,5 +1,6 @@
 """Exchange data fetching via ccxt — supports HyperLiquid, Bybit, Binance."""
 
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8,6 +9,8 @@ import ccxt
 import pandas as pd
 
 from .config import ScannerConfig, get_exchange_meta
+
+log = logging.getLogger(__name__)
 
 # Module-level exchange instances — reused across all calls.
 # load_markets() takes ~11s, so we only want to do it once per exchange.
@@ -154,7 +157,8 @@ def fetch_candles_batch(
         try:
             df = fetch_candles(coin, interval, count, config, exchange_id=exchange_id)
             return coin, df
-        except Exception:
+        except Exception as exc:
+            log.warning("fetch_candles failed for %s: %s", coin, exc)
             return coin, None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

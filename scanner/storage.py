@@ -592,8 +592,8 @@ def signal_history(
     if own_conn:
         conn = get_connection()
 
-    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
-    params: list = []
+    clauses = ["datetime(timestamp) > datetime('now', ?)"]
+    params: list = [f"-{days} days"]
 
     if coin:
         clauses.append("coin = ?")
@@ -630,8 +630,8 @@ def signal_distribution(
     if own_conn:
         conn = get_connection()
 
-    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
-    params: list = []
+    clauses = ["datetime(timestamp) > datetime('now', ?)"]
+    params: list = [f"-{days} days"]
     if exchange:
         clauses.append("exchange = ?")
         params.append(exchange)
@@ -683,8 +683,8 @@ def signal_stats(
     if own_conn:
         conn = get_connection()
 
-    clauses = [f"datetime(timestamp) > datetime('now', '-{days} days')"]
-    params: list = []
+    clauses = ["datetime(timestamp) > datetime('now', ?)"]
+    params: list = [f"-{days} days"]
     if exchange:
         clauses.append("exchange = ?")
         params.append(exchange)

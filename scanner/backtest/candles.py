@@ -137,8 +137,8 @@ def fetch_and_cache(
     cfg = config or ScannerConfig()
     meta = get_exchange_meta(exchange)
 
-    since_ms = int(pd.Timestamp(since).timestamp() * 1000)
-    until_ms = int(pd.Timestamp(until).timestamp() * 1000)
+    since_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
+    until_ms = int(pd.Timestamp(until, tz="UTC").timestamp() * 1000)
 
     if cached is not None and not cached.empty:
         last_cached_ms = int(cached.index[-1].timestamp() * 1000)
