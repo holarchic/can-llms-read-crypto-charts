@@ -323,7 +323,7 @@ class TestSlMove:
 
     def test_tighten_only_short(self, drift_config, conn):
         """SHORT: new SL (entry=100) must be < current SL (105). Should proceed."""
-        from scanner.execution.drift import _move_sl_to_breakeven
+        from scanner.execution.drift import _move_sl_to_price
 
         entry = {"coin": "BTC", "direction": "SHORT", "fill_price": 100.0, "scan_id": "test1"}
         sl_order = {"order_id": "sl1", "trigger_price": 105.0, "quantity": 1.0, "exchange_order_id": "exch_sl1"}
@@ -333,14 +333,14 @@ class TestSlMove:
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
         with patch("scanner.execution.drift.cancel_order", return_value=True):
-            result = _move_sl_to_breakeven(entry, sl_order, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
+            result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
         mock_exchange.create_order.assert_called_once()
 
     def test_trigger_price_updated_in_db(self, drift_config, conn):
         """After SL move to breakeven, DB trigger_price must reflect new value."""
-        from scanner.execution.drift import _move_sl_to_breakeven
+        from scanner.execution.drift import _move_sl_to_price
 
         # Seed order in DB so update_order_quantity has a row to update
         from scanner.execution.storage import new_order_id
@@ -366,7 +366,7 @@ class TestSlMove:
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
         with patch("scanner.execution.drift.cancel_order", return_value=True):
-            result = _move_sl_to_breakeven(entry, sl_order, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
+            result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
         row = conn.execute(
@@ -378,26 +378,26 @@ class TestSlMove:
 
     def test_tighten_only_guard_blocks_short(self, drift_config, conn):
         """SHORT: if SL already at 99 (tighter than entry 100), don't widen to 100."""
-        from scanner.execution.drift import _move_sl_to_breakeven
+        from scanner.execution.drift import _move_sl_to_price
 
         entry = {"coin": "BTC", "direction": "SHORT", "fill_price": 100.0, "scan_id": "test1"}
         sl_order = {"order_id": "sl1", "trigger_price": 99.0, "quantity": 1.0, "exchange_order_id": "exch_sl1"}
 
         mock_exchange = MagicMock()
-        result = _move_sl_to_breakeven(entry, sl_order, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
+        result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is False
         mock_exchange.create_order.assert_not_called()
 
     def test_tighten_only_guard_blocks_long(self, drift_config, conn):
         """LONG: if SL already at 101 (tighter than entry 100), don't widen to 100."""
-        from scanner.execution.drift import _move_sl_to_breakeven
+        from scanner.execution.drift import _move_sl_to_price
 
         entry = {"coin": "ETH", "direction": "LONG", "fill_price": 100.0, "scan_id": "test2"}
         sl_order = {"order_id": "sl2", "trigger_price": 101.0, "quantity": 1.0, "exchange_order_id": "exch_sl2"}
 
         mock_exchange = MagicMock()
-        result = _move_sl_to_breakeven(entry, sl_order, "ETH/USDT:USDT", mock_exchange, drift_config, conn)
+        result = _move_sl_to_price(entry, sl_order, 100.0, "ETH/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is False
         mock_exchange.create_order.assert_not_called()
@@ -450,3 +450,163 @@ class TestForceClose:
         assert mock_close.call_args.kwargs.get("order_type") == "drift_close"
         mock_cancel.assert_called_once()
         mock_alert.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Trailing stop tests
+# ---------------------------------------------------------------------------
+
+def _make_4h_candles(closes, highs=None, lows=None, start_hours_ago=80, interval_hours=4):
+    """Generate 4H candle dicts with explicit highs/lows for swing detection."""
+    now = datetime.now(timezone.utc)
+    candles = []
+    for i, close in enumerate(closes):
+        ts = now - timedelta(hours=start_hours_ago - i * interval_hours)
+        h = highs[i] if highs else close * 1.01
+        lo = lows[i] if lows else close * 0.99
+        candles.append({
+            "timestamp": ts.isoformat(),
+            "open": close,
+            "high": h,
+            "low": lo,
+            "close": close,
+        })
+    return candles
+
+
+class TestFindTrailingSl:
+
+    def test_long_trails_to_swing_low_above_current_sl(self):
+        """LONG: swing low at 105 with current SL at 100 → trail to 105."""
+        from scanner.execution.drift import find_trailing_sl
+
+        # Create candles with a clear swing low pattern:
+        # prices go up, dip, then go up again — the dip is the swing low
+        closes = [100, 102, 104, 106, 108, 105, 103, 105, 108, 110, 112]
+        lows =   [ 99, 101, 103, 105, 107, 104, 102, 104, 107, 109, 111]
+        highs =  [101, 103, 105, 107, 109, 106, 104, 106, 109, 111, 113]
+
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+        result = find_trailing_sl("LONG", 100.0, candles, lookback=3)
+        # Should find the swing low at index 6 (low=102) which is > 100
+        assert result is not None
+        assert result > 100.0
+
+    def test_long_no_swing_above_sl_returns_none(self):
+        """LONG: all swing lows below current SL → None (can't tighten)."""
+        from scanner.execution.drift import find_trailing_sl
+
+        closes = [90, 92, 94, 96, 98, 95, 93, 95, 98, 100, 102]
+        lows =   [89, 91, 93, 95, 97, 94, 92, 94, 97,  99, 101]
+        highs =  [91, 93, 95, 97, 99, 96, 94, 96, 99, 101, 103]
+
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+        result = find_trailing_sl("LONG", 105.0, candles, lookback=3)
+        assert result is None
+
+    def test_short_trails_to_swing_high_below_current_sl(self):
+        """SHORT: swing high below current SL → trail down."""
+        from scanner.execution.drift import find_trailing_sl
+
+        # Prices go down, bounce, go down again — the bounce is swing high
+        closes = [110, 108, 106, 104, 102, 105, 107, 105, 102, 100, 98]
+        highs =  [111, 109, 107, 105, 103, 106, 108, 106, 103, 101, 99]
+        lows =   [109, 107, 105, 103, 101, 104, 106, 104, 101,  99, 97]
+
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+        result = find_trailing_sl("SHORT", 110.0, candles, lookback=3)
+        # Should find swing high at index 6 (high=108) which is < 110
+        assert result is not None
+        assert result < 110.0
+
+    def test_short_no_swing_below_sl_returns_none(self):
+        """SHORT: all swing highs above current SL → None."""
+        from scanner.execution.drift import find_trailing_sl
+
+        closes = [110, 112, 114, 116, 118, 115, 113, 115, 118, 120, 122]
+        highs =  [111, 113, 115, 117, 119, 116, 114, 116, 119, 121, 123]
+        lows =   [109, 111, 113, 115, 117, 114, 112, 114, 117, 119, 121]
+
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+        result = find_trailing_sl("SHORT", 100.0, candles, lookback=3)
+        assert result is None
+
+    def test_too_few_candles_returns_none(self):
+        """Fewer candles than 2*lookback+1 → None."""
+        from scanner.execution.drift import find_trailing_sl
+
+        candles = _make_4h_candles([100, 101, 102])
+        result = find_trailing_sl("LONG", 95.0, candles, lookback=3)
+        assert result is None
+
+    def test_empty_candles_returns_none(self):
+        from scanner.execution.drift import find_trailing_sl
+        assert find_trailing_sl("LONG", 95.0, [], lookback=3) is None
+
+
+class TestTrailingRouting:
+
+    def test_tp1_filled_routes_to_trailing(self, drift_config, conn):
+        """When TP1 is filled and trailing enabled, _process_drift_entry calls trailing."""
+        from scanner.execution.drift import _process_drift_entry
+
+        drift_config.trailing_sl_enabled = True
+
+        # Seed a TP1 FILLED order
+        save_order({
+            "order_id": "tp1_1", "scan_id": "test1", "coin": "BTC", "direction": "LONG",
+            "order_type": "tp1", "status": "FILLED", "entry_price": 100.0,
+            "fill_price": 110.0, "quantity": 0.5, "leverage": 5,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-16T00:00:00",
+        }, conn)
+
+        entry = {"coin": "BTC", "direction": "LONG", "scan_id": "test1",
+                 "fill_price": 100.0, "quantity": 1.0}
+        meta = {"symbol_template": "{coin}/USDC:USDC"}
+
+        with patch("scanner.execution.drift._process_trailing_entry", return_value=1) as mock_trail:
+            result = _process_drift_entry(entry, meta, MagicMock(), drift_config, conn)
+
+        assert result == 1
+        mock_trail.assert_called_once()
+
+    def test_tp1_not_filled_routes_to_drift(self, drift_config, conn):
+        """When TP1 not filled, runs normal drift logic."""
+        from scanner.execution.drift import _process_drift_entry
+
+        drift_config.trailing_sl_enabled = True
+
+        entry = {"coin": "BTC", "direction": "LONG", "scan_id": "test_no_tp1",
+                 "fill_price": 100.0, "quantity": 1.0}
+        meta = {"symbol_template": "{coin}/USDC:USDC"}
+
+        with patch("scanner.execution.drift._get_position_data", return_value=None):
+            result = _process_drift_entry(entry, meta, MagicMock(), drift_config, conn)
+
+        # Falls through to drift which returns 0 (no pos_data)
+        assert result == 0
+
+    def test_trailing_disabled_skips_even_with_tp1(self, drift_config, conn):
+        """When trailing disabled, TP1 filled positions still go through drift."""
+        from scanner.execution.drift import _process_drift_entry
+
+        drift_config.trailing_sl_enabled = False
+
+        save_order({
+            "order_id": "tp1_2", "scan_id": "test2", "coin": "ETH", "direction": "SHORT",
+            "order_type": "tp1", "status": "FILLED", "entry_price": 200.0,
+            "fill_price": 190.0, "quantity": 0.5, "leverage": 3,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-16T00:00:00",
+        }, conn)
+
+        entry = {"coin": "ETH", "direction": "SHORT", "scan_id": "test2",
+                 "fill_price": 200.0, "quantity": 1.0}
+        meta = {"symbol_template": "{coin}/USDC:USDC"}
+
+        with patch("scanner.execution.drift._get_position_data", return_value=None):
+            result = _process_drift_entry(entry, meta, MagicMock(), drift_config, conn)
+
+        # Falls through to drift (trailing disabled)
+        assert result == 0

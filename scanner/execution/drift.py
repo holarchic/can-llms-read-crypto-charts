@@ -1,10 +1,11 @@
-"""Drift invalidation — hybrid_inv strategy on 4H candles.
+"""Drift invalidation + trailing stops on 4H candles.
 
-Detects four drift patterns at each 4H candle close and takes mechanical action:
+Drift: detects four drift patterns at each 4H candle close and takes mechanical action:
 - adverse/stagnation → move SL to breakeven (let market decide)
 - no_momentum/reversal → force close (free up the slot)
 
-No LLM re-evaluation needed. Drift zone derived mechanically from machine_block.
+Trailing: after TP1 fills, trail the SL to recent swing points (ruleset 5.2 System A).
+No LLM re-evaluation needed. All triggers derived mechanically.
 """
 
 import json
@@ -12,9 +13,11 @@ import logging
 import time
 from datetime import datetime, timezone
 
+import pandas as pd
 import requests
 
 from scanner.config import get_exchange_meta
+from scanner.indicators import find_swing_points
 from scanner.storage import get_connection as get_scanner_connection
 
 from .config import ExecutionConfig
@@ -166,49 +169,91 @@ def evaluate_triggers(
 
 
 # ---------------------------------------------------------------------------
+# Trailing stop — pure functions
+# ---------------------------------------------------------------------------
+
+def _candles_to_df(candles: list[dict]) -> pd.DataFrame:
+    """Convert candle dicts (from _fetch_4h_candles) to DataFrame for swing detection."""
+    df = pd.DataFrame(candles)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp")
+    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
+    return df
+
+
+def find_trailing_sl(
+    direction: str,
+    current_sl: float,
+    candles_4h: list[dict],
+    lookback: int = 3,
+) -> float | None:
+    """Find the trailing SL level from swing points in 4H candles.
+
+    LONG: most recent swing low above current SL (tighten upward).
+    SHORT: most recent swing high below current SL (tighten downward).
+    Returns new SL price or None if no qualifying swing found.
+    """
+    if len(candles_4h) < 2 * lookback + 1:
+        return None
+
+    df = _candles_to_df(candles_4h)
+    swings = find_swing_points(df, lookback)
+    if not swings:
+        return None
+
+    if direction == "LONG":
+        candidates = [s for s in swings if s.type == "low" and s.price > current_sl]
+    else:
+        candidates = [s for s in swings if s.type == "high" and s.price < current_sl]
+
+    if not candidates:
+        return None
+
+    # Most recent qualifying swing
+    return candidates[-1].price
+
+
+# ---------------------------------------------------------------------------
 # Actions — exchange operations with side effects
 # ---------------------------------------------------------------------------
 
-def _move_sl_to_breakeven(
-    entry: dict, sl_order: dict, symbol: str, exchange,
-    config: ExecutionConfig, conn,
+def _move_sl_to_price(
+    entry: dict, sl_order: dict, new_sl: float, symbol: str, exchange,
+    config: ExecutionConfig, conn, cloid_suffix: str = ":drift",
 ) -> bool:
-    """Cancel current SL, place new SL at breakeven (entry fill price).
+    """Cancel current SL, place new SL at the given price.
 
-    Only tightens — if current SL is already tighter than entry, skip.
+    Only tightens — if current SL is already tighter, skip.
     Returns True on success, False on failure.
     """
-    entry_price = float(entry.get("fill_price") or entry.get("entry_price") or 0)
     current_trigger = float(sl_order.get("trigger_price", 0))
     direction = entry["direction"]
 
-    if entry_price <= 0 or current_trigger <= 0:
-        log.error("Drift SL move: invalid prices entry=%s sl=%s for %s", entry_price, current_trigger, entry["coin"])
+    if new_sl <= 0 or current_trigger <= 0:
+        log.error("SL move: invalid prices new=%s current=%s for %s", new_sl, current_trigger, entry["coin"])
         return False
-
-    new_sl = entry_price
 
     # Tighten-only: don't widen the SL
     if direction == "SHORT" and new_sl >= current_trigger:
-        log.info("Drift: SL already tighter than entry for %s SHORT (current=%s, entry=%s)", entry["coin"], current_trigger, entry_price)
+        log.info("SL already tighter for %s SHORT (current=%s, target=%s)", entry["coin"], current_trigger, new_sl)
         return False
     if direction == "LONG" and new_sl <= current_trigger:
-        log.info("Drift: SL already tighter than entry for %s LONG (current=%s, entry=%s)", entry["coin"], current_trigger, entry_price)
+        log.info("SL already tighter for %s LONG (current=%s, target=%s)", entry["coin"], current_trigger, new_sl)
         return False
 
     # Cancel old SL on exchange
     old_exch_oid = sl_order.get("exchange_order_id")
     if old_exch_oid and not cancel_order(old_exch_oid, symbol, config):
-        log.error("Drift: failed to cancel old SL %s for %s", old_exch_oid, entry["coin"])
+        log.error("Failed to cancel old SL %s for %s", old_exch_oid, entry["coin"])
         return False
 
     update_order_status(sl_order["order_id"], "CANCELLED", conn)
 
-    # Place new SL at breakeven
+    # Place new SL
     exit_side = "sell" if direction == "LONG" else "buy"
     qty = float(sl_order.get("quantity", 0))
     rounded_qty = float(exchange.amount_to_precision(symbol, qty))
-    cloid = make_cloid(sl_order["order_id"] + ":drift")
+    cloid = make_cloid(sl_order["order_id"] + cloid_suffix)
 
     max_retries = 3
     for attempt in range(1, max_retries + 1):
@@ -220,17 +265,17 @@ def _move_sl_to_breakeven(
             new_exch_oid = resp.get("id", "")
             update_order_quantity(sl_order["order_id"], qty, new_exch_oid, conn, new_trigger_price=new_sl)
             update_order_status(sl_order["order_id"], "PLACED", conn)
-            log.info("Drift SL moved for %s %s: %s → %s (breakeven)",
+            log.info("SL moved for %s %s: %s → %s",
                       entry["coin"], direction, current_trigger, new_sl)
             return True
         except Exception as exc:
-            log.error("Drift SL replacement attempt %d/%d for %s failed: %s",
+            log.error("SL replacement attempt %d/%d for %s failed: %s",
                       attempt, max_retries, entry["coin"], exc)
             if attempt < max_retries:
                 time.sleep(attempt)
 
-    log.error("All drift SL replacement attempts exhausted for %s — position unprotected", entry["coin"])
-    _send_urgent_alert(f"DRIFT SL MOVE FAILED: {entry['coin']} {direction} — position unprotected after SL cancel", config)
+    log.error("All SL replacement attempts exhausted for %s — position unprotected", entry["coin"])
+    _send_urgent_alert(f"SL MOVE FAILED: {entry['coin']} {direction} — position unprotected after SL cancel", config)
     return False
 
 
@@ -310,6 +355,88 @@ def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
     except Exception as exc:
         log.error("Drift urgent alert failed: %s", exc)
         return False
+
+
+def _send_trailing_sl_alert(
+    entry: dict, old_sl: float, new_sl: float, config: ExecutionConfig,
+) -> bool:
+    """Send Discord embed for trailing SL move."""
+    webhook = config.discord_ops_webhook_url
+    if not webhook:
+        return False
+
+    embed = {
+        "title": f"\U0001f4c8 TRAIL SL — {entry['coin']} {entry['direction']}",
+        "color": 0x42A5F5,
+        "fields": [
+            {"name": "Old SL", "value": f"${old_sl:,.5f}", "inline": True},
+            {"name": "New SL", "value": f"${new_sl:,.5f}", "inline": True},
+        ],
+        "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
+    }
+    try:
+        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        log.error("Trailing SL alert failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Trailing stop — helpers
+# ---------------------------------------------------------------------------
+
+def _has_tp1_filled(scan_id: str, conn) -> bool:
+    """Check if TP1 has filled for this position."""
+    row = conn.execute(
+        "SELECT 1 FROM orders WHERE scan_id = ? AND order_type = 'tp1' AND status = 'FILLED' LIMIT 1",
+        (scan_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _get_current_sl(scan_id: str, conn) -> dict | None:
+    """Get the active SL order for a position."""
+    row = conn.execute(
+        "SELECT * FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' AND status = 'PLACED' LIMIT 1",
+        (scan_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _process_trailing_entry(
+    entry: dict, meta: dict, exchange, config: ExecutionConfig, conn,
+) -> int:
+    """Trail SL to recent swing point for positions where TP1 has filled.
+
+    Returns 1 if SL was moved, 0 otherwise.
+    """
+    candles = _fetch_4h_candles(entry["coin"])
+    if not candles:
+        return 0
+
+    sl_order = _get_current_sl(entry["scan_id"], conn)
+    if not sl_order:
+        return 0
+
+    current_sl = float(sl_order["trigger_price"])
+    new_sl = find_trailing_sl(
+        entry["direction"], current_sl, candles, config.trailing_sl_lookback,
+    )
+    if new_sl is None:
+        return 0
+
+    symbol = meta["symbol_template"].format(coin=entry["coin"])
+    success = _move_sl_to_price(
+        entry, dict(sl_order), new_sl, symbol, exchange, config, conn,
+        cloid_suffix=":trail",
+    )
+    if success:
+        log.info("Trailing SL moved for %s %s: %s → %s",
+                 entry["coin"], entry["direction"], current_sl, new_sl)
+        _send_trailing_sl_alert(entry, current_sl, new_sl, config)
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +527,11 @@ def check_drift_positions(exec_config: ExecutionConfig, conn) -> int:
 
 
 def _process_drift_entry(entry: dict, meta: dict, exchange, config: ExecutionConfig, conn) -> int:
-    """Process a single entry for drift triggers. Returns 1 if acted, 0 otherwise."""
+    """Process a single entry for drift or trailing. Returns 1 if acted, 0 otherwise."""
+    # After TP1 fills, trail SL instead of running drift triggers
+    if config.trailing_sl_enabled and _has_tp1_filled(entry["scan_id"], conn):
+        return _process_trailing_entry(entry, meta, exchange, config, conn)
+
     pos_data = _get_position_data(entry, conn)
     if not pos_data:
         return 0
@@ -442,7 +573,7 @@ def _execute_sl_move(entry: dict, trigger: str, symbol: str, exchange, config: E
     old_trigger = float(sl_order.get("trigger_price", 0))
     entry_price = float(entry.get("fill_price") or entry.get("entry_price") or 0)
 
-    success = _move_sl_to_breakeven(entry, dict(sl_order), symbol, exchange, config, conn)
+    success = _move_sl_to_price(entry, dict(sl_order), entry_price, symbol, exchange, config, conn)
     if success:
         _send_drift_sl_alert(entry, trigger, old_trigger, entry_price, config)
         return 1
