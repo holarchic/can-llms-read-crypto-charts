@@ -86,6 +86,11 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_ORDERS_TABLE)
     conn.execute(CREATE_ORDERS_INDEX)
     conn.execute(CREATE_PENDING_ENTRIES_TABLE)
+
+    # Migration: add risk_mult column (counter-trend R scaling)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "risk_mult" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN risk_mult REAL DEFAULT 1.0")
     conn.execute(CREATE_PENDING_ENTRIES_INDEX)
 
 
@@ -110,8 +115,8 @@ def save_order(order: dict, conn: sqlite3.Connection) -> None:
         (order_id, scan_id, coin, direction, order_type, exchange_order_id,
          status, entry_price, fill_price, quantity, leverage, trigger_price,
          placed_at, filled_at, cancelled_at, realized_pnl, funding_paid,
-         exchange, execution_mode, error_message, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         exchange, execution_mode, error_message, created_at, risk_mult)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             order["order_id"],
             order["scan_id"],
@@ -134,6 +139,7 @@ def save_order(order: dict, conn: sqlite3.Connection) -> None:
             order.get("execution_mode", "testnet"),
             order.get("error_message"),
             order.get("created_at", datetime.now(timezone.utc).isoformat()),
+            order.get("risk_mult", 1.0),
         ),
     )
     conn.commit()

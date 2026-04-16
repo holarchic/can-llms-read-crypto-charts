@@ -62,6 +62,11 @@ class ExecutionConfig:
     conditional_entry_enabled: bool = False
     conditional_entry_max_expiry: int = 24    # max 1H candles before setup expires
 
+    # Counter-trend adjustments (ruleset 6.3)
+    counter_trend_risk_mult: float = 0.5      # multiply risk_pct for counter-trend sizing
+    counter_trend_min_rr: float = 3.0         # minimum R:R for counter-trend trades
+    counter_trend_timeout_hours: int = 36     # shorter timeout (vs position_timeout_hours)
+
     # Discord
     discord_ops_webhook_url: str = ""
     discord_urgent_webhook_url: str = ""
