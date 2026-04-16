@@ -589,7 +589,12 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
             continue
 
         age_hours = (now - entry_time).total_seconds() / 3600
-        if age_hours <= exec_config.position_timeout_hours:
+        # Counter-trend positions use shorter timeout
+        r_mult = float(entry.get("risk_mult") or 1.0)
+        timeout = (exec_config.counter_trend_timeout_hours
+                   if r_mult < 1.0 - 1e-9
+                   else exec_config.position_timeout_hours)
+        if age_hours <= timeout:
             continue
 
         # Calculate remaining qty
@@ -744,6 +749,11 @@ def _send_fill_alert(
                 frac = float(order["quantity"]) / float(entry["quantity"])
                 if frac < 1.0 - 1e-9:
                     r_val *= frac
+            # Scale by risk_mult (counter-trend 0.5x = -0.5R not -1R)
+            if r_val is not None:
+                r_mult = float(entry.get("risk_mult") or 1.0)
+                if r_mult < 1.0 - 1e-9:
+                    r_val *= r_mult
 
     fields = []
     if fill_price:
@@ -783,6 +793,9 @@ def _send_timeout_alert(
     if fill_price and sl_price and entry.get("entry_price"):
         r_val = _calc_r(float(entry["entry_price"]), fill_price, sl_price, entry["direction"])
         if r_val is not None:
+            r_mult = float(entry.get("risk_mult") or 1.0)
+            if r_mult < 1.0 - 1e-9:
+                r_val *= r_mult
             fields.append({"name": "R Value", "value": f"{r_val:+.2f}R", "inline": True})
 
     embed = {

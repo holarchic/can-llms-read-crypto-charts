@@ -107,8 +107,11 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         stop_distance = abs(entry_fill - stop_price)
         risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
 
-        # Realized R
+        # Realized R (scaled by risk_mult for counter-trend position-weighted R)
         realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0
+        r_mult = float(entry.get("risk_mult") or 1.0)
+        if r_mult < 1.0 - 1e-9:
+            realized_r *= r_mult
 
         # Holding hours (entry to last exit)
         entry_time = entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at")
