@@ -72,7 +72,8 @@ def _resolve_calibration_signals(
     """Resolve signals and build outcome dicts with score components."""
     outcomes = []
     for sig in signals:
-        setup = build_screener_setup(dict(sig))
+        sig = dict(sig)  # sqlite3.Row → dict for .get() access
+        setup = build_screener_setup(sig)
         if not setup:
             continue
 

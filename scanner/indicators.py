@@ -263,8 +263,9 @@ def detect_msbs(swings: list[SwingPoint], df: pd.DataFrame) -> list[MSB]:
     lows = [s for s in swings if s.type == "low"]
 
     # Bullish MSB: price closes above a prior lower high
-    for i in range(1, len(highs)):
-        if highs[i - 1].type == "high":
+    for i in range(2, len(highs)):
+        # Confirm this is actually a lower high (structure break, not continuation)
+        if highs[i - 1].body_price < highs[i - 2].body_price:
             lh = highs[i - 1]
             # Check if any candle after this swing closes above it
             for j in range(lh.index + 1, min(lh.index + 30, len(df))):
@@ -279,8 +280,9 @@ def detect_msbs(swings: list[SwingPoint], df: pd.DataFrame) -> list[MSB]:
                     break
 
     # Bearish MSB: price closes below a prior higher low
-    for i in range(1, len(lows)):
-        if lows[i - 1].type == "low":
+    for i in range(2, len(lows)):
+        # Confirm this is actually a higher low (structure break, not continuation)
+        if lows[i - 1].body_price > lows[i - 2].body_price:
             hl = lows[i - 1]
             for j in range(hl.index + 1, min(hl.index + 30, len(df))):
                 if df["Close"].iloc[j] < hl.body_price:

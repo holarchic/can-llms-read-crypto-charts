@@ -128,10 +128,10 @@ def deflated_sharpe_ratio(
         e_max_sr = v - (math.log(math.pi) + math.log(math.log(n_trials))) / (2 * v) if v > 0 else 0.0
 
     # Standard error of SR, adjusted for skewness and excess kurtosis
-    se_sr = math.sqrt((1 - skew * observed_sr + (kurt / 4) * observed_sr ** 2) / (n - 1))
-
-    if se_sr <= 0:
+    se_inner = (1 - skew * observed_sr + (kurt / 4) * observed_sr ** 2) / (n - 1)
+    if se_inner <= 0:
         return None
+    se_sr = math.sqrt(se_inner)
 
     # DSR = Prob(SR* > E[max(SR)])
     # Test statistic: (SR* - E[max(SR)]) / SE(SR*)

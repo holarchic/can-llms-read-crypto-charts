@@ -270,7 +270,9 @@ def save_conditional_entry(
         log.error("Failed to save conditional entry for %s: %s", coin, exc)
         return False
 
-    # Immediate check — if trigger already met at current price, execute now
+    # Immediate check — fast path using spot price (intentionally different from
+    # the 1H candle-close check in _process_pending_entry). Catches cases where
+    # trigger is already met at save time, avoiding up to 60min wait.
     try:
         current_price = fetch_current_price(coin, exec_config)
         event, action = evaluate_entry_trigger(

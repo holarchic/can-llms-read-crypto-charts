@@ -187,6 +187,77 @@ class TestDetectMSBs:
             assert msb.swing_broken is not None
             assert 0 <= msb.index < len(downtrend_df)
 
+    def test_bullish_msb_requires_lower_high(self):
+        """Bullish MSB should only fire when a lower high is broken, not any high."""
+        from scanner.models import SwingPoint
+
+        # Two ascending highs (100, 110) — NOT a lower high, should NOT produce bullish MSB
+        swings = [
+            SwingPoint(index=5, timestamp=pd.Timestamp("2026-01-01", tz="UTC"),
+                       price=100, type="high", body_price=100),
+            SwingPoint(index=15, timestamp=pd.Timestamp("2026-01-02", tz="UTC"),
+                       price=110, type="high", body_price=110),
+        ]
+        # Price data where close exceeds both highs
+        closes = [95] * 5 + [100] + [95] * 9 + [110] + [115] * 14
+        df = pd.DataFrame({
+            "Open": closes, "High": [c + 1 for c in closes],
+            "Low": [c - 1 for c in closes], "Close": closes,
+            "Volume": [100] * 30,
+        }, index=pd.date_range("2026-01-01", periods=30, freq="1h", tz="UTC"))
+
+        msbs = detect_msbs(swings, df)
+        bullish = [m for m in msbs if m.type == "bullish"]
+        assert len(bullish) == 0  # ascending highs = no lower high to break
+
+    def test_bullish_msb_fires_on_lower_high_break(self):
+        """Bullish MSB fires when price closes above a confirmed lower high."""
+        from scanner.models import SwingPoint
+
+        # Three highs: 110, 105, ... — highs[1] (105) is a lower high vs highs[0] (110)
+        swings = [
+            SwingPoint(index=3, timestamp=pd.Timestamp("2026-01-01T03:00", tz="UTC"),
+                       price=110, type="high", body_price=110),
+            SwingPoint(index=10, timestamp=pd.Timestamp("2026-01-01T10:00", tz="UTC"),
+                       price=105, type="high", body_price=105),
+            SwingPoint(index=20, timestamp=pd.Timestamp("2026-01-01T20:00", tz="UTC"),
+                       price=108, type="high", body_price=108),
+        ]
+        # Price breaks above 105 (the lower high) after index 10
+        closes = [100] * 11 + [106] + [100] * 18
+        df = pd.DataFrame({
+            "Open": closes, "High": [c + 1 for c in closes],
+            "Low": [c - 1 for c in closes], "Close": closes,
+            "Volume": [100] * 30,
+        }, index=pd.date_range("2026-01-01", periods=30, freq="1h", tz="UTC"))
+
+        msbs = detect_msbs(swings, df)
+        bullish = [m for m in msbs if m.type == "bullish"]
+        assert len(bullish) == 1
+        assert bullish[0].level == 105  # broke the lower high at 105
+
+    def test_bearish_msb_requires_higher_low(self):
+        """Bearish MSB should only fire when a higher low is broken."""
+        from scanner.models import SwingPoint
+
+        # Two descending lows (100, 90) — NOT a higher low
+        swings = [
+            SwingPoint(index=5, timestamp=pd.Timestamp("2026-01-01", tz="UTC"),
+                       price=100, type="low", body_price=100),
+            SwingPoint(index=15, timestamp=pd.Timestamp("2026-01-02", tz="UTC"),
+                       price=90, type="low", body_price=90),
+        ]
+        closes = [105] * 5 + [100] + [105] * 9 + [90] + [85] * 14
+        df = pd.DataFrame({
+            "Open": closes, "High": [c + 1 for c in closes],
+            "Low": [c - 1 for c in closes], "Close": closes,
+            "Volume": [100] * 30,
+        }, index=pd.date_range("2026-01-01", periods=30, freq="1h", tz="UTC"))
+
+        msbs = detect_msbs(swings, df)
+        bearish = [m for m in msbs if m.type == "bearish"]
+        assert len(bearish) == 0  # descending lows = no higher low to break
+
 
 class TestCalculateFibs:
     def test_basic_fib_levels(self):

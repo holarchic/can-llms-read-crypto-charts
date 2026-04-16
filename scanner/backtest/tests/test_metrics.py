@@ -344,3 +344,14 @@ class TestDeflatedSharpeRatio:
         dsr_5 = deflated_sharpe_ratio(outcomes, n_trials=5)
         dsr_50 = deflated_sharpe_ratio(outcomes, n_trials=50)
         assert dsr_50.expected_max_sharpe > dsr_5.expected_max_sharpe
+
+    def test_high_positive_skew_returns_none_not_crash(self):
+        """High positive skew can make SE inner expression negative — should return None, not crash."""
+        # Many small losses + few very large wins = high positive skew + high Sharpe
+        outcomes = (
+            [_outcome("LOSS", -0.5, mae=0.5, mfe=0.1) for _ in range(8)]
+            + [_outcome("WIN", 10.0, bars=3, mae=0.2, mfe=10.0) for _ in range(4)]
+        )
+        result = deflated_sharpe_ratio(outcomes, n_trials=5)
+        # Should not crash; may return None or a valid DSRResult
+        assert result is None or isinstance(result, DSRResult)
