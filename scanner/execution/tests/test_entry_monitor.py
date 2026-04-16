@@ -346,8 +346,9 @@ class TestCheckPendingEntries:
 
 class TestSaveConditionalEntry:
 
+    @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=2300.0)
     @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
-    def test_saves_entry(self, mock_alert, ce_config, conn):
+    def test_saves_entry(self, mock_alert, mock_price, ce_config, conn):
         from scanner.models import ScanResult
 
         result = ScanResult(
@@ -375,8 +376,9 @@ class TestSaveConditionalEntry:
         assert active[0]["coin"] == "ETH"
         assert active[0]["entry_trigger_price"] == 2350.0
 
+    @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0)
     @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
-    def test_dedup_blocks_second(self, mock_alert, ce_config, conn):
+    def test_dedup_blocks_second(self, mock_alert, mock_price, ce_config, conn):
         from scanner.models import ScanResult
 
         mb = {
@@ -421,7 +423,8 @@ class TestSaveConditionalEntry:
                             analysis_text=None, parsed_decision=None, chart_paths=[],
                             cost_usd=0.0, machine_block=mb)
 
-        with patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True):
+        with patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True), \
+             patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0):
             save_conditional_entry(result, ce_config, conn)
 
         row = conn.execute("SELECT expiry_candles FROM pending_entries").fetchone()

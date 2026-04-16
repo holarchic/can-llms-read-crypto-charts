@@ -16,6 +16,7 @@ from scanner.config import ScannerConfig
 from scanner.models import ScanResult
 
 from .config import ExecutionConfig
+from .exchange import fetch_current_price
 from .storage import (
     get_active_pending_entries,
     has_active_pending,
@@ -262,10 +263,33 @@ def save_conditional_entry(
         log.info("Conditional entry saved: %s %s — trigger %s @ %.5f, expiry %dh",
                  coin, direction, mb["entry_trigger"], entry["entry_trigger_price"], expiry)
         _send_pending_alert(entry, exec_config)
-        return True
     except Exception as exc:
         log.error("Failed to save conditional entry for %s: %s", coin, exc)
         return False
+
+    # Immediate check — if trigger already met at current price, execute now
+    try:
+        current_price = fetch_current_price(coin, exec_config)
+        event, action = evaluate_entry_trigger(
+            entry["entry_trigger"],
+            entry["entry_trigger_price"],
+            entry["invalidation_price"],
+            direction,
+            current_price,
+        )
+        if action == "execute":
+            log.info("Trigger already met for %s %s at %.5f — executing immediately",
+                     coin, direction, current_price)
+            _execute_triggered_entry(entry, current_price, exec_config, conn)
+        elif action == "kill":
+            log.info("Invalidation already met for %s %s at %.5f — killing",
+                     coin, direction, current_price)
+            update_pending_status(entry["pending_id"], "INVALIDATED", conn)
+            _send_resolution_alert(entry, "invalidated", exec_config)
+    except Exception as exc:
+        log.warning("Immediate trigger check failed for %s — will retry at 1H boundary: %s", coin, exc)
+
+    return True
 
 
 def check_pending_entries(exec_config: ExecutionConfig, conn) -> int:
