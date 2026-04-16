@@ -477,12 +477,19 @@ def _get_position_data(entry: dict, conn) -> dict | None:
 
 
 def _fetch_4h_candles(coin: str) -> list[dict]:
-    """Fetch recent 4H candles for a coin. Returns list of dicts or empty list on failure."""
+    """Fetch recent completed 4H candles for a coin.
+
+    Requests 21 candles (20 completed + 1 in-progress) and drops the last
+    (in-progress) candle so all returned candles have final OHLC values.
+    Returns list of dicts or empty list on failure.
+    """
     try:
         from scanner.data import fetch_candles
-        df = fetch_candles(coin, "4h", 20)
-        if df is None or df.empty:
+        df = fetch_candles(coin, "4h", 21)
+        if df is None or len(df) < 2:
             return []
+        # Drop the in-progress candle (last row)
+        df = df.iloc[:-1]
         records = []
         for ts, row in df.iterrows():
             records.append({

@@ -24,6 +24,7 @@ from .storage import (
     increment_candles_checked,
     new_order_id,
     save_pending_entry,
+    update_last_checked_hour,
     update_pending_status,
 )
 
@@ -82,15 +83,17 @@ def _fetch_1h_candle(coin: str) -> dict | None:
     """Fetch the latest completed 1H candle for a coin.
 
     Returns dict with timestamp, open, high, low, close or None on failure.
+    Requests 3 candles: [completed-2, completed-1, in-progress].
+    Uses iloc[-2] — the most recent completed candle (iloc[-1] is in-progress).
     """
     try:
         from scanner.data import fetch_candles
-        df = fetch_candles(coin, "1h", 2)
-        if df is None or df.empty:
+        df = fetch_candles(coin, "1h", 3)
+        if df is None or len(df) < 2:
             return None
-        # Last row is the most recent completed candle
-        ts = df.index[-1]
-        row = df.iloc[-1]
+        # iloc[-1] is the in-progress candle; iloc[-2] is the latest completed
+        ts = df.index[-2]
+        row = df.iloc[-2]
         return {
             "timestamp": ts.isoformat(),
             "open": float(row["Open"]),
@@ -353,6 +356,11 @@ def _process_pending_entry(
     except (ValueError, TypeError):
         pass
 
+    # Dedup: skip if we already evaluated this candle hour (monitor fires 3x per boundary)
+    candle_hour = candle["timestamp"][:13]  # "2026-04-16T14"
+    if entry.get("last_checked_hour") == candle_hour:
+        return 0
+
     event, action = evaluate_entry_trigger(
         entry["entry_trigger"],
         float(entry["entry_trigger_price"]),
@@ -362,16 +370,19 @@ def _process_pending_entry(
     )
 
     if action == "execute":
+        update_last_checked_hour(pending_id, candle_hour, conn)
         return _execute_triggered_entry(entry, candle["close"], config, conn)
 
     if action == "kill":
         log.info("Pending %s %s invalidated at %.5f", coin, direction, candle["close"])
         update_pending_status(pending_id, "INVALIDATED", conn)
+        update_last_checked_hour(pending_id, candle_hour, conn)
         _send_resolution_alert(entry, "invalidated", config)
         return 1
 
     # Neither triggered nor invalidated — increment candle count, check expiry
     new_count = increment_candles_checked(pending_id, conn)
+    update_last_checked_hour(pending_id, candle_hour, conn)
     if new_count >= entry["expiry_candles"]:
         log.info("Pending %s %s expired after %d candles", coin, direction, new_count)
         update_pending_status(pending_id, "EXPIRED", conn)

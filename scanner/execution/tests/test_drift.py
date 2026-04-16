@@ -610,3 +610,47 @@ class TestTrailingRouting:
 
         # Falls through to drift (trailing disabled)
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# _fetch_4h_candles — drops in-progress candle
+# ---------------------------------------------------------------------------
+
+class TestFetch4hCandles:
+
+    def test_drops_in_progress_candle(self):
+        """Should return 20 completed candles, dropping the in-progress last row."""
+        import pandas as pd
+
+        from scanner.execution.drift import _fetch_4h_candles
+
+        timestamps = pd.date_range("2026-04-13", periods=21, freq="4h", tz="UTC")
+        data = {
+            "Open": [float(i) for i in range(21)],
+            "High": [float(i + 1) for i in range(21)],
+            "Low": [float(i) for i in range(21)],
+            "Close": [float(i + 0.5) for i in range(21)],
+            "Volume": [1000.0] * 21,
+        }
+        df = pd.DataFrame(data, index=timestamps)
+
+        with patch("scanner.data.fetch_candles", return_value=df):
+            candles = _fetch_4h_candles("BTC")
+
+        assert len(candles) == 20
+        # Last returned candle should be timestamps[-2] of original, not [-1]
+        assert candles[-1]["close"] == 19.5  # index 19 = iloc[-2]
+
+    def test_returns_empty_for_single_candle(self):
+        """Need at least 2 candles to have a completed one."""
+        import pandas as pd
+
+        from scanner.execution.drift import _fetch_4h_candles
+
+        timestamps = pd.date_range("2026-04-16", periods=1, freq="4h", tz="UTC")
+        data = {"Open": [100.0], "High": [101.0], "Low": [99.0],
+                "Close": [100.5], "Volume": [1000.0]}
+        df = pd.DataFrame(data, index=timestamps)
+
+        with patch("scanner.data.fetch_candles", return_value=df):
+            assert _fetch_4h_candles("BTC") == []

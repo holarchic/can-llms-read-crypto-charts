@@ -19,6 +19,7 @@ from scanner.execution.storage import (
     has_active_pending,
     increment_candles_checked,
     save_pending_entry,
+    update_last_checked_hour,
     update_pending_status,
 )
 
@@ -429,3 +430,152 @@ class TestSaveConditionalEntry:
 
         row = conn.execute("SELECT expiry_candles FROM pending_entries").fetchone()
         assert row["expiry_candles"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Dedup: once-per-candle guard tests
+# ---------------------------------------------------------------------------
+
+class TestOncePerCandleDedup:
+
+    @patch("scanner.execution.entry_monitor._send_resolution_alert", return_value=True)
+    @patch("scanner.execution.entry_monitor.is_1h_boundary", return_value=True)
+    def test_second_call_same_hour_skips(self, mock_boundary, mock_alert, ce_config, conn):
+        """Two calls with the same candle hour should only increment once."""
+        from scanner.execution.entry_monitor import check_pending_entries
+
+        save_pending_entry(_make_pending(trigger_price=100.0, inv_price=90.0, expiry=12), conn)
+
+        candle = {"timestamp": "2026-04-16T14:00:00+00:00",
+                  "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
+
+        with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle), \
+             patch("scanner.execution.entry_monitor.has_open_position", return_value=False):
+            check_pending_entries(ce_config, conn)  # First call: processes
+            check_pending_entries(ce_config, conn)  # Second call: skips (same hour)
+
+        row = conn.execute(
+            "SELECT candles_checked, last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["candles_checked"] == 1
+        assert row["last_checked_hour"] == "2026-04-16T14"
+
+    @patch("scanner.execution.entry_monitor.is_1h_boundary", return_value=True)
+    def test_different_hour_processes_again(self, mock_boundary, ce_config, conn):
+        """Two calls with different candle hours should increment twice."""
+        from scanner.execution.entry_monitor import check_pending_entries
+
+        save_pending_entry(_make_pending(trigger_price=100.0, inv_price=90.0, expiry=12), conn)
+
+        candle_14 = {"timestamp": "2026-04-16T14:00:00+00:00",
+                     "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
+        candle_15 = {"timestamp": "2026-04-16T15:00:00+00:00",
+                     "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.5}
+
+        with patch("scanner.execution.entry_monitor.has_open_position", return_value=False):
+            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_14):
+                check_pending_entries(ce_config, conn)
+            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_15):
+                check_pending_entries(ce_config, conn)
+
+        row = conn.execute(
+            "SELECT candles_checked FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["candles_checked"] == 2
+
+    @patch("scanner.execution.entry_monitor.is_1h_boundary", return_value=True)
+    def test_null_last_checked_hour_processes(self, mock_boundary, ce_config, conn):
+        """Pre-migration entry with NULL last_checked_hour processes on first call."""
+        from scanner.execution.entry_monitor import check_pending_entries
+
+        save_pending_entry(_make_pending(trigger_price=100.0, inv_price=90.0, expiry=12), conn)
+        # Verify starts as NULL
+        row = conn.execute(
+            "SELECT last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["last_checked_hour"] is None
+
+        candle = {"timestamp": "2026-04-16T14:00:00+00:00",
+                  "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
+
+        with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle), \
+             patch("scanner.execution.entry_monitor.has_open_position", return_value=False):
+            check_pending_entries(ce_config, conn)
+
+        row = conn.execute(
+            "SELECT candles_checked, last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["candles_checked"] == 1
+        assert row["last_checked_hour"] == "2026-04-16T14"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_1h_candle — completed candle test
+# ---------------------------------------------------------------------------
+
+class TestFetch1hCandle:
+
+    def test_returns_completed_not_in_progress(self):
+        """Should return iloc[-2] (completed candle), not iloc[-1] (in-progress)."""
+        import pandas as pd
+
+        from scanner.execution.entry_monitor import _fetch_1h_candle
+
+        data = {
+            "Open": [100.0, 101.0, 102.0],
+            "High": [101.0, 102.0, 103.0],
+            "Low": [99.0, 100.0, 101.0],
+            "Close": [100.5, 101.5, 102.5],
+            "Volume": [1000.0, 1100.0, 1200.0],
+        }
+        index = pd.to_datetime([
+            "2026-04-16T13:00:00+00:00",
+            "2026-04-16T14:00:00+00:00",
+            "2026-04-16T15:00:00+00:00",
+        ])
+        df = pd.DataFrame(data, index=index)
+
+        with patch("scanner.data.fetch_candles", return_value=df):
+            candle = _fetch_1h_candle("BTC")
+
+        assert candle is not None
+        assert candle["close"] == 101.5  # completed, not 102.5 (in-progress)
+        assert "2026-04-16T14" in candle["timestamp"]
+
+    def test_returns_none_for_single_candle(self):
+        """Need at least 2 candles to have a completed one at iloc[-2]."""
+        import pandas as pd
+
+        from scanner.execution.entry_monitor import _fetch_1h_candle
+
+        data = {"Open": [100.0], "High": [101.0], "Low": [99.0],
+                "Close": [100.5], "Volume": [1000.0]}
+        index = pd.to_datetime(["2026-04-16T15:00:00+00:00"])
+        df = pd.DataFrame(data, index=index)
+
+        with patch("scanner.data.fetch_candles", return_value=df):
+            assert _fetch_1h_candle("BTC") is None
+
+
+# ---------------------------------------------------------------------------
+# Storage: update_last_checked_hour
+# ---------------------------------------------------------------------------
+
+class TestUpdateLastCheckedHour:
+
+    def test_sets_hour_key(self, conn):
+        save_pending_entry(_make_pending(), conn)
+        update_last_checked_hour("p_btc", "2026-04-16T14", conn)
+        row = conn.execute(
+            "SELECT last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["last_checked_hour"] == "2026-04-16T14"
+
+    def test_overwrites_previous(self, conn):
+        save_pending_entry(_make_pending(), conn)
+        update_last_checked_hour("p_btc", "2026-04-16T14", conn)
+        update_last_checked_hour("p_btc", "2026-04-16T15", conn)
+        row = conn.execute(
+            "SELECT last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
+        ).fetchone()
+        assert row["last_checked_hour"] == "2026-04-16T15"

@@ -91,6 +91,12 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
     if "risk_mult" not in cols:
         conn.execute("ALTER TABLE orders ADD COLUMN risk_mult REAL DEFAULT 1.0")
+
+    # Migration: add last_checked_hour column (dedup 1H boundary multi-fire)
+    pe_cols = {row[1] for row in conn.execute("PRAGMA table_info(pending_entries)").fetchall()}
+    if "last_checked_hour" not in pe_cols:
+        conn.execute("ALTER TABLE pending_entries ADD COLUMN last_checked_hour TEXT")
+
     conn.execute(CREATE_PENDING_ENTRIES_INDEX)
 
 
@@ -505,6 +511,17 @@ def increment_candles_checked(
         (pending_id,),
     ).fetchone()
     return int(row["candles_checked"]) if row else 0
+
+
+def update_last_checked_hour(
+    pending_id: str, hour_key: str, conn: sqlite3.Connection,
+) -> None:
+    """Set last_checked_hour to prevent re-processing the same candle."""
+    conn.execute(
+        "UPDATE pending_entries SET last_checked_hour = ? WHERE pending_id = ?",
+        (hour_key, pending_id),
+    )
+    conn.commit()
 
 
 def has_active_pending(
