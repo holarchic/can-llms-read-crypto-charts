@@ -67,6 +67,10 @@ class ExecutionConfig:
     counter_trend_min_rr: float = 3.0         # minimum R:R for counter-trend trades
     counter_trend_timeout_hours: int = 36     # shorter timeout (vs position_timeout_hours)
 
+    # Trailing stop (trail SL to swing points after TP1 fill)
+    trailing_sl_enabled: bool = False
+    trailing_sl_lookback: int = 3             # swing detection lookback (4H candles each side)
+
     # Discord
     discord_ops_webhook_url: str = ""
     discord_urgent_webhook_url: str = ""
@@ -112,6 +116,7 @@ def load_execution_config() -> ExecutionConfig:
         drift_enabled=os.getenv("DRIFT_ENABLED", "false").lower() in ("true", "1", "yes"),
         conditional_entry_enabled=os.getenv("CONDITIONAL_ENTRY_ENABLED", "false").lower() in ("true", "1", "yes"),
         conditional_entry_max_expiry=int(os.getenv("CONDITIONAL_ENTRY_MAX_EXPIRY", "24")),
+        trailing_sl_enabled=os.getenv("TRAILING_SL_ENABLED", "false").lower() in ("true", "1", "yes"),
         discord_ops_webhook_url=os.getenv("DISCORD_OPS_WEBHOOK_URL", ""),
         discord_urgent_webhook_url=os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""),
         discord_errors_webhook_url=os.getenv("DISCORD_ERRORS_WEBHOOK_URL", ""),
