@@ -96,11 +96,14 @@ COST_PER_M = {
 
 def _estimate_cost(usage, model: str) -> float:
     rates = COST_PER_M.get(model, {"input": 3.0, "output": 15.0})
-    input_cost = (usage.input_tokens / 1_000_000) * rates["input"]
-    cache_write = (getattr(usage, "cache_creation_input_tokens", 0) / 1_000_000) * rates["input"] * 1.25
-    cache_read = (getattr(usage, "cache_read_input_tokens", 0) / 1_000_000) * rates["input"] * 0.1
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    non_cached = max(0, usage.input_tokens - cache_creation - cache_read)
+    input_cost = (non_cached / 1_000_000) * rates["input"]
+    cache_write_cost = (cache_creation / 1_000_000) * rates["input"] * 1.25
+    cache_read_cost = (cache_read / 1_000_000) * rates["input"] * 0.1
     output_cost = (usage.output_tokens / 1_000_000) * rates["output"]
-    return round(input_cost + cache_write + cache_read + output_cost, 4)
+    return round(input_cost + cache_write_cost + cache_read_cost + output_cost, 4)
 
 
 def analyze_for_scanner(

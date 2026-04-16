@@ -444,7 +444,7 @@ def _process_trailing_entry(
 # ---------------------------------------------------------------------------
 
 def _get_position_data(entry: dict, conn) -> dict | None:
-    """Build position data dict by joining entry order with scans table machine_block."""
+    """Build position data dict. Prefers reanchored SL/TP1 from orders table, falls back to scans machine_block."""
     scanner_conn = get_scanner_connection()
     try:
         row = scanner_conn.execute(
@@ -462,15 +462,28 @@ def _get_position_data(entry: dict, conn) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         return None
 
-    tp1 = mb.get("tp1")
-    sl = mb.get("stop_loss")
-    if tp1 is None or sl is None:
+    mb_tp1 = mb.get("tp1")
+    mb_sl = mb.get("stop_loss")
+    if mb_tp1 is None or mb_sl is None:
         return None
+
+    # Prefer reanchored values from orders table (actual exchange prices)
+    sl_row = conn.execute(
+        "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' AND status = 'PLACED' LIMIT 1",
+        (entry["scan_id"],),
+    ).fetchone()
+    tp1_row = conn.execute(
+        "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'tp1' AND status = 'PLACED' LIMIT 1",
+        (entry["scan_id"],),
+    ).fetchone()
+
+    sl = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] is not None else float(mb_sl)
+    tp1 = float(tp1_row["trigger_price"]) if tp1_row and tp1_row["trigger_price"] is not None else float(mb_tp1)
 
     return {
         "entry_price": float(entry.get("fill_price") or entry.get("entry_price") or 0),
-        "stop_loss": float(sl),
-        "tp1": float(tp1),
+        "stop_loss": sl,
+        "tp1": tp1,
         "direction": entry["direction"],
         "filled_at": entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at"),
     }

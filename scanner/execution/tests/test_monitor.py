@@ -663,6 +663,45 @@ class TestPartialExitHandling:
         issues = check_positions(config, conn)
         assert any(i["type"] == "missing_sl" and i["coin"] == "BTC" for i in issues)
 
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.cancel_order", return_value=False)
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp1_cancel_failure_sends_urgent_and_still_replaces(
+        self, mock_auth, mock_cancel, mock_post, config, conn,
+    ):
+        """SL cancel fails after TP1 → URGENT alert sent, SL replacement still proceeds."""
+        config.discord_urgent_webhook_url = "https://discord.com/urgent"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", quantity=0.05)
+        save_order(entry, conn)
+        save_order(sl, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.side_effect = lambda oid, sym: (
+            {"status": "closed", "average": 65000} if oid == "tp1_exch1"
+            else {"status": "open"}
+        )
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.05"
+        mock_auth.return_value = mock_exchange
+        mock_post.return_value = MagicMock(status_code=204)
+
+        sync_order_status(config, conn)
+
+        # URGENT alert sent because cancel failed
+        urgent_calls = [c for c in mock_post.call_args_list
+                        if "URGENT" in str(c)]
+        assert len(urgent_calls) >= 1
+
+        # SL replacement still proceeded — new exchange order ID
+        sl_result = get_order(sl["order_id"], conn)
+        assert sl_result["exchange_order_id"] == "sl_exch2"
+        assert sl_result["quantity"] == 0.05
+
 
 class TestUnknownOrderStatuses:
     """expired/rejected → CANCELLED; unknown → left PLACED with warning."""

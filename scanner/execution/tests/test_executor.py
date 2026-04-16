@@ -453,6 +453,47 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_sl_fails_emergency_close_duplicate_order_id(
+        self, mock_killed, mock_price, mock_balance, mock_auth, mock_discord,
+        mock_sleep, conn, exec_config, scanner_config,
+    ):
+        """SL fails 3x, emergency close attempt 1 times out, attempt 2 DuplicateOrderId → treated as filled."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.side_effect = [
+            _mock_exchange_success(),         # entry
+            Exception("timeout"),             # SL attempt 1
+            Exception("timeout"),             # SL attempt 2
+            Exception("timeout"),             # SL attempt 3
+            Exception("timeout"),             # emergency close attempt 1 (times out)
+            DuplicateOrderId("duplicate"),    # emergency close attempt 2
+        ]
+        mock_exchange.fetch_ticker.return_value = {"last": 62000}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        assert result.executed is True
+        assert result.sl_failed is True
+
+        # Emergency close saved as FILLED despite DuplicateOrderId
+        orders = get_orders_for_scan("test123", conn)
+        ec_orders = [o for o in orders if o["order_type"] == "emergency_close"]
+        assert len(ec_orders) == 1
+        assert ec_orders[0]["status"] == "FILLED"
+        assert ec_orders[0]["fill_price"] == 62000
+
+        # No false "Emergency close FAILED" URGENT alert
+        urgent_failed_calls = [c for c in mock_discord.call_args_list
+                               if "Emergency close also FAILED" in str(c)]
+        assert len(urgent_failed_calls) == 0
+
+    @patch("scanner.execution.executor.time.sleep")
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_sl_rate_limited_skips_to_emergency_close(self, mock_killed, mock_price, mock_balance,
                                                        mock_auth, mock_discord, mock_sleep,
                                                        conn, exec_config, scanner_config):

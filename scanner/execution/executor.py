@@ -857,6 +857,27 @@ def _emergency_close_position(
                 scan_result.coin, er.direction, quantity, fill_price,
             )
             return fill_price or 0.01
+        except DuplicateOrderId:
+            log.warning(
+                "Emergency close DuplicateOrderId for %s — treating as filled",
+                scan_result.coin,
+            )
+            save_order({
+                "order_id": order_id,
+                "scan_id": scan_result.scan_id,
+                "coin": scan_result.coin,
+                "direction": er.direction,
+                "order_type": "emergency_close",
+                "exchange_order_id": "",
+                "status": "FILLED",
+                "fill_price": float(price),
+                "quantity": quantity,
+                "exchange": config.exchange,
+                "execution_mode": config.mode,
+                "filled_at": now,
+                "created_at": now,
+            }, conn)
+            return float(price) or 0.01
         except Exception as exc:
             log.error(
                 "Emergency close attempt %d/%d for %s failed: %s",

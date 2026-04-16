@@ -654,3 +654,87 @@ class TestFetch4hCandles:
 
         with patch("scanner.data.fetch_candles", return_value=df):
             assert _fetch_4h_candles("BTC") == []
+
+
+# ---------------------------------------------------------------------------
+# _get_position_data — reanchored SL/TP from orders table
+# ---------------------------------------------------------------------------
+
+class TestGetPositionData:
+
+    def _make_scanner_conn(self, scan_id="test1", sl=95.0, tp1=110.0):
+        """Create a mock scanner connection with a scans table row."""
+        import json
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("CREATE TABLE scans (scan_id TEXT, machine_block TEXT)")
+        mb = json.dumps({"stop_loss": sl, "tp1": tp1})
+        c.execute("INSERT INTO scans VALUES (?, ?)", (scan_id, mb))
+        c.commit()
+        return c
+
+    @patch("scanner.execution.drift.get_scanner_connection")
+    def test_prefers_orders_table_trigger_price(self, mock_scanner_conn, conn):
+        """Reanchored SL/TP1 from orders table used over machine_block values."""
+        from scanner.execution.drift import _get_position_data
+
+        mock_scanner_conn.return_value = self._make_scanner_conn(sl=95.0, tp1=110.0)
+
+        # Seed orders with reanchored values (different from machine_block)
+        save_order({
+            "order_id": "sl1", "scan_id": "test1", "coin": "BTC", "direction": "LONG",
+            "order_type": "stop_loss", "status": "PLACED", "trigger_price": 95.5,
+            "quantity": 0.1, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-16T00:00:00",
+        }, conn)
+        save_order({
+            "order_id": "tp1", "scan_id": "test1", "coin": "BTC", "direction": "LONG",
+            "order_type": "tp1", "status": "PLACED", "trigger_price": 110.5,
+            "quantity": 0.05, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-16T00:00:00",
+        }, conn)
+
+        entry = {"scan_id": "test1", "fill_price": 100.5, "direction": "LONG",
+                 "filled_at": "2026-04-16T00:00:00"}
+        pos = _get_position_data(entry, conn)
+
+        assert pos is not None
+        assert pos["stop_loss"] == 95.5  # orders table, not 95.0 from machine_block
+        assert pos["tp1"] == 110.5       # orders table, not 110.0 from machine_block
+        assert pos["entry_price"] == 100.5
+
+    @patch("scanner.execution.drift.get_scanner_connection")
+    def test_falls_back_to_machine_block_for_tp1(self, mock_scanner_conn, conn):
+        """No TP1 order in DB → falls back to machine_block for TP1."""
+        from scanner.execution.drift import _get_position_data
+
+        mock_scanner_conn.return_value = self._make_scanner_conn(sl=95.0, tp1=110.0)
+
+        # Only SL order, no TP1
+        save_order({
+            "order_id": "sl1", "scan_id": "test1", "coin": "BTC", "direction": "LONG",
+            "order_type": "stop_loss", "status": "PLACED", "trigger_price": 95.5,
+            "quantity": 0.1, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-16T00:00:00",
+        }, conn)
+
+        entry = {"scan_id": "test1", "fill_price": 100.0, "direction": "LONG",
+                 "filled_at": "2026-04-16T00:00:00"}
+        pos = _get_position_data(entry, conn)
+
+        assert pos["stop_loss"] == 95.5  # from orders
+        assert pos["tp1"] == 110.0       # fallback to machine_block
+
+    @patch("scanner.execution.drift.get_scanner_connection")
+    def test_no_orders_uses_machine_block(self, mock_scanner_conn, conn):
+        """Empty orders table → both from machine_block (backward compat)."""
+        from scanner.execution.drift import _get_position_data
+
+        mock_scanner_conn.return_value = self._make_scanner_conn(sl=95.0, tp1=110.0)
+
+        entry = {"scan_id": "test1", "fill_price": 100.0, "direction": "LONG",
+                 "filled_at": "2026-04-16T00:00:00"}
+        pos = _get_position_data(entry, conn)
+
+        assert pos["stop_loss"] == 95.0  # machine_block fallback
+        assert pos["tp1"] == 110.0       # machine_block fallback

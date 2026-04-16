@@ -424,10 +424,11 @@ def _handle_tp1_fill(
 
     # Cancel old SL on exchange
     old_exch_oid = sl_order.get("exchange_order_id")
-    if old_exch_oid and not cancel_order(old_exch_oid, symbol, config):
-        log.error("Failed to cancel old SL %s for %s — position may have duplicate SLs",
-                  old_exch_oid, entry["coin"])
-        return
+    cancel_ok = not old_exch_oid or cancel_order(old_exch_oid, symbol, config)
+    if not cancel_ok:
+        log.warning("Failed to cancel old SL %s for %s — proceeding with replacement (reduceOnly safe)",
+                    old_exch_oid, entry["coin"])
+        _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
 
     # DB reflects reality: old SL is gone from exchange
     update_order_status(sl_order["order_id"], "CANCELLED", conn)
