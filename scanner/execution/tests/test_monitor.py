@@ -1881,6 +1881,37 @@ class TestAttemptSlRecovery:
         placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
         assert len(placed_sls) == 0
 
+    @patch("scanner.execution.exchange.get_open_positions", return_value=[])
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_recovery_records_manual_close_when_position_gone(
+        self, mock_auth, mock_positions, config, conn,
+    ):
+        """If the exchange has no matching position, recovery records a
+        manual_close instead of looping on reduceOnly rejections."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        failed_sl = _make_order(scan_id="scan1", order_type="stop_loss",
+                                status="FAILED",
+                                trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(failed_sl, conn)
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "missing_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+
+        assert result is True
+        orders = get_orders_for_scan("scan1", conn)
+        manual_closes = [o for o in orders if o["order_type"] == "manual_close"]
+        assert len(manual_closes) == 1
+        assert manual_closes[0]["status"] == "FILLED"
+        assert manual_closes[0]["quantity"] == 0.1
+        # No new PLACED SL was created (we didn't try to place one)
+        placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
+        assert len(placed_sls) == 0
+
     def test_recovery_position_already_closed(self, config, conn):
         """Position fully exited -> recovery returns True (no action needed)."""
         from scanner.execution.monitor import attempt_sl_recovery

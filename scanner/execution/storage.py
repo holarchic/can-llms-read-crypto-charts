@@ -21,7 +21,7 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
 OPEN_QTY_EPSILON = 1e-9
 
 # All order types that represent position exits (used in "remaining qty" calculations).
-EXIT_ORDER_TYPES_SQL = "('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close', 'drift_close')"
+EXIT_ORDER_TYPES_SQL = "('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close', 'drift_close', 'manual_close')"
 
 CREATE_ORDERS_TABLE = """
 CREATE TABLE IF NOT EXISTS orders (

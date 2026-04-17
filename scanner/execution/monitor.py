@@ -1041,6 +1041,46 @@ def attempt_sl_recovery(
         log.info("SL recovery: position already closed for %s", coin)
         return True
 
+    # Guard against the liquidation / external-close loop: if the exchange
+    # has no matching position, placing a reduceOnly SL is guaranteed to
+    # reject ("no position to reduce"). Rather than trigger 3-retry + urgent
+    # alert + next-cycle repeat, record the closure as manual_close and bail.
+    try:
+        from .exchange import get_open_positions
+        positions = get_open_positions(config)
+        exchange_has_position = any(
+            p.get("coin") == coin and p.get("direction") == direction
+            and float(p.get("size") or 0) > OPEN_QTY_EPSILON
+            for p in positions
+        )
+        if not exchange_has_position:
+            log.warning(
+                "SL recovery: %s %s not on exchange — recording manual_close to stop recovery loop",
+                coin, direction,
+            )
+            from .storage import new_order_id as _new_oid
+            now = datetime.now(timezone.utc).isoformat()
+            save_order({
+                "order_id": _new_oid(),
+                "scan_id": scan_id,
+                "coin": coin,
+                "direction": direction,
+                "order_type": "manual_close",
+                "status": "FILLED",
+                "quantity": remaining_qty,
+                "fill_price": float(entry.get("fill_price") or entry.get("entry_price") or 0),
+                "exchange": config.exchange,
+                "execution_mode": config.mode,
+                "filled_at": now,
+                "created_at": now,
+            }, conn)
+            return True
+    except Exception as exc:
+        # Don't abort recovery on a reconciliation failure — fall through to
+        # the usual placement flow. Better to try placing (and potentially
+        # fail) than skip when the position may actually exist.
+        log.warning("SL recovery position reconciliation failed: %s", exc)
+
     # Prefer the most recent PLACED SL (phantom scenario) — its exch_oid is
     # stale and its trigger_price is the one we want to re-place. Fall back
     # to any SL row for trigger_price lookup.
