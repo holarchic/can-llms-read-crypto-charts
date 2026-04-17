@@ -258,6 +258,10 @@ def validate_execution_params(
     # Exit percentages
     tp1_pct = params.get("tp1_exit_pct", 0)
     tp2_pct = params.get("tp2_exit_pct", 0)
+    if tp1_pct is not None and tp1_pct <= 0:
+        errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
+    if tp2_pct < 0:
+        errors.append(f"tp2_exit_pct must be non-negative: {tp2_pct}")
     if tp1_pct + tp2_pct > 100:
         errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct} = {tp1_pct + tp2_pct}) > 100")
 

@@ -69,6 +69,7 @@ def _make_machine_block(**overrides):
         "leverage": 5,
         "tp1_exit_pct": 50,
         "tp2_exit_pct": 50,
+        "confidence": 7,
     }
     base.update(overrides)
     return base

@@ -54,55 +54,16 @@ class ExecutionResult:
 
 
 def validate_execution_params(machine_block: dict) -> list[str]:
-    """Check that required machine_block fields exist and are valid."""
-    errors = []
-    required = ["direction", "entry_low", "entry_high", "stop_loss", "leverage"]
-    for key in required:
-        if key not in machine_block or machine_block[key] is None:
-            errors.append(f"Missing required field: {key}")
+    """Check that required machine_block fields exist and are valid.
 
-    direction = machine_block.get("direction", "").upper()
-    if direction not in ("LONG", "SHORT"):
-        errors.append(f"Invalid direction: {direction}")
+    Delegates to the canonical validator in scanner.llm. Conditional-entry
+    reconstruction bypasses parse_machine_block, so routing every mb through
+    the same rules keeps that path from slipping malformed blocks past
+    execution pre-checks.
+    """
+    from scanner.llm import validate_execution_params as _canonical_validate
 
-    leverage = machine_block.get("leverage")
-    if leverage is not None and (not isinstance(leverage, (int, float)) or leverage < 1):
-        errors.append(f"Invalid leverage: {leverage}")
-
-    tp1_pct = machine_block.get("tp1_exit_pct")
-    tp2_pct = machine_block.get("tp2_exit_pct", 0)
-    if tp1_pct is not None and tp1_pct <= 0:
-        errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
-    if tp2_pct < 0:
-        errors.append(f"tp2_exit_pct must be non-negative: {tp2_pct}")
-    if tp1_pct is not None and tp1_pct + tp2_pct > 100:
-        errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct}) > 100")
-
-    # Direction-safe price geometry
-    entry_low = machine_block.get("entry_low", 0)
-    entry_high = machine_block.get("entry_high", 0)
-    stop = machine_block.get("stop_loss", 0)
-    tp1 = machine_block.get("tp1")
-    tp2 = machine_block.get("tp2")
-
-    if entry_low and entry_high and entry_low > entry_high:
-        errors.append(f"entry_low ({entry_low}) > entry_high ({entry_high})")
-
-    if direction == "LONG":
-        if stop and entry_low and stop >= entry_low:
-            errors.append(f"LONG stop ({stop}) must be below entry_low ({entry_low})")
-        if tp1 and entry_high and tp1 <= entry_high:
-            errors.append(f"LONG tp1 ({tp1}) must be above entry_high ({entry_high})")
-        if tp2 and tp1 and tp2 <= tp1:
-            errors.append(f"LONG tp2 ({tp2}) must be above tp1 ({tp1})")
-    elif direction == "SHORT":
-        if stop and entry_high and stop <= entry_high:
-            errors.append(f"SHORT stop ({stop}) must be above entry_high ({entry_high})")
-        if tp1 and entry_low and tp1 >= entry_low:
-            errors.append(f"SHORT tp1 ({tp1}) must be below entry_low ({entry_low})")
-        if tp2 and tp1 and tp2 >= tp1:
-            errors.append(f"SHORT tp2 ({tp2}) must be below tp1 ({tp1})")
-
+    _, errors = _canonical_validate(machine_block)
     return errors
 
 
