@@ -187,11 +187,14 @@ def _migrate_scans_direction(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scans RENAME COLUMN direction TO screener_direction")
     if "llm_direction" not in cols:
         conn.execute("ALTER TABLE scans ADD COLUMN llm_direction TEXT DEFAULT NULL")
-        # Backfill from machine_block JSON
-        conn.execute(
-            "UPDATE scans SET llm_direction = json_extract(machine_block, '$.direction') "
-            "WHERE machine_block IS NOT NULL AND llm_direction IS NULL"
-        )
+        # Backfill from machine_block JSON — skip if machine_block column hasn't
+        # been added yet (fresh DB bootstrap adds it later in _run_migrations).
+        cols_after = {row[1] for row in conn.execute("PRAGMA table_info(scans)").fetchall()}
+        if "machine_block" in cols_after:
+            conn.execute(
+                "UPDATE scans SET llm_direction = json_extract(machine_block, '$.direction') "
+                "WHERE machine_block IS NOT NULL AND llm_direction IS NULL"
+            )
     conn.commit()
 
 
@@ -202,11 +205,13 @@ _migration_lock = threading.Lock()
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Run all schema migrations — tables, indexes, columns, execution orders."""
     conn.execute(CREATE_TABLE)
+    # Migrate scans.direction → screener_direction BEFORE CREATE_INDEX, which
+    # references screener_direction. Legacy DBs with the old 'direction' column
+    # otherwise fail with "no such column: screener_direction".
+    _migrate_scans_direction(conn)
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
     conn.execute(CREATE_SIGNALS_INDEX)
-    # Migrate scans.direction → screener_direction + add llm_direction
-    _migrate_scans_direction(conn)
     # Candles table: migrate PK to include exchange if needed
     _migrate_candles_table(conn)
     conn.execute(CREATE_CANDLES_INDEX)

@@ -131,6 +131,38 @@ class TestSaveAndRetrieve:
         assert new_row["decision"] == "WAIT"
 
 
+class TestLegacyMigration:
+    def test_legacy_direction_column_migrates_without_machine_block(self, tmp_path):
+        """Legacy DB has 'direction' column and no machine_block. The migration
+        must not blow up when trying to backfill llm_direction from a column
+        that doesn't yet exist — it should add llm_direction and skip the
+        backfill gracefully."""
+        import sqlite3
+
+        # Simulate pre-rename schema
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE scans ("
+            "scan_id TEXT PRIMARY KEY, coin TEXT NOT NULL, timestamp TEXT NOT NULL, "
+            "setup_type TEXT NOT NULL, setup_name TEXT, direction TEXT NOT NULL, "
+            "screener_confidence REAL, key_level REAL, decision TEXT, "
+            "confluence_score TEXT, entry_zone TEXT, stop_loss TEXT, "
+            "take_profit TEXT, reasoning TEXT, cost_usd REAL DEFAULT 0, "
+            "alerted INTEGER DEFAULT 0, created_at TEXT NOT NULL)",
+        )
+        conn.commit()
+        conn.close()
+
+        # Open via get_connection — runs migrations. Should succeed.
+        conn = get_connection(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(scans)").fetchall()}
+        assert "screener_direction" in cols
+        assert "llm_direction" in cols
+        assert "machine_block" in cols
+        conn.close()
+
+
 class TestDedup:
     def test_not_duplicate_when_empty(self, db_conn):
         assert is_duplicate("BTC", "C", "LONG", 12, db_conn) is False
