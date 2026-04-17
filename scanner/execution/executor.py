@@ -137,6 +137,10 @@ def execute_trade(
             from scanner.indicators import compute_atr
 
             btc_df = fetch_candles("BTC", "4h", 50, scanner_config)
+            # Drop the in-progress candle so the range check uses a fully
+            # formed 4H bar (otherwise early-in-window ranges look small).
+            if btc_df is not None and len(btc_df) >= 2:
+                btc_df = btc_df.iloc[:-1]
             if btc_df is not None and len(btc_df) >= 20:
                 btc_atr = compute_atr(btc_df)
                 last_range = float(btc_df["High"].iloc[-1] - btc_df["Low"].iloc[-1])
@@ -934,21 +938,16 @@ def _send_execution_alert(exec_result: ExecutionResult, scan_result: ScanResult,
 
 
 def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
-    """Send URGENT Discord alert (e.g., SL placement failure)."""
-    webhook = config.discord_urgent_webhook_url
-    if not webhook:
-        return False
+    """Send URGENT Discord alert (e.g., SL placement failure).
 
-    try:
-        resp = requests.post(
-            webhook,
-            json={"content": f"@everyone **URGENT**: {message}"},
-            timeout=10,
-        )
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("URGENT alert send failed: %s", exc)
-        return False
+    Retry with backoff; always mirror to data/logs/urgent-alerts.log so a
+    Discord outage never silences the paper trail.
+    """
+    from .alerts import send_urgent
+    return send_urgent(
+        config.discord_urgent_webhook_url,
+        f"@everyone **URGENT**: {message}",
+    )
 
 
 def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:

@@ -892,7 +892,9 @@ class TestRoundQuantity:
 
 
 def _make_btc_4h_df(last_range: float, atr_approx: float, rows: int = 30):
-    """Build a minimal BTC 4H DataFrame where last candle has given range and ATR ≈ atr_approx."""
+    """Build a minimal BTC 4H DataFrame where the just-closed candle (iloc[-2])
+    has the given range and ATR ≈ atr_approx. The final row is the in-progress
+    candle and is dropped by the executor before range-check."""
     base = 60000.0
     data = {
         "Open": [base] * rows,
@@ -901,9 +903,10 @@ def _make_btc_4h_df(last_range: float, atr_approx: float, rows: int = 30):
         "Close": [base + atr_approx * 0.5] * rows,
         "Volume": [100.0] * rows,
     }
-    # Override last candle to have the desired range
-    data["High"][-1] = base + last_range
-    data["Low"][-1] = base
+    # The "just-closed" candle is the second-to-last row — the last row is
+    # the in-progress candle and gets dropped by the executor.
+    data["High"][-2] = base + last_range
+    data["Low"][-2] = base
 
     dates = pd.date_range("2024-01-01", periods=rows, freq="4h", tz="UTC")
     return pd.DataFrame(data, index=dates)

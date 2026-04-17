@@ -325,22 +325,15 @@ def _send_drift_close_alert(
 
 
 def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
-    """Send urgent alert for critical drift failures."""
-    webhook = config.discord_urgent_webhook_url
-    if not webhook:
-        return False
-    embed = {
-        "title": "\u26a0\ufe0f DRIFT URGENT",
-        "description": message,
-        "color": 0xFF0000,
-        "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
-    }
-    try:
-        resp = requests.post(webhook, json={"content": "@everyone", "embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Drift urgent alert failed: %s", exc)
-        return False
+    """Send urgent alert for critical drift failures.
+
+    Retry-with-durable-log path so a Discord blip never silences the page.
+    """
+    from .alerts import send_urgent
+    return send_urgent(
+        config.discord_urgent_webhook_url,
+        f"@everyone **DRIFT URGENT**: {message}",
+    )
 
 
 def _send_trailing_sl_alert(

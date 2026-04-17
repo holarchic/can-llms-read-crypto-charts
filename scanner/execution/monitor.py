@@ -527,18 +527,14 @@ def _handle_tp1_fill(
 
 
 def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
-    """Send URGENT Discord alert when SL replacement exhausts retries."""
-    webhook = config.discord_urgent_webhook_url
-    if not webhook:
-        return False
+    """Send URGENT Discord alert when SL replacement exhausts retries.
+
+    Retry-with-durable-log path so a Discord blip never silences the page.
+    """
+    from .alerts import send_urgent
     message = (f"@everyone **URGENT**: SL replacement FAILED for {coin} {direction} "
                f"after 3 attempts — position running WITHOUT stop loss")
-    try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("URGENT SL alert send failed: %s", exc)
-        return False
+    return send_urgent(config.discord_urgent_webhook_url, message)
 
 
 def _send_errors_tp_alert(

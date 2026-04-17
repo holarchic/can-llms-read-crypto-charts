@@ -9,7 +9,9 @@ log = logging.getLogger(__name__)
 def get_secret(project_id: str, secret_id: str, version: str = "latest") -> str:
     """Fetch a secret from GCP Secret Manager.
 
-    Returns empty string on any failure (missing secret, permission error, etc).
+    Returns empty string on failure. Permission errors log at ERROR level so
+    a live-mode misconfiguration is visible in logs rather than silently
+    falling back to dev env vars.
     """
     try:
         from google.cloud import secretmanager
@@ -18,12 +20,28 @@ def get_secret(project_id: str, secret_id: str, version: str = "latest") -> str:
         return ""
 
     try:
+        from google.api_core import exceptions as gapi_exc
+    except ImportError:
+        gapi_exc = None  # type: ignore[assignment]
+
+    try:
         client = secretmanager.SecretManagerServiceClient()
         name = f"projects/{project_id}/secrets/{secret_id}/versions/{version}"
         response = client.access_secret_version(request={"name": name})
         return response.payload.data.decode("UTF-8")
     except Exception as exc:
-        log.warning("Failed to fetch secret %s: %s", secret_id, exc)
+        # Surface permission/notfound at ERROR — these are misconfigurations,
+        # not transient network hiccups.
+        is_critical = gapi_exc is not None and isinstance(
+            exc, (gapi_exc.PermissionDenied, gapi_exc.NotFound, gapi_exc.Unauthenticated),
+        )
+        if is_critical:
+            log.error(
+                "Secret Manager access failed for %s (%s: %s) — check IAM + secret existence",
+                secret_id, type(exc).__name__, exc,
+            )
+        else:
+            log.warning("Failed to fetch secret %s: %s", secret_id, exc)
         return ""
 
 
