@@ -97,6 +97,26 @@ ON pending_entries (status, exchange, execution_mode)
 """
 
 
+def _safe_add_column(
+    conn: sqlite3.Connection, table: str, column: str, coldef: str,
+) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN. Tolerates concurrent migrations.
+
+    Two cron jobs racing on a fresh schema change can both see "column
+    missing" via PRAGMA table_info and both issue ALTER TABLE. SQLite
+    serializes writes but raises OperationalError("duplicate column name")
+    on the loser. Swallow that specific error; propagate everything else.
+    """
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 def ensure_orders_table(conn: sqlite3.Connection) -> None:
     """Create orders + pending_entries tables if they don't exist."""
     conn.execute(CREATE_ORDERS_TABLE)
@@ -105,20 +125,16 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_ORDERS_SCAN_TYPE_INDEX)
     conn.execute(CREATE_PENDING_ENTRIES_TABLE)
 
-    # Migration: add risk_mult column (counter-trend R scaling)
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
-    if "risk_mult" not in cols:
-        conn.execute("ALTER TABLE orders ADD COLUMN risk_mult REAL DEFAULT 1.0")
-
+    # Migration: add risk_mult column (counter-trend R scaling).
+    # Guard against race: two cron jobs starting in parallel can both read
+    # "column missing" and both issue ALTER — second one raises
+    # "duplicate column name". Catch it as a no-op.
+    _safe_add_column(conn, "orders", "risk_mult", "REAL DEFAULT 1.0")
     # Migration: add last_checked_hour column (dedup 1H boundary multi-fire)
-    pe_cols = {row[1] for row in conn.execute("PRAGMA table_info(pending_entries)").fetchall()}
-    if "last_checked_hour" not in pe_cols:
-        conn.execute("ALTER TABLE pending_entries ADD COLUMN last_checked_hour TEXT")
-
+    _safe_add_column(conn, "pending_entries", "last_checked_hour", "TEXT")
     # Migration: add screener_direction so conditional entries can be flagged
     # counter-trend when the trigger fires (preserves risk scaling + min_rr gate).
-    if "screener_direction" not in pe_cols:
-        conn.execute("ALTER TABLE pending_entries ADD COLUMN screener_direction TEXT")
+    _safe_add_column(conn, "pending_entries", "screener_direction", "TEXT")
 
     conn.execute(CREATE_PENDING_ENTRIES_INDEX)
 

@@ -7,7 +7,13 @@ from .models import Strategy
 
 
 def save_strategy(strategy: Strategy, conn: sqlite3.Connection) -> None:
-    """Insert or replace a strategy."""
+    """Insert or replace a strategy — full overwrite semantics.
+
+    INSERT OR REPLACE writes every column, so a Strategy constructed with
+    default values (e.g. notes='' and ruleset_version='') will clobber
+    existing content. Only call with a fully populated Strategy dataclass.
+    Use activate_strategy() to change only is_active.
+    """
     conn.execute(
         """INSERT OR REPLACE INTO strategies
         (strategy_id, label, swing_lookback, sr_cluster_pct, proximity_atr_mult,
@@ -77,7 +83,17 @@ def list_strategies(conn: sqlite3.Connection) -> list[Strategy]:
 
 
 def activate_strategy(strategy_id: str, conn: sqlite3.Connection) -> None:
-    """Set one strategy as active, deactivating all others."""
+    """Set one strategy as active, deactivating all others.
+
+    Verifies strategy_id exists before flipping is_active so a typo or stale
+    ID doesn't leave the DB with zero active strategies.
+    """
+    existing = conn.execute(
+        "SELECT 1 FROM strategies WHERE strategy_id = ?", (strategy_id,),
+    ).fetchone()
+    if existing is None:
+        raise ValueError(f"Strategy not found: {strategy_id}")
+
     conn.execute("UPDATE strategies SET is_active = 0")
     conn.execute(
         "UPDATE strategies SET is_active = 1 WHERE strategy_id = ?",
