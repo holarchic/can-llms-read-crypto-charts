@@ -61,6 +61,21 @@ def _make_order(scan_id="scan1", coin="BTC", direction="LONG", order_type="entry
     return base
 
 
+def _latest_placed(conn, scan_id: str, order_type: str) -> dict | None:
+    """Find the most recent PLACED row for a scan + type.
+
+    Replacements insert NEW rows instead of mutating old ones, so tests
+    should look up the "current" SL/TP by this query rather than by the
+    original order_id.
+    """
+    row = conn.execute(
+        "SELECT * FROM orders WHERE scan_id = ? AND order_type = ? "
+        "AND status = 'PLACED' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (scan_id, order_type),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 class TestSyncOrderStatus:
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_detects_sl_fill(self, mock_auth, config, conn):
@@ -378,10 +393,11 @@ class TestStaleListSafety:
         # Key: SL should NOT be fetched again after TP1 fill
         assert fetched_oids.count("sl_exch1") == 1
 
-        # SL should have replacement exchange_order_id, NOT be marked CANCELLED
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["exchange_order_id"] == "sl_exch2"
-        assert sl_result["status"] != "CANCELLED"
+        # Old SL marked CANCELLED (superseded); new SL row has the replacement id
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
 
 class TestPartialExitHandling:
@@ -418,10 +434,15 @@ class TestPartialExitHandling:
         tp1_result = get_order(tp1["order_id"], conn)
         assert tp1_result["status"] == "FILLED"
 
-        # SL should have updated quantity and new exchange order ID
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["quantity"] == 0.05
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL row kept as history (CANCELLED); new SL row inserted
+        old_sl = get_order(sl["order_id"], conn)
+        assert old_sl["status"] == "CANCELLED"
+        assert old_sl["quantity"] == 0.1  # historical qty preserved
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == 0.05
+        assert new_sl["exchange_order_id"] == "sl_exch2"
+        assert new_sl["order_id"] != sl["order_id"]
 
         # TP2 should still be PLACED (not cancelled)
         tp2_result = get_order(tp2["order_id"], conn)
@@ -524,10 +545,12 @@ class TestPartialExitHandling:
         assert tp1_result["status"] == "FILLED"
         assert tp1_result["quantity"] == 0.03
 
-        # SL replaced with remaining = 0.1 - 0.03 = 0.07
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["quantity"] == 0.07
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL cancelled; new SL inserted for remaining = 0.1 - 0.03 = 0.07
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == 0.07
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
@@ -549,22 +572,26 @@ class TestPartialExitHandling:
         )
         mock_auth.return_value = mock_exchange
 
+        # create_order needed because residual placement kicks in
+        mock_exchange.create_order.return_value = {"id": "sl_exch2"}
+        mock_exchange.amount_to_precision.return_value = "0.02"
+
         sync_order_status(config, conn)
 
-        # SL should be FILLED with actual fill quantity
+        # SL row is FILLED with actual partial fill quantity (history)
         sl_result = get_order(sl["order_id"], conn)
         assert sl_result["status"] == "FILLED"
         assert sl_result["quantity"] == 0.08
         assert sl_result["fill_price"] == 59750
 
-        # TP1 should be cancelled (SL = full close path)
+        # TP1 should be cancelled (partial fill cleanup)
         tp1_result = get_order(tp1["order_id"], conn)
         assert tp1_result["status"] == "CANCELLED"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_canceled_with_zero_fill_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """SL canceled with filled=0 → auto-replaced on exchange."""
+        """SL canceled with filled=0 → new replacement row inserted."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -580,9 +607,11 @@ class TestPartialExitHandling:
         updated = sync_order_status(config, conn)
         assert updated == 1
 
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL row stays CANCELLED; replacement inserted as PLACED row
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
@@ -613,10 +642,11 @@ class TestPartialExitHandling:
 
         sync_order_status(config, conn)
 
-        # SL should be PLACED with new exchange order ID
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # New SL row inserted as PLACED; old one marked CANCELLED
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
         assert mock_exchange.create_order.call_count == 3
         assert mock_sleep.call_count == 2  # backoff between retries
 
@@ -649,9 +679,16 @@ class TestPartialExitHandling:
 
         sync_order_status(config, conn)
 
-        # SL should be CANCELLED in DB — old one is gone, all retries failed
+        # Old SL row stays PLACED (never superseded — replacement never succeeded)
+        # Position is still protected at the original trigger/qty on exchange.
         sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "CANCELLED"
+        assert sl_result["status"] == "PLACED"
+        # No new PLACED SL row was inserted
+        new_placed = conn.execute(
+            "SELECT COUNT(*) as cnt FROM orders WHERE scan_id = ? "
+            "AND order_type = 'stop_loss' AND status = 'PLACED'", ("s1",),
+        ).fetchone()
+        assert new_placed["cnt"] == 1  # only the original
 
         # URGENT alert should have been sent
         mock_post.assert_called_once()
@@ -659,17 +696,13 @@ class TestPartialExitHandling:
         assert "URGENT" in call_body
         assert "BTC" in call_body
 
-        # check_positions() should flag the missing SL
-        issues = check_positions(config, conn)
-        assert any(i["type"] == "missing_sl" and i["coin"] == "BTC" for i in issues)
-
     @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.cancel_order", return_value=False)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_cancel_failure_sends_urgent_and_still_replaces(
         self, mock_auth, mock_cancel, mock_post, config, conn,
     ):
-        """SL cancel fails after TP1 → URGENT alert sent, SL replacement still proceeds."""
+        """SL cancel fails after TP1 → new SL placed, old row stays PLACED, URGENT alert."""
         config.discord_urgent_webhook_url = "https://discord.com/urgent"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
@@ -697,10 +730,14 @@ class TestPartialExitHandling:
                         if "URGENT" in str(c)]
         assert len(urgent_calls) >= 1
 
-        # SL replacement still proceeded — new exchange order ID
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["exchange_order_id"] == "sl_exch2"
-        assert sl_result["quantity"] == 0.05
+        # New SL row placed at residual; old SL row stays PLACED (cancel failed)
+        # Duplicate on exchange is reduceOnly-safe.
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
+        assert new_sl["quantity"] == 0.05
+        old_sl = get_order(sl["order_id"], conn)
+        assert old_sl["status"] == "PLACED"  # cancel failed, not flipped
 
 
 class TestUnknownOrderStatuses:
@@ -709,7 +746,7 @@ class TestUnknownOrderStatuses:
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_expired_order_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """Exchange reports status='expired' → exit order auto-replaced."""
+        """Exchange reports status='expired' → new replacement row inserted."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -725,14 +762,16 @@ class TestUnknownOrderStatuses:
         updated = sync_order_status(config, conn)
         assert updated == 1
 
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Original SL row stays CANCELLED; new row inserted for residual
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_rejected_order_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """Exchange reports status='rejected' → exit order auto-replaced."""
+        """Exchange reports status='rejected' → new replacement row inserted."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -748,9 +787,10 @@ class TestUnknownOrderStatuses:
         updated = sync_order_status(config, conn)
         assert updated == 1
 
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_unknown_status_left_placed(self, mock_auth, config, conn, caplog):
@@ -809,17 +849,24 @@ class TestPartialSLTP2Fill:
 
         sync_order_status(config, conn)
 
-        # SL should be re-placed at residual qty
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["quantity"] == pytest.approx(0.04)
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL row is FILLED with partial fill (historical record)
+        old_sl = get_order(sl["order_id"], conn)
+        assert old_sl["status"] == "FILLED"
+        assert old_sl["quantity"] == pytest.approx(0.06)
 
-        # TP2 should be re-placed at residual qty
-        tp2_result = get_order(tp2["order_id"], conn)
-        assert tp2_result["status"] == "PLACED"
-        assert tp2_result["quantity"] == pytest.approx(0.04)
-        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+        # New SL row inserted at residual qty
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == pytest.approx(0.04)
+        assert new_sl["exchange_order_id"] == "sl_exch2"
+
+        # Old TP2 row is CANCELLED; new TP2 row inserted at residual
+        old_tp2 = get_order(tp2["order_id"], conn)
+        assert old_tp2["status"] == "CANCELLED"
+        new_tp2 = _latest_placed(conn, "s1", "tp2")
+        assert new_tp2 is not None
+        assert new_tp2["quantity"] == pytest.approx(0.04)
+        assert new_tp2["exchange_order_id"] == "tp2_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
@@ -855,17 +902,21 @@ class TestPartialSLTP2Fill:
 
         sync_order_status(config, conn)
 
-        # SL re-placed at residual (was cancelled then re-placed)
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["quantity"] == pytest.approx(0.01)
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL row CANCELLED; new SL row inserted
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == pytest.approx(0.01)
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
-        # TP2 re-placed at residual
-        tp2_result = get_order(tp2["order_id"], conn)
-        assert tp2_result["status"] == "PLACED"
-        assert tp2_result["quantity"] == pytest.approx(0.01)
-        assert tp2_result["exchange_order_id"] == "tp2_exch2"
+        # Old TP2 row FILLED (partial); new TP2 row inserted for residual
+        old_tp2 = get_order(tp2["order_id"], conn)
+        assert old_tp2["status"] == "FILLED"
+        assert old_tp2["quantity"] == pytest.approx(0.015)
+        new_tp2 = _latest_placed(conn, "s1", "tp2")
+        assert new_tp2 is not None
+        assert new_tp2["quantity"] == pytest.approx(0.01)
+        assert new_tp2["exchange_order_id"] == "tp2_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
@@ -889,11 +940,12 @@ class TestPartialSLTP2Fill:
 
         sync_order_status(config, conn)
 
-        # SL re-placed
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["quantity"] == pytest.approx(0.03)
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL FILLED (partial) + new SL inserted for residual
+        assert get_order(sl["order_id"], conn)["status"] == "FILLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == pytest.approx(0.03)
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
         # Only one create_order call (SL only, no TP2)
         assert mock_exchange.create_order.call_count == 1
@@ -996,9 +1048,10 @@ class TestLivePositionQtyCrossCheck:
 
         sync_order_status(config, conn)
 
-        # SL re-placed at exchange qty (0.03), not DB residual (0.04)
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["quantity"] == pytest.approx(0.03)
+        # New SL placed at exchange qty (0.03), not DB residual (0.04)
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == pytest.approx(0.03)
 
     @patch("scanner.execution.monitor.get_open_positions", side_effect=Exception("API timeout"))
     @patch("scanner.execution.monitor.time.sleep")
@@ -1024,8 +1077,9 @@ class TestLivePositionQtyCrossCheck:
         sync_order_status(config, conn)
 
         # Falls back to DB residual (0.1 - 0.06 = 0.04)
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["quantity"] == pytest.approx(0.04)
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["quantity"] == pytest.approx(0.04)
 
     @patch("scanner.execution.monitor.get_open_positions")
     @patch("scanner.execution.monitor.time.sleep")
@@ -1502,9 +1556,11 @@ class TestRejectedExitOrderReplacement:
 
         sync_order_status(config, conn)
 
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        # Old SL row CANCELLED; replacement inserted as new PLACED row
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
         # Verify it used stopLossPrice param
         call_args = mock_exchange.create_order.call_args
         assert call_args[0][5]["stopLossPrice"] == 59800.0
@@ -1561,7 +1617,7 @@ class TestRejectedExitOrderReplacement:
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_canceled_zero_fill_sl_gets_replaced(self, mock_auth, mock_sleep, config, conn):
-        """SL canceled (zero fill) → auto-replaced."""
+        """SL canceled (zero fill) → new replacement row inserted."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
                          exchange_order_id="sl_exch1", trigger_price=59800, quantity=0.1)
@@ -1576,9 +1632,10 @@ class TestRejectedExitOrderReplacement:
 
         sync_order_status(config, conn)
 
-        sl_result = get_order(sl["order_id"], conn)
-        assert sl_result["status"] == "PLACED"
-        assert sl_result["exchange_order_id"] == "sl_exch2"
+        assert get_order(sl["order_id"], conn)["status"] == "CANCELLED"
+        new_sl = _latest_placed(conn, "s1", "stop_loss")
+        assert new_sl is not None
+        assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.time.sleep")

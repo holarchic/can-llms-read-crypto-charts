@@ -325,24 +325,43 @@ class TestSlMove:
         """SHORT: new SL (entry=100) must be < current SL (105). Should proceed."""
         from scanner.execution.drift import _move_sl_to_price
 
+        # Seed old SL row so the supersede step has something to cancel
+        from scanner.execution.storage import new_order_id
+        oid = new_order_id()
+        save_order({
+            "order_id": oid, "scan_id": "test1", "coin": "BTC", "direction": "SHORT",
+            "order_type": "stop_loss", "exchange_order_id": "exch_sl1", "status": "PLACED",
+            "quantity": 1.0, "trigger_price": 105.0,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-04-15T00:00:00",
+        }, conn)
+
         entry = {"coin": "BTC", "direction": "SHORT", "fill_price": 100.0, "scan_id": "test1"}
-        sl_order = {"order_id": "sl1", "trigger_price": 105.0, "quantity": 1.0, "exchange_order_id": "exch_sl1"}
+        sl_order = {
+            "order_id": oid, "trigger_price": 105.0, "quantity": 1.0,
+            "exchange_order_id": "exch_sl1", "status": "PLACED",
+            "scan_id": "test1", "coin": "BTC", "order_type": "stop_loss",
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+        }
 
         mock_exchange = MagicMock()
         mock_exchange.amount_to_precision.return_value = "1.0"
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
-        with patch("scanner.execution.drift.cancel_order", return_value=True):
+        with patch("scanner.execution.monitor.cancel_order", return_value=True):
             result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
         mock_exchange.create_order.assert_called_once()
 
     def test_trigger_price_updated_in_db(self, drift_config, conn):
-        """After SL move to breakeven, DB trigger_price must reflect new value."""
+        """After SL move to breakeven, a new PLACED row exists with new trigger.
+
+        Old row is marked CANCELLED (historical record preserved).
+        """
         from scanner.execution.drift import _move_sl_to_price
 
-        # Seed order in DB so update_order_quantity has a row to update
+        # Seed the existing SL row
         from scanner.execution.storage import new_order_id
         oid = new_order_id()
         save_order({
@@ -358,23 +377,33 @@ class TestSlMove:
         entry = {"coin": "BTC", "direction": "LONG", "fill_price": 100.0, "scan_id": "test1"}
         sl_order = {
             "order_id": oid, "trigger_price": 95.0,
-            "quantity": 1.0, "exchange_order_id": "exch_sl1",
+            "quantity": 1.0, "exchange_order_id": "exch_sl1", "status": "PLACED",
+            "scan_id": "test1", "coin": "BTC", "order_type": "stop_loss",
+            "exchange": "hyperliquid", "execution_mode": "testnet",
         }
 
         mock_exchange = MagicMock()
         mock_exchange.amount_to_precision.return_value = "1.0"
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
-        with patch("scanner.execution.drift.cancel_order", return_value=True):
+        with patch("scanner.execution.monitor.cancel_order", return_value=True):
             result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
-        row = conn.execute(
-            "SELECT trigger_price, exchange_order_id FROM orders WHERE order_id = ?",
-            (oid,),
+        # Old row: CANCELLED, original trigger preserved as history
+        old = conn.execute(
+            "SELECT status, trigger_price FROM orders WHERE order_id = ?", (oid,),
         ).fetchone()
-        assert float(row["trigger_price"]) == 100.0  # breakeven, not original 95.0
-        assert row["exchange_order_id"] == "new_sl_id"
+        assert old["status"] == "CANCELLED"
+        assert float(old["trigger_price"]) == 95.0
+        # New row: PLACED at breakeven with new exchange ID
+        new = conn.execute(
+            "SELECT trigger_price, exchange_order_id, status "
+            "FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' "
+            "AND status = 'PLACED'", ("test1",),
+        ).fetchone()
+        assert float(new["trigger_price"]) == 100.0
+        assert new["exchange_order_id"] == "new_sl_id"
 
     def test_tighten_only_guard_blocks_short(self, drift_config, conn):
         """SHORT: if SL already at 99 (tighter than entry 100), don't widen to 100."""

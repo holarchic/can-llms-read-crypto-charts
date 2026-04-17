@@ -19,7 +19,6 @@ from .storage import (
     make_cloid,
     new_order_id,
     save_order,
-    update_order_quantity,
     update_order_status,
 )
 
@@ -123,11 +122,16 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                             "%s %s partial fill: expected %s, got %s",
                             entry["coin"], order["order_type"], order["quantity"], fill_qty,
                         )
+                    original_qty = float(order["quantity"])
                     update_order_status(
                         order["order_id"], "FILLED", conn,
                         fill_price=fill_price,
                         filled_quantity=fill_qty,
                     )
+                    # Keep in-memory consistent with DB so replacement helpers
+                    # see the fill state without re-querying.
+                    order["status"] = "FILLED"
+                    order["quantity"] = original_qty  # keep for residual math
                     updated += 1
                     log.info(
                         "%s %s %s filled at %s (qty %s)",
@@ -155,11 +159,16 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                             "%s %s canceled with partial fill: %s of %s at %s",
                             entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,
                         )
+                        original_qty = float(order["quantity"])
                         update_order_status(
                             order["order_id"], "FILLED", conn,
                             fill_price=fill_price,
                             filled_quantity=partial_fill,
                         )
+                        # Keep in-memory consistent with DB so replacement helpers
+                        # see the fill state without re-querying.
+                        order["status"] = "FILLED"
+                        order["quantity"] = original_qty  # keep for residual math
                         updated += 1
 
                         if order["order_type"] in ("stop_loss", "tp1", "tp2"):
@@ -288,109 +297,191 @@ def _handle_partial_exit_fill(
     symbol: str, exchange, config: ExecutionConfig, conn,
     fill_qty: float,
 ) -> None:
-    """SL or TP2 partially filled: cancel remaining orders, re-place at residual qty."""
+    """SL or TP2 partially filled: protect residual with new SL, re-place TP2.
+
+    Placement order: new SL first → cancel counterpart TPs → new TP2.
+    This keeps an SL active on the exchange through the whole transition.
+    """
     residual_qty = filled_order["quantity"] - fill_qty
     residual_qty = _get_live_position_qty(
         entry["coin"], entry["direction"], residual_qty, config,
     )
+    if residual_qty <= 0:
+        # No residual — treat as full close
+        cancel_remaining_orders(
+            entry["scan_id"], filled_order["order_id"],
+            symbol, config, conn,
+        )
+        return
 
-    # Cancel all remaining PLACED orders on exchange
-    cancel_remaining_orders(
-        entry["scan_id"], filled_order["order_id"],
-        symbol, config, conn,
-    )
-
-    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
-    rounded_qty = float(exchange.amount_to_precision(symbol, residual_qty))
-
-    # Determine which orders to re-place
     filled_type = filled_order["order_type"]
 
-    # Always need an SL for the residual
-    sl_order = (
+    # Step 1: Protect the residual with a fresh SL BEFORE cancelling counterparts.
+    sl_source = (
         filled_order if filled_type == "stop_loss"
-        else next((o for o in scan_orders if o["order_type"] == "stop_loss"), None)
+        else next(
+            (o for o in scan_orders if o["order_type"] == "stop_loss"
+             and o["status"] in ("PLACED", "FILLED")),
+            None,
+        )
     )
-    if sl_order:
-        sl_trigger = sl_order.get("trigger_price")
-        _place_replacement_order(
-            sl_order, "market", sl_trigger,
-            {"stopLossPrice": sl_trigger, "reduceOnly": True},
-            rounded_qty, exit_side,
-            symbol, exchange, entry, config, conn,
+    if sl_source:
+        _place_replacement_exit_order(
+            sl_source, float(sl_source["trigger_price"]), residual_qty,
+            entry, symbol, exchange, config, conn,
             suffix=":partial",
         )
 
-    # Re-place TP2 at residual qty
-    if filled_type == "stop_loss":
-        # SL partial fill — re-place the TP2 that was just cancelled
-        tp2_order = next(
-            (o for o in scan_orders if o["order_type"] == "tp2" and o["status"] in ("PLACED", "CANCELLED")),
+    # Step 2: Cancel any remaining PLACED counterpart orders (TP1, TP2, old SL).
+    current_orders = get_orders_for_scan(entry["scan_id"], conn)
+    for o in current_orders:
+        if o["order_id"] == filled_order["order_id"]:
+            continue
+        if o["order_type"] not in ("tp1", "tp2"):
+            continue
+        if o["status"] != "PLACED":
+            continue
+        exch_oid = o.get("exchange_order_id")
+        if exch_oid:
+            cancel_order(exch_oid, symbol, config)
+        update_order_status(o["order_id"], "CANCELLED", conn)
+        log.info("Cancelled %s for %s (partial fill cleanup)",
+                 o["order_type"], entry["scan_id"])
+
+    # Step 3: Re-place TP2 at residual qty.
+    tp2_source = (
+        filled_order if filled_type == "tp2"
+        else next(
+            (o for o in scan_orders if o["order_type"] == "tp2"),
             None,
         )
-    elif filled_type == "tp2":
-        # TP2 partial fill — re-place the TP2 itself
-        tp2_order = filled_order
+    )
+    if tp2_source and tp2_source.get("trigger_price"):
+        _place_replacement_exit_order(
+            tp2_source, float(tp2_source["trigger_price"]), residual_qty,
+            entry, symbol, exchange, config, conn,
+            suffix=":partial",
+        )
+
+
+def _place_replacement_exit_order(
+    old_order: dict,
+    new_trigger: float,
+    new_qty: float,
+    entry: dict,
+    symbol: str,
+    exchange,
+    config: ExecutionConfig,
+    conn,
+    suffix: str = ":replaced",
+) -> bool:
+    """Place a new SL/TP order and supersede an old one.
+
+    Insert-new-then-cancel-old flow. The old row is kept as a historical record
+    (FILLED rows stay FILLED — partial-fill audit trail preserved). If the old
+    row is PLACED we cancel it on the exchange AFTER the new order is live so
+    the position is never naked. If exchange cancel fails, old row stays PLACED
+    and the duplicate on exchange is reduceOnly-safe (monitor will retry on the
+    next cycle).
+
+    Returns True if the replacement order was placed on the exchange.
+    """
+    order_type = old_order["order_type"]
+    if order_type not in ("stop_loss", "tp1", "tp2"):
+        log.error("Cannot replace unsupported order_type %s for %s",
+                  order_type, entry["coin"])
+        return False
+    if new_qty <= 0:
+        log.warning("Skipping %s replacement for %s — non-positive qty %s",
+                    order_type, entry["coin"], new_qty)
+        return False
+
+    direction = entry["direction"]
+    exit_side = "sell" if direction == "LONG" else "buy"
+    rounded_qty = float(exchange.amount_to_precision(symbol, new_qty))
+    # Deterministic cloid from the old order + suffix → idempotent retries.
+    cloid = make_cloid(old_order["order_id"] + suffix)
+
+    if order_type == "stop_loss":
+        params = {"stopLossPrice": new_trigger, "reduceOnly": True, "clientOrderId": cloid}
     else:
-        tp2_order = None
+        params = {"takeProfitPrice": new_trigger, "reduceOnly": True, "clientOrderId": cloid}
 
-    if tp2_order:
-            tp2_trigger = tp2_order.get("trigger_price")
-            _place_replacement_order(
-                tp2_order, "market", tp2_trigger,
-                {"takeProfitPrice": tp2_trigger, "reduceOnly": True},
-                rounded_qty, exit_side,
-                symbol, exchange, entry, config, conn,
-                suffix=":partial",
-            )
-
-
-def _place_replacement_order(
-    order: dict, order_type_str: str, trigger_price: float,
-    extra_params: dict, rounded_qty: float,
-    exit_side: str, symbol: str, exchange, entry: dict,
-    config: ExecutionConfig, conn, suffix: str = ":replaced",
-) -> None:
-    """Place a replacement SL or TP order with retry logic."""
-    cloid = make_cloid(order["order_id"] + suffix)
-    params = {**extra_params, "clientOrderId": cloid}
-
+    resp = None
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
             resp = exchange.create_order(
-                symbol, order_type_str, exit_side, rounded_qty, trigger_price, params,
-            )
-            new_exch_oid = resp.get("id", "")
-            update_order_quantity(order["order_id"], rounded_qty, new_exch_oid, conn)
-            update_order_status(order["order_id"], "PLACED", conn)
-            log.info(
-                "Replaced %s for %s: qty %s → %s (partial fill)",
-                order["order_type"], entry["coin"], order["quantity"], rounded_qty,
+                symbol, "market", exit_side, rounded_qty, new_trigger, params,
             )
             break
         except Exception as exc:
             log.error("%s replacement attempt %d/%d for %s failed: %s",
-                      order["order_type"], attempt, max_retries, entry["coin"], exc)
+                      order_type, attempt, max_retries, entry["coin"], exc)
             if is_rate_limit_error(exc):
                 log.error("Rate limited — aborting %s replacement for %s",
-                          order["order_type"], entry["coin"])
-                if order["order_type"] == "stop_loss":
-                    _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
-                elif order["order_type"] in ("tp1", "tp2"):
-                    _send_errors_tp_alert(entry["coin"], entry["direction"],
-                                          order["order_type"], config)
+                          order_type, entry["coin"])
                 break
             if attempt < max_retries:
                 time.sleep(attempt)
-            else:
-                log.error("All %s replacement attempts exhausted for %s — position unprotected",
-                          order["order_type"], entry["coin"])
-                if order["order_type"] == "stop_loss":
-                    _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
-                elif order["order_type"] in ("tp1", "tp2"):
-                    _send_errors_tp_alert(entry["coin"], entry["direction"],
-                                          order["order_type"], config)
+
+    if resp is None:
+        # Placement failed. Leave old row untouched — if it was PLACED the
+        # position is still protected at the prior trigger/qty.
+        log.error("%s replacement exhausted for %s — old order kept as-is",
+                  order_type, entry["coin"])
+        if order_type == "stop_loss":
+            _send_urgent_sl_alert(entry["coin"], direction, config)
+        else:
+            _send_errors_tp_alert(entry["coin"], direction, order_type, config)
+        return False
+
+    new_exch_oid = resp.get("id", "")
+    new_oid = new_order_id()
+    now = datetime.now(timezone.utc).isoformat()
+    save_order({
+        "order_id": new_oid,
+        "scan_id": old_order["scan_id"],
+        "coin": old_order["coin"],
+        "direction": direction,
+        "order_type": order_type,
+        "exchange_order_id": new_exch_oid,
+        "status": "PLACED",
+        "quantity": rounded_qty,
+        "trigger_price": new_trigger,
+        "leverage": old_order.get("leverage"),
+        "exchange": old_order.get("exchange", config.exchange),
+        "execution_mode": old_order.get("execution_mode", config.mode),
+        "risk_mult": old_order.get("risk_mult", 1.0),
+        "placed_at": now,
+        "created_at": now,
+    }, conn)
+    log.info(
+        "Replaced %s for %s: qty=%s trigger=%s (new oid=%s, supersedes %s)",
+        order_type, entry["coin"], rounded_qty, new_trigger, new_oid,
+        old_order["order_id"],
+    )
+
+    # Supersede the old order: only PLACED rows need exchange cancellation.
+    # FILLED rows stay FILLED (historical partial-fill record). CANCELLED /
+    # FAILED rows are already inactive.
+    if old_order.get("status") == "PLACED":
+        old_exch_oid = old_order.get("exchange_order_id")
+        cancel_ok = True
+        if old_exch_oid:
+            cancel_ok = cancel_order(old_exch_oid, symbol, config)
+        if cancel_ok:
+            update_order_status(old_order["order_id"], "CANCELLED", conn)
+            old_order["status"] = "CANCELLED"
+        else:
+            log.warning(
+                "Could not cancel old %s %s for %s — duplicate on exchange (reduceOnly safe)",
+                order_type, old_exch_oid, entry["coin"],
+            )
+            if order_type == "stop_loss":
+                _send_urgent_sl_alert(entry["coin"], direction, config)
+
+    return True
 
 
 def _handle_tp1_fill(
@@ -398,7 +489,12 @@ def _handle_tp1_fill(
     symbol: str, exchange, config: ExecutionConfig, conn,
     fill_qty: float | None = None,
 ) -> None:
-    """TP1 filled: cancel old SL, place replacement SL at remaining quantity, keep TP2."""
+    """TP1 filled: place replacement SL at remaining quantity, then cancel old SL.
+
+    Placement order is critical: new SL goes on the exchange FIRST so the
+    position is never naked across the swap. reduceOnly guarantees at most one
+    fills when the trigger hits.
+    """
     tp1_qty = fill_qty if fill_qty is not None else tp1_order.get("quantity", 0)
     remaining_qty = entry.get("quantity", 0) - tp1_qty
     remaining_qty = _get_live_position_qty(
@@ -420,50 +516,14 @@ def _handle_tp1_fill(
     )
     if not sl_order:
         log.error("No active SL found for %s after TP1 fill — position unprotected", entry["coin"])
+        _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
         return
 
-    # Cancel old SL on exchange
-    old_exch_oid = sl_order.get("exchange_order_id")
-    cancel_ok = not old_exch_oid or cancel_order(old_exch_oid, symbol, config)
-    if not cancel_ok:
-        log.warning("Failed to cancel old SL %s for %s — proceeding with replacement (reduceOnly safe)",
-                    old_exch_oid, entry["coin"])
-        _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
-
-    # DB reflects reality: old SL is gone from exchange
-    update_order_status(sl_order["order_id"], "CANCELLED", conn)
-
-    # Place replacement SL at remaining quantity
-    sl_trigger = sl_order.get("trigger_price")
-    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
-
-    rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
-    cloid = make_cloid(sl_order["order_id"] + ":replaced")
-
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            sl_resp = exchange.create_order(
-                symbol, "market", exit_side, rounded_qty, sl_trigger,
-                {"stopLossPrice": sl_trigger, "reduceOnly": True, "clientOrderId": cloid},
-            )
-            new_exch_oid = sl_resp.get("id", "")
-            update_order_quantity(sl_order["order_id"], remaining_qty, new_exch_oid, conn)
-            update_order_status(sl_order["order_id"], "PLACED", conn)
-            log.info(
-                "Replaced SL for %s: qty %s → %s (TP1 filled %s)",
-                entry["coin"], entry["quantity"], remaining_qty, tp1_qty,
-            )
-            break
-        except Exception as exc:
-            log.error("SL replacement attempt %d/%d for %s failed: %s",
-                      attempt, max_retries, entry["coin"], exc)
-            if attempt < max_retries:
-                time.sleep(attempt)  # 1s, 2s exponential backoff
-            else:
-                log.error("All SL replacement attempts exhausted for %s — position unprotected",
-                          entry["coin"])
-                _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
+    _place_replacement_exit_order(
+        sl_order, float(sl_order["trigger_price"]), remaining_qty,
+        entry, symbol, exchange, config, conn,
+        suffix=":replaced",
+    )
 
 
 def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
@@ -503,9 +563,10 @@ def _attempt_exit_order_replacement(
     order: dict, entry: dict, symbol: str, exchange,
     config: ExecutionConfig, conn,
 ) -> None:
-    """Re-place a rejected/cancelled exit order (SL, TP1, TP2).
+    """Re-place a rejected/cancelled SL order.
 
-    Guards: only exit orders, skip if position closed, skip if no trigger_price.
+    TP rejections are alert-only (not auto-replaced). Guards: skip if position
+    fully closed or trigger_price missing.
     """
     if order["order_type"] not in ("stop_loss", "tp1", "tp2"):
         return
@@ -531,30 +592,11 @@ def _attempt_exit_order_replacement(
                               order["order_type"], config)
         return
 
-    trigger_price = float(trigger_price)
-    exit_side = "sell" if entry["direction"] == "LONG" else "buy"
-    rounded_qty = float(exchange.amount_to_precision(symbol, remaining_qty))
-
-    if order["order_type"] == "stop_loss":
-        extra_params = {"stopLossPrice": trigger_price, "reduceOnly": True}
-    else:
-        extra_params = {"takeProfitPrice": trigger_price, "reduceOnly": True}
-
-    try:
-        _place_replacement_order(
-            order, "market", trigger_price,
-            extra_params, rounded_qty, exit_side,
-            symbol, exchange, entry, config, conn,
-            suffix=":rejected",
-        )
-    except Exception as exc:
-        log.error("Unexpected error replacing %s for %s: %s",
-                  order["order_type"], entry["coin"], exc)
-        if order["order_type"] == "stop_loss":
-            _send_urgent_sl_alert(entry["coin"], entry["direction"], config)
-        else:
-            _send_errors_tp_alert(entry["coin"], entry["direction"],
-                                  order["order_type"], config)
+    _place_replacement_exit_order(
+        order, float(trigger_price), remaining_qty,
+        entry, symbol, exchange, config, conn,
+        suffix=":rejected",
+    )
 
 
 def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:

@@ -10,7 +10,6 @@ No LLM re-evaluation needed. All triggers derived mechanically.
 
 import json
 import logging
-import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -21,19 +20,17 @@ from scanner.indicators import find_swing_points
 from scanner.storage import get_connection as get_scanner_connection
 
 from .config import ExecutionConfig
-from .exchange import cancel_order, get_auth_exchange
+from .exchange import get_auth_exchange
 from .monitor import (
     _calc_r,
     _get_remaining_qty,
+    _place_replacement_exit_order,
     cancel_remaining_orders,
     market_close_position,
 )
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
-    make_cloid,
-    update_order_quantity,
-    update_order_status,
 )
 
 log = logging.getLogger(__name__)
@@ -219,10 +216,11 @@ def _move_sl_to_price(
     entry: dict, sl_order: dict, new_sl: float, symbol: str, exchange,
     config: ExecutionConfig, conn, cloid_suffix: str = ":drift",
 ) -> bool:
-    """Cancel current SL, place new SL at the given price.
+    """Place a new SL at the given price, then cancel the old one.
 
-    Only tightens — if current SL is already tighter, skip.
-    Returns True on success, False on failure.
+    Tighten-only — if the current SL is already closer to price than new_sl,
+    skip. Delegates to the shared insert-new-then-cancel-old helper so the
+    position is never naked across the swap.
     """
     current_trigger = float(sl_order.get("trigger_price", 0))
     direction = entry["direction"]
@@ -239,42 +237,21 @@ def _move_sl_to_price(
         log.info("SL already tighter for %s LONG (current=%s, target=%s)", entry["coin"], current_trigger, new_sl)
         return False
 
-    # Cancel old SL on exchange
-    old_exch_oid = sl_order.get("exchange_order_id")
-    if old_exch_oid and not cancel_order(old_exch_oid, symbol, config):
-        log.error("Failed to cancel old SL %s for %s", old_exch_oid, entry["coin"])
-        return False
-
-    update_order_status(sl_order["order_id"], "CANCELLED", conn)
-
-    # Place new SL
-    exit_side = "sell" if direction == "LONG" else "buy"
     qty = float(sl_order.get("quantity", 0))
-    rounded_qty = float(exchange.amount_to_precision(symbol, qty))
-    cloid = make_cloid(sl_order["order_id"] + cloid_suffix)
-
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = exchange.create_order(
-                symbol, "market", exit_side, rounded_qty, new_sl,
-                {"stopLossPrice": new_sl, "reduceOnly": True, "clientOrderId": cloid},
-            )
-            new_exch_oid = resp.get("id", "")
-            update_order_quantity(sl_order["order_id"], qty, new_exch_oid, conn, new_trigger_price=new_sl)
-            update_order_status(sl_order["order_id"], "PLACED", conn)
-            log.info("SL moved for %s %s: %s → %s",
-                      entry["coin"], direction, current_trigger, new_sl)
-            return True
-        except Exception as exc:
-            log.error("SL replacement attempt %d/%d for %s failed: %s",
-                      attempt, max_retries, entry["coin"], exc)
-            if attempt < max_retries:
-                time.sleep(attempt)
-
-    log.error("All SL replacement attempts exhausted for %s — position unprotected", entry["coin"])
-    _send_urgent_alert(f"SL MOVE FAILED: {entry['coin']} {direction} — position unprotected after SL cancel", config)
-    return False
+    ok = _place_replacement_exit_order(
+        sl_order, new_sl, qty,
+        entry, symbol, exchange, config, conn,
+        suffix=cloid_suffix,
+    )
+    if ok:
+        log.info("SL moved for %s %s: %s → %s",
+                 entry["coin"], direction, current_trigger, new_sl)
+    else:
+        _send_urgent_alert(
+            f"SL MOVE FAILED: {entry['coin']} {direction} — replacement not placed",
+            config,
+        )
+    return ok
 
 
 # ---------------------------------------------------------------------------

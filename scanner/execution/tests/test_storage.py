@@ -149,15 +149,29 @@ class TestUpdateOrderStatus:
         result = get_order(order["order_id"], conn)
         assert result["status"] == "FILLED"
 
-    def test_cancelled_to_placed_allowed(self, conn):
-        """SL replacement flow: PLACED → CANCELLED → re-PLACED."""
+    def test_cancelled_is_terminal(self, conn):
+        """CANCELLED is terminal — resurrecting to PLACED is rejected.
+
+        Replacements now insert new rows instead of mutating the old row, so
+        the old CANCELLED row should stay CANCELLED.
+        """
         order = _make_order()
         save_order(order, conn)
         update_order_status(order["order_id"], "PLACED", conn)
         update_order_status(order["order_id"], "CANCELLED", conn)
-        update_order_status(order["order_id"], "PLACED", conn)
+        update_order_status(order["order_id"], "PLACED", conn)  # no-op, logs warning
         result = get_order(order["order_id"], conn)
-        assert result["status"] == "PLACED"
+        assert result["status"] == "CANCELLED"
+
+    def test_filled_is_terminal(self, conn):
+        """FILLED is terminal — partial-fill residual handled via new rows."""
+        order = _make_order()
+        save_order(order, conn)
+        update_order_status(order["order_id"], "PLACED", conn)
+        update_order_status(order["order_id"], "FILLED", conn, fill_price=62100)
+        update_order_status(order["order_id"], "PLACED", conn)  # no-op, logs warning
+        result = get_order(order["order_id"], conn)
+        assert result["status"] == "FILLED"
 
 
 class TestPositionQueries:

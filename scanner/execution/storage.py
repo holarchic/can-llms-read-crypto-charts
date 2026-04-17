@@ -7,12 +7,12 @@ from uuid import NAMESPACE_OID, uuid4, uuid5
 
 log = logging.getLogger(__name__)
 
-# Valid state transitions — reject anything else
+# Valid state transitions — reject anything else.
+# FILLED and CANCELLED are terminal. Replacements insert NEW rows instead of
+# resurrecting old ones (preserves audit trail, avoids quantity accounting drift).
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     "PENDING": {"PLACED", "CANCELLED"},
     "PLACED": {"FILLED", "CANCELLED"},
-    "FILLED": {"PLACED"},  # partial fill re-placement only; FILLED→CANCELLED blocked
-    "CANCELLED": {"PLACED"},  # SL replacement: CANCELLED → re-PLACED
     "FAILED": {"CANCELLED"},  # Superseded by monitor SL recovery
 }
 
