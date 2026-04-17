@@ -4,6 +4,8 @@ import json as _json
 from dataclasses import dataclass
 from datetime import datetime
 
+from .storage import EXIT_ORDER_TYPES_SQL
+
 
 @dataclass
 class TradeRecord:
@@ -52,8 +54,8 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         entry = dict(entry)
         # Find ALL filled exits for this scan
         exits = conn.execute(
-            """SELECT * FROM orders
-            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
+            f"""SELECT * FROM orders
+            WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
             AND status = 'FILLED'
             AND execution_mode = ? AND exchange = ?
             ORDER BY filled_at""",
@@ -293,8 +295,8 @@ def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
 
         # Fetch all filled exits for quantity-weighted sim_r
         exits = conn.execute(
-            """SELECT order_type, quantity FROM orders
-            WHERE scan_id = ? AND order_type IN ('stop_loss', 'tp1', 'tp2', 'timeout_close', 'emergency_close')
+            f"""SELECT order_type, quantity FROM orders
+            WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
             AND status = 'FILLED'
             AND execution_mode = ? AND exchange = ?""",
             (trade.scan_id, trade.execution_mode, trade.exchange),

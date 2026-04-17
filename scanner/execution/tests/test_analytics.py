@@ -103,6 +103,39 @@ def _insert_trade(conn, scan_id="s1", coin="BTC", direction="LONG",
 
 
 class TestGetClosedTrades:
+    def test_drift_close_counted_as_exit(self, conn):
+        """drift_close is a valid exit type — must show up in closed trades."""
+        entry_oid = new_order_id()
+        save_order({
+            "order_id": entry_oid, "scan_id": "s_drift", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 100.0, "fill_price": 100.0, "quantity": 0.1,
+            "leverage": 5, "exchange": "hyperliquid", "execution_mode": "testnet",
+            "placed_at": "2026-02-24T00:00:00+00:00",
+            "filled_at": "2026-02-24T00:00:01+00:00",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        # Need a (cancelled) SL for stop_price reference
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_drift", "coin": "BTC",
+            "direction": "LONG", "order_type": "stop_loss", "status": "CANCELLED",
+            "trigger_price": 95.0, "quantity": 0.1,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_drift", "coin": "BTC",
+            "direction": "LONG", "order_type": "drift_close", "status": "FILLED",
+            "fill_price": 98.0, "quantity": 0.1,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-25T00:00:00+00:00",
+            "created_at": "2026-02-25T00:00:00+00:00",
+        }, conn)
+
+        trades = get_closed_trades(conn)
+        assert len(trades) == 1
+        assert trades[0].exit_fill == 98.0
+
     def test_joins_entry_and_exit(self, conn):
         _insert_trade(conn, scan_id="s1", entry_fill=62000, exit_fill=59800,
                        exit_type="stop_loss", stop_price=59800)
