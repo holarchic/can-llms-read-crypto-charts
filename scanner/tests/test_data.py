@@ -3,6 +3,8 @@
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scanner import data
 
 
@@ -77,6 +79,13 @@ class TestGetExchangeThreadSafe:
 
 
 class TestGetTestnetCoins:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """Reset the process-wide testnet coin cache between tests."""
+        data._testnet_coins_cache.clear()
+        yield
+        data._testnet_coins_cache.clear()
+
     @patch("scanner.data.ccxt")
     @patch("scanner.data.get_exchange_meta", return_value={"ccxt_class": "hyperliquid"})
     def test_returns_coin_names(self, mock_meta, mock_ccxt):

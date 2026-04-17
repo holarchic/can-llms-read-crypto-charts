@@ -73,24 +73,36 @@ def get_exchange(exchange_id: str = "hyperliquid") -> object:
     return _exchanges[exchange_id]
 
 
+_testnet_coins_cache: dict[str, set[str]] = {}
+_testnet_lock = threading.Lock()
+
+
 def get_testnet_coins(exchange_id: str = "hyperliquid") -> set[str]:
     """Load testnet markets and return available coin names.
 
-    Creates a temporary sandbox instance (not cached in module singleton).
+    Cached per-exchange per-process — load_markets() takes ~11s and testnet
+    market listings change infrequently, so re-fetching every scan just adds
+    latency without new information.
     """
-    meta = get_exchange_meta(exchange_id)
-    cls = getattr(ccxt, meta["ccxt_class"])
-    ex = cls({"timeout": 30000})
-    ex.set_sandbox_mode(True)
-    ex.load_markets()
-    coins = set()
-    for symbol in ex.markets:
-        if ":" not in symbol:
-            continue
-        coin = symbol.split("/")[0]
-        if coin.isalpha():
-            coins.add(coin)
-    return coins
+    if exchange_id in _testnet_coins_cache:
+        return _testnet_coins_cache[exchange_id]
+    with _testnet_lock:
+        if exchange_id in _testnet_coins_cache:
+            return _testnet_coins_cache[exchange_id]
+        meta = get_exchange_meta(exchange_id)
+        cls = getattr(ccxt, meta["ccxt_class"])
+        ex = cls({"timeout": 30000})
+        ex.set_sandbox_mode(True)
+        ex.load_markets()
+        coins = set()
+        for symbol in ex.markets:
+            if ":" not in symbol:
+                continue
+            coin = symbol.split("/")[0]
+            if coin.isalpha():
+                coins.add(coin)
+        _testnet_coins_cache[exchange_id] = coins
+        return coins
 
 
 def fetch_pairs_with_volume(config: ScannerConfig | None = None) -> list[dict]:

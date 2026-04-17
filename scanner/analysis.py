@@ -2,11 +2,14 @@
 
 PROMPT_VERSION = "8.00"
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
+
+log = logging.getLogger(__name__)
 
 from .config import ScannerConfig
 from .llm import (
@@ -201,14 +204,23 @@ def analyze_for_scanner(
     if machine_block and "confidence" in machine_block:
         llm_confidence = max(1, min(10, int(machine_block["confidence"])))
     else:
-        # Fall back to regex confidence extraction
+        # Regex fallback — reject values out of 1-10 rather than silently
+        # clamping (LLM drift to percent-form like "85/100" otherwise looks
+        # identical to a clean confidence=10 downstream).
         llm_confidence = None
         raw_conf = parsed.get("llm_confidence")
         if raw_conf:
             import re as _re
             m = _re.search(r"(\d+)", raw_conf)
             if m:
-                llm_confidence = max(1, min(10, int(m.group(1))))
+                value = int(m.group(1))
+                if 1 <= value <= 10:
+                    llm_confidence = value
+                else:
+                    log.warning(
+                        "Ignoring out-of-range confidence %s for %s (expected 1-10)",
+                        value, signal.coin,
+                    )
 
     return ScanResult(
         scan_id=str(uuid.uuid4())[:8],

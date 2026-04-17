@@ -330,21 +330,18 @@ def save_result(
          created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            conn.execute(sql, values)
-            break
-        except sqlite3.IntegrityError:
-            if attempt == max_retries - 1:
-                raise
-            import logging as _logging
-            new_id = uuid4().hex[:8]
-            result.scan_id = new_id
-            values = (new_id,) + values[1:]
-            _logging.getLogger(__name__).warning(
-                "scan_id collision %s — regenerating (attempt %d)", scan_id, attempt + 1,
-            )
+    # scan_id is set on the ScanResult at construction time (analysis.py).
+    # Collision probability of uuid4().hex[:8] is ~1 in 4 billion — if we hit
+    # one, it's almost certainly a real reuse, not hash birthday paradox.
+    # Treat it as an error rather than silently rewriting result.scan_id
+    # (callers cache the scan_id into other rows before save_result returns).
+    try:
+        conn.execute(sql, values)
+    except sqlite3.IntegrityError as exc:
+        raise sqlite3.IntegrityError(
+            f"scan_id {scan_id} collision — reusing an existing scan_id "
+            f"(caller should regenerate at ScanResult creation, not here)"
+        ) from exc
 
     conn.commit()
 

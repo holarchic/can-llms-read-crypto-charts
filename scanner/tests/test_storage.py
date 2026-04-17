@@ -1,5 +1,6 @@
 """Tests for SQLite storage — CRUD, dedup, cost tracking."""
 
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -68,67 +69,18 @@ class TestSaveAndRetrieve:
         assert row["coin"] == "BTC"
         assert row["decision"] == "CONFIRM"
 
-    def test_collision_regenerates_scan_id(self, db_conn, sample_result):
-        """Duplicate scan_id gets a new ID instead of overwriting."""
-        save_result(sample_result, db_conn)
-        original_id = sample_result.scan_id
+    def test_collision_raises_integrity_error(self, db_conn, sample_result):
+        """scan_id reuse now raises — caller is expected to use unique IDs.
 
-        # Reset scan_id to same value to force collision
-        sample_result.scan_id = original_id
+        Silent regeneration mutated result.scan_id after other rows had
+        already referenced the old ID, creating orphaned cross-table links.
+        """
+        import pytest as _pytest
+
+        save_result(sample_result, db_conn)
         sample_result.decision = "REJECT"
-        save_result(sample_result, db_conn)
-
-        # Original row untouched
-        row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?", (original_id,)).fetchone()
-        assert row["decision"] == "CONFIRM"
-
-        # New row got a different scan_id
-        assert sample_result.scan_id != original_id
-        new_row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?",
-                                   (sample_result.scan_id,)).fetchone()
-        assert new_row is not None
-        assert new_row["decision"] == "REJECT"
-
-    def test_double_collision_regenerates_twice(self, db_conn, sample_result):
-        """Two consecutive collisions still succeed on third attempt."""
-        from unittest.mock import patch
-
-        save_result(sample_result, db_conn)
-        original_id = sample_result.scan_id
-
-        # uuid4 is called on retry: first retry collides, second retry succeeds
-        unique_id = "uniq1234"
-
-        class FakeUUID:
-            def __init__(self, hex_val):
-                self.hex = hex_val
-
-        call_count = [0]
-        # Attempt 0: initial insert with original_id -> collision
-        # Attempt 1: uuid4() returns original_id -> collision again
-        # Attempt 2: uuid4() returns unique_id -> success
-        ids = [original_id + "0" * 24, unique_id + "0" * 24]
-
-        def fake_uuid4():
-            idx = call_count[0]
-            call_count[0] += 1
-            return FakeUUID(ids[idx])
-
-        sample_result.scan_id = original_id
-        sample_result.decision = "WAIT"
-        with patch("scanner.storage.uuid4", fake_uuid4):
+        with _pytest.raises(sqlite3.IntegrityError):
             save_result(sample_result, db_conn)
-
-        # Original untouched
-        row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?", (original_id,)).fetchone()
-        assert row["decision"] == "CONFIRM"
-
-        # New row saved with unique ID
-        assert sample_result.scan_id == unique_id
-        new_row = db_conn.execute("SELECT * FROM scans WHERE scan_id = ?",
-                                   (unique_id,)).fetchone()
-        assert new_row is not None
-        assert new_row["decision"] == "WAIT"
 
 
 class TestLegacyMigration:

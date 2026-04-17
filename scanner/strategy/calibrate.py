@@ -7,7 +7,7 @@ Designed to accumulate data across market regimes for eventual scoring redesign.
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import ccxt
 
@@ -214,7 +214,7 @@ def build_calibration_embeds(result: CalibrationResult) -> list[dict]:
     COLOR_WARN = 0xFFA726
 
     color = COLOR_WARN if result.conf_win_r < -0.1 else COLOR_POS
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     # Embed 1: Scoring overview
     embed1 = {
