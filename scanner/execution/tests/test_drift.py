@@ -572,6 +572,46 @@ class TestFindTrailingSl:
         from scanner.execution.drift import find_trailing_sl
         assert find_trailing_sl("LONG", 95.0, [], lookback=3) is None
 
+    def test_long_rejects_swing_above_current_price(self):
+        """LONG: swing low above current price would trigger immediate stop —
+        skipped even if it's above current SL."""
+        from scanner.execution.drift import find_trailing_sl
+
+        # Swing low at 102 (above current SL 100) but price pulled back to 101
+        closes = [100, 102, 104, 106, 108, 105, 103, 105, 108, 110, 101]
+        lows =   [99, 101, 103, 105, 107, 104, 102, 104, 107, 109, 100]
+        highs =  [101, 103, 105, 107, 109, 106, 104, 106, 109, 111, 102]
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+
+        # No current_price: old behavior — swing at 102 is a valid candidate
+        assert find_trailing_sl("LONG", 100.0, candles, lookback=3) is not None
+
+        # With current_price=101, 102 is above it → rejected
+        result = find_trailing_sl(
+            "LONG", 100.0, candles, lookback=3,
+            current_price=101.0, min_distance_pct=0.2,
+        )
+        assert result is None
+
+    def test_short_rejects_swing_below_current_price(self):
+        """SHORT: swing high below current price would trigger immediately."""
+        from scanner.execution.drift import find_trailing_sl
+
+        closes = [110, 108, 106, 104, 102, 105, 107, 105, 102, 100, 109]
+        highs =  [111, 109, 107, 105, 103, 106, 108, 106, 103, 101, 110]
+        lows =   [109, 107, 105, 103, 101, 104, 106, 104, 101,  99, 108]
+        candles = _make_4h_candles(closes, highs=highs, lows=lows)
+
+        # No current_price guard: swing at 108 is a valid candidate below SL 110
+        assert find_trailing_sl("SHORT", 110.0, candles, lookback=3) is not None
+
+        # With current_price=109, 108 is below it → rejected
+        result = find_trailing_sl(
+            "SHORT", 110.0, candles, lookback=3,
+            current_price=109.0, min_distance_pct=0.2,
+        )
+        assert result is None
+
 
 class TestTrailingRouting:
 

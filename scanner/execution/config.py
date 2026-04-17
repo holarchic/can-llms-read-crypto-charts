@@ -70,6 +70,7 @@ class ExecutionConfig:
     # Trailing stop (trail SL to swing points after TP1 fill)
     trailing_sl_enabled: bool = False
     trailing_sl_lookback: int = 3             # swing detection lookback (4H candles each side)
+    trailing_sl_min_distance_pct: float = 0.2  # new SL must sit at least N% off current price
 
     # Discord
     discord_ops_webhook_url: str = ""

@@ -181,11 +181,16 @@ def find_trailing_sl(
     current_sl: float,
     candles_4h: list[dict],
     lookback: int = 3,
+    current_price: float | None = None,
+    min_distance_pct: float = 0.2,
 ) -> float | None:
     """Find the trailing SL level from swing points in 4H candles.
 
-    LONG: most recent swing low above current SL (tighten upward).
-    SHORT: most recent swing high below current SL (tighten downward).
+    LONG: most recent swing low above current SL (tighten upward) and at least
+    min_distance_pct below current price — otherwise placing the SL would
+    trigger immediate stop-out.
+    SHORT: most recent swing high below current SL (tighten downward) and at
+    least min_distance_pct above current price.
     Returns new SL price or None if no qualifying swing found.
     """
     if len(candles_4h) < 2 * lookback + 1:
@@ -198,8 +203,14 @@ def find_trailing_sl(
 
     if direction == "LONG":
         candidates = [s for s in swings if s.type == "low" and s.price > current_sl]
+        if current_price is not None:
+            max_allowed = current_price * (1 - min_distance_pct / 100)
+            candidates = [s for s in candidates if s.price < max_allowed]
     else:
         candidates = [s for s in swings if s.type == "high" and s.price < current_sl]
+        if current_price is not None:
+            min_allowed = current_price * (1 + min_distance_pct / 100)
+            candidates = [s for s in candidates if s.price > min_allowed]
 
     if not candidates:
         return None
@@ -394,9 +405,21 @@ def _process_trailing_entry(
     if not sl_order:
         return 0
 
+    # Need current price to reject swings on the wrong side — a swing low
+    # above current price would trigger immediate stop-out on a LONG.
+    from .exchange import fetch_current_price
+    try:
+        current_price = fetch_current_price(entry["coin"], config)
+    except Exception as exc:
+        log.warning("Trailing SL: price fetch failed for %s — skipping: %s",
+                    entry["coin"], exc)
+        return 0
+
     current_sl = float(sl_order["trigger_price"])
     new_sl = find_trailing_sl(
         entry["direction"], current_sl, candles, config.trailing_sl_lookback,
+        current_price=current_price,
+        min_distance_pct=config.trailing_sl_min_distance_pct,
     )
     if new_sl is None:
         return 0
