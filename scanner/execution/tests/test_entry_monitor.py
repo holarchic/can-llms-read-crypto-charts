@@ -224,6 +224,25 @@ class TestPendingStorage:
         with pytest.raises(sqlite3.IntegrityError):
             save_pending_entry(_make_pending(pending_id="p_btc2"), conn)
 
+    def test_claim_pending_first_wins(self, conn):
+        """claim_pending atomically flips ACTIVE → TRIGGERED; only the first caller wins."""
+        from scanner.execution.storage import claim_pending
+
+        save_pending_entry(_make_pending(), conn)
+        assert claim_pending("p_btc", "TRIGGERED", conn) is True
+        # Second attempt: status is already TRIGGERED → no ACTIVE row matches
+        assert claim_pending("p_btc", "TRIGGERED", conn) is False
+
+        row = conn.execute(
+            "SELECT status FROM pending_entries WHERE pending_id = 'p_btc'",
+        ).fetchone()
+        assert row["status"] == "TRIGGERED"
+
+    def test_claim_pending_nonexistent_returns_false(self, conn):
+        from scanner.execution.storage import claim_pending
+
+        assert claim_pending("nope", "TRIGGERED", conn) is False
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — check_pending_entries orchestrator

@@ -25,6 +25,7 @@ from scanner.models import (
 from .config import ExecutionConfig
 from .exchange import fetch_current_price
 from .storage import (
+    claim_pending,
     get_active_pending_entries,
     has_active_pending,
     has_open_position,
@@ -464,8 +465,9 @@ def _execute_triggered_entry(
 ) -> int:
     """Execute a trade after the entry trigger fires.
 
-    Reconstructs a ScanResult and delegates to execute_trade.
-    Returns 1 (always acts — marks TRIGGERED regardless of execution outcome).
+    Atomically claims the pending (ACTIVE -> TRIGGERED) before touching the
+    exchange. If another process (scanner immediate-check vs monitor cycle)
+    already claimed it, bail out to avoid double entry.
     """
     from .executor import execute_trade
 
@@ -473,8 +475,14 @@ def _execute_triggered_entry(
     direction = entry["direction"]
     pending_id = entry["pending_id"]
 
+    if not claim_pending(pending_id, "TRIGGERED", conn):
+        log.info(
+            "Pending %s %s already resolved (race lost) — skipping execute_trade",
+            coin, direction,
+        )
+        return 0
+
     log.info("Trigger fired for %s %s at %.5f — executing", coin, direction, trigger_close)
-    update_pending_status(pending_id, "TRIGGERED", conn)
     _send_trigger_alert(entry, config)
 
     scan_result = _reconstruct_scan_result(entry, trigger_close)

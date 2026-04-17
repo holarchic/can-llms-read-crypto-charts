@@ -504,6 +504,25 @@ def update_pending_status(
     conn.commit()
 
 
+def claim_pending(
+    pending_id: str, new_status: str, conn: sqlite3.Connection,
+) -> bool:
+    """Atomically flip an ACTIVE pending to `new_status`. Returns True if won.
+
+    Prevents TOCTOU double-execution when scanner's immediate-check races
+    with monitor's 1H boundary check — only the winner proceeds past this
+    point.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "UPDATE pending_entries SET status = ?, resolved_at = ? "
+        "WHERE pending_id = ? AND status = 'ACTIVE'",
+        (new_status, now, pending_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
 def increment_candles_checked(
     pending_id: str, conn: sqlite3.Connection,
 ) -> int:
