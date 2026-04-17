@@ -155,3 +155,30 @@ class TestFetchAndCachePreGap:
         # Cache fully covers [02:00, 09:00] → no fetch needed
         assert self.mock_exchange.fetch_ohlcv.call_count == 0
         assert len(result) == 8  # cached returns requested range (02:00–09:00)
+
+    def test_interior_gap_is_refetched(self, db_conn):
+        """Cache has endpoints 00:00 and 09:00 but missing hours 03:00-05:00.
+        Endpoint check would pass; new interior-gap fill must refetch."""
+        # Seed cache with hours 00-02, 06-09 — missing 03, 04, 05
+        pre = make_candles(n=3, start="2026-01-01T00:00:00+00:00", freq="1h")
+        post = make_candles(n=4, start="2026-01-01T06:00:00+00:00", freq="1h")
+        cache_candles("BTC", "1h", pre, db_conn)
+        cache_candles("BTC", "1h", post, db_conn)
+
+        # Mock will be called for the interior gap (03:00-05:00)
+        gap_candles = [
+            _ohlcv_row(int(pd.Timestamp(f"2026-01-01T{h:02d}:00:00+00:00").timestamp() * 1000))
+            for h in range(3, 6)
+        ]
+        self.mock_exchange.fetch_ohlcv.return_value = gap_candles
+
+        result = fetch_and_cache(
+            "BTC", "1h",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T09:00:00+00:00",
+            db_conn,
+        )
+
+        # Full 10 candles now present after gap fill
+        assert len(result) == 10
+        assert self.mock_exchange.fetch_ohlcv.call_count >= 1

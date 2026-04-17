@@ -106,6 +106,68 @@ def _fetch_range(ccxt_exchange, symbol: str, interval: str, since_ms: int, until
     return df
 
 
+_INTERVAL_MS = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "1d": 86_400_000,
+}
+
+
+def _interval_ms(interval: str) -> int:
+    return _INTERVAL_MS.get(interval, 0)
+
+
+def _fill_interior_gaps(
+    df: pd.DataFrame,
+    ccxt_exchange,
+    symbol: str,
+    interval: str,
+    interval_ms: int,
+    since_ms: int,
+    until_ms: int,
+    cfg: ScannerConfig,
+    conn: sqlite3.Connection,
+    coin: str,
+    exchange: str,
+) -> pd.DataFrame:
+    """Walk cached index, refetch any missing consecutive candle range.
+
+    Silent interior gaps produce backtest/resolver errors where stop/target
+    hits land in a missing hour and are mislabeled as EXPIRED. This pass
+    closes gaps that survived endpoint-only fills.
+    """
+    expected_ts = range(since_ms, until_ms + 1, interval_ms)
+    present = {int(ts.timestamp() * 1000) for ts in df.index}
+    missing = sorted(ts for ts in expected_ts if ts not in present)
+    if not missing:
+        return df
+
+    # Cluster contiguous missing timestamps into ranges, fetch each range.
+    ranges: list[tuple[int, int]] = []
+    start = end = missing[0]
+    for ts in missing[1:]:
+        if ts == end + interval_ms:
+            end = ts
+        else:
+            ranges.append((start, end))
+            start = end = ts
+    ranges.append((start, end))
+
+    fetched = [df]
+    for start_ms, end_ms in ranges:
+        piece = _fetch_range(ccxt_exchange, symbol, interval, start_ms, end_ms, cfg)
+        if piece is not None and not piece.empty:
+            cache_candles(coin, interval, piece, conn, exchange=exchange)
+            fetched.append(piece)
+
+    return _merge_frames(*fetched)
+
+
 def _merge_frames(*frames: pd.DataFrame | None) -> pd.DataFrame:
     """Concat non-None frames, dedup, sort."""
     parts = [f for f in frames if f is not None and not f.empty]
@@ -139,11 +201,21 @@ def fetch_and_cache(
 
     since_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
     until_ms = int(pd.Timestamp(until, tz="UTC").timestamp() * 1000)
+    interval_ms = _interval_ms(interval)
 
     if cached is not None and not cached.empty:
         last_cached_ms = int(cached.index[-1].timestamp() * 1000)
         first_cached_ms = int(cached.index[0].timestamp() * 1000)
-        if first_cached_ms <= since_ms and last_cached_ms >= until_ms:
+        # Expected candle count for the requested window. Interior gap check
+        # — endpoint-only check was letting backtests run on sparse cached
+        # data (missing intermediate hours masked real stop/target hits).
+        expected = 1 + (until_ms - since_ms) // interval_ms if interval_ms else 0
+        complete = (
+            first_cached_ms <= since_ms
+            and last_cached_ms >= until_ms
+            and (expected == 0 or len(cached) >= expected)
+        )
+        if complete:
             return cached
 
         # Only init exchange when we actually need to fetch gaps
@@ -164,7 +236,16 @@ def fetch_and_cache(
             post_gap = post_gap[post_gap.index <= pd.Timestamp(until, tz="UTC")]
             cache_candles(coin, interval, post_gap, conn, exchange=exchange)
 
-        return _merge_frames(pre_gap, cached, post_gap)
+        merged = _merge_frames(pre_gap, cached, post_gap)
+
+        # Interior gap fill: if rows are still sparse after endpoint fills,
+        # walk the index and refetch each gap range.
+        if interval_ms and len(merged) < expected and not merged.empty:
+            merged = _fill_interior_gaps(
+                merged, ccxt_exchange, symbol, interval,
+                interval_ms, since_ms, until_ms, cfg, conn, coin, exchange,
+            )
+        return merged
 
     # No cache — fetch entire range
     ccxt_exchange = get_ccxt_exchange(exchange)
