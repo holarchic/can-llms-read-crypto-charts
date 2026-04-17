@@ -302,9 +302,11 @@ def save_conditional_entry(
         log.info("Pending entry already active for %s — skipping", coin)
         return False
 
-    expiry = min(
-        int(mb.get("expiry_candles", 12)),
-        exec_config.conditional_entry_max_expiry,
+    # Clamp expiry to [1, max]. LLM-emitted expiry_candles=0 otherwise
+    # creates a DOA pending that expires on its first monitor tick.
+    expiry = max(
+        1,
+        min(int(mb.get("expiry_candles", 12)), exec_config.conditional_entry_max_expiry),
     )
 
     screener_direction = (

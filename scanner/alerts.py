@@ -278,3 +278,28 @@ def send_ops_log(
     except Exception as e:
         print(f"Ops log failed: {e}")
         return False
+
+
+def send_errors_alert(
+    message: str, config: ScannerConfig | None = None,
+) -> bool:
+    """Post a scanner-side error to the errors Discord channel.
+
+    Falls back to ops webhook if errors-specific one isn't configured.
+    Stage2 LLM failures and scanner crashes otherwise only surface in logs.
+    """
+    try:
+        cfg = config or ScannerConfig()
+        webhook_url = cfg.discord_errors_webhook_url or cfg.discord_ops_webhook_url
+        if not webhook_url:
+            return False
+        resp = requests.post(
+            webhook_url,
+            json={"content": f"**Scanner error**: {message}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Scanner errors alert failed: {e}")
+        return False

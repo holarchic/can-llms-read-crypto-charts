@@ -248,6 +248,8 @@ def _analyze_one(
         return result
     except Exception as e:
         print(f"  Error analyzing {signal.coin}: {e}")
+        from .alerts import send_errors_alert
+        send_errors_alert(f"Stage2 LLM failed for {signal.coin}: {type(e).__name__}: {e}", config)
         return None
 
 

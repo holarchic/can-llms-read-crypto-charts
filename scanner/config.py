@@ -51,6 +51,7 @@ class ScannerConfig:
     discord_urgent_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""))
     discord_reports_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_REPORTS_WEBHOOK_URL", ""))
     discord_ops_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_OPS_WEBHOOK_URL", ""))
+    discord_errors_webhook_url: str = field(default_factory=lambda: os.getenv("DISCORD_ERRORS_WEBHOOK_URL", ""))
 
     # Exchange
     exchange: str = "hyperliquid"
