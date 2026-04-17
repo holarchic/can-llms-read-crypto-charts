@@ -274,6 +274,41 @@ class TestPhantomSLDetection:
         issues = check_positions(config, conn)
         assert len(issues) == 0
 
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
+    def test_missing_from_open_orders_reclassifies_fill_not_phantom(
+        self, mock_orders, mock_cancel, mock_auth, config, conn,
+    ):
+        """SL gone from open_orders but fetch_order says status=closed,
+        filled>0 → NOT a phantom. Mark FILLED, no phantom_sl issue.
+
+        Regression for the 2026-04-17 DOT loop: drift placed a new SL that
+        immediately triggered; check_positions previously treated it as
+        phantom and recovery placed replacement SLs the exchange rejected.
+        """
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED",
+                            quantity=171.4)
+        sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
+                         exchange_order_id="385089532315",
+                         trigger_price=1.3273, quantity=171.4)
+        save_order(entry, conn)
+        save_order(sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {
+            "status": "closed", "filled": 171.4, "average": 1.3293,
+        }
+        mock_auth.return_value = mock_exchange
+
+        issues = check_positions(config, conn)
+
+        assert not any(i["type"] == "phantom_sl" for i in issues)
+        assert not any(i["type"] == "missing_sl" for i in issues)
+        sl_after = get_order(sl["order_id"], conn)
+        assert sl_after["status"] == "FILLED"
+        assert sl_after["fill_price"] == 1.3293
+
 
 class TestBatchFetchOptimization:
     """Batch fetch_open_orders reduces per-cycle API calls."""

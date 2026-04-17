@@ -852,6 +852,70 @@ def _send_timeout_alert(
         return False
 
 
+def _reclassify_missing_sl(
+    sl_order: dict,
+    entry: dict,
+    scan_orders: list[dict],
+    config: ExecutionConfig,
+    conn,
+) -> str:
+    """Re-check a PLACED SL that isn't in exchange open_orders.
+
+    Distinguishes "phantom" (exchange cancelled the order — position still
+    exists and needs a new SL) from "filled" (SL triggered and closed the
+    position between the last open-orders fetch and now). Without this
+    distinction, an auto-recovery placed a replacement SL that the exchange
+    rejected for having no position to reduce.
+
+    Returns 'filled', 'phantom', or 'unknown' (fetch failed → caller treats
+    conservatively as phantom).
+    """
+    exch_oid = sl_order.get("exchange_order_id")
+    if not exch_oid:
+        return "phantom"
+    try:
+        meta = get_exchange_meta(config.exchange)
+        symbol = meta["symbol_template"].format(coin=entry["coin"])
+        exchange = get_auth_exchange(config)
+        exch_order = exchange.fetch_order(exch_oid, symbol)
+    except Exception as exc:
+        log.warning(
+            "reclassify missing SL: fetch_order(%s) failed — treating as phantom: %s",
+            exch_oid, exc,
+        )
+        return "phantom"
+
+    status = (exch_order.get("status") or "").lower()
+    filled_raw = exch_order.get("filled")
+    filled_qty = float(filled_raw) if filled_raw is not None else 0.0
+
+    if status == "closed" and filled_qty > 0:
+        fill_price = _extract_fill_price(exch_order)
+        if fill_price is None and sl_order.get("trigger_price"):
+            fill_price = float(sl_order["trigger_price"])
+        log.info(
+            "Detected undetected SL fill during health check: %s qty=%s at %s",
+            entry["coin"], filled_qty, fill_price,
+        )
+        original_qty = float(sl_order.get("quantity") or 0)
+        update_order_status(
+            sl_order["order_id"], "FILLED", conn,
+            fill_price=fill_price,
+            filled_quantity=filled_qty,
+        )
+        sl_order["status"] = "FILLED"
+        sl_order["quantity"] = original_qty  # preserve for residual math
+        _send_fill_alert(entry, sl_order, fill_price, config, scan_orders=scan_orders)
+        _handle_exit_fill(
+            sl_order, entry, scan_orders,
+            symbol, exchange, config, conn,
+            fill_qty=filled_qty,
+        )
+        return "filled"
+
+    return "phantom"
+
+
 def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None,
                     exchange_open_orders: list[dict] | None = None) -> list[dict]:
     """Health check: verify open positions have SL orders, detect orphans.
@@ -895,19 +959,44 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
                 if exchange_oids is not None:
                     exch_oid = o.get("exchange_order_id", "")
                     if exch_oid and exch_oid not in exchange_oids:
-                        issues.append({
-                            "type": "phantom_sl",
-                            "coin": entry["coin"],
-                            "direction": entry["direction"],
-                            "scan_id": entry["scan_id"],
-                            "message": (
-                                f"{entry['coin']} {entry['direction']} SL exists "
-                                f"in DB but not on exchange"
-                            ),
-                        })
+                        # The SL isn't in open_orders — could be a real phantom
+                        # (exchange cancelled it) OR a fill we haven't processed
+                        # yet (SL triggered between placement and this check, e.g.
+                        # drift moves SL to breakeven and price immediately
+                        # reverses through it). fetch_order disambiguates.
+                        reclassified = _reclassify_missing_sl(
+                            o, entry, scan_orders, exec_config, conn,
+                        )
+                        if reclassified == "filled":
+                            has_sl = False  # position closed, not a phantom
+                        else:  # "phantom" or "unknown" → conservative
+                            issues.append({
+                                "type": "phantom_sl",
+                                "coin": entry["coin"],
+                                "direction": entry["direction"],
+                                "scan_id": entry["scan_id"],
+                                "message": (
+                                    f"{entry['coin']} {entry['direction']} SL exists "
+                                    f"in DB but not on exchange"
+                                ),
+                            })
                 break
 
         if not has_sl:
+            # Re-check: the reclassify step may have inserted a FILLED row +
+            # cancel_remaining_orders, which closes the position. If so, skip.
+            current = get_orders_for_scan(entry["scan_id"], conn)
+            filled_exits = [
+                x for x in current
+                if x["order_type"] in ("stop_loss", "tp1", "tp2",
+                                        "timeout_close", "emergency_close",
+                                        "drift_close", "manual_close")
+                and x["status"] == "FILLED"
+            ]
+            total_filled = sum(float(x.get("quantity") or 0) for x in filled_exits)
+            if total_filled + OPEN_QTY_EPSILON >= float(entry.get("quantity") or 0):
+                continue  # position closed, no SL needed
+
             issues.append({
                 "type": "missing_sl",
                 "coin": entry["coin"],
