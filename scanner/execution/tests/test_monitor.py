@@ -1862,6 +1862,39 @@ class TestAttemptSlRecovery:
         result = attempt_sl_recovery(issue, config, conn)
         assert result is True
 
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_recovery_supersedes_phantom_placed_sl(self, mock_auth, config, conn):
+        """phantom_sl: PLACED SL row gets marked CANCELLED, fresh SL inserted."""
+        from scanner.execution.monitor import attempt_sl_recovery
+
+        entry = _make_order(scan_id="scan1", order_type="entry", status="FILLED",
+                            quantity=0.1, fill_price=62000)
+        phantom_sl = _make_order(scan_id="scan1", order_type="stop_loss",
+                                 status="PLACED",
+                                 exchange_order_id="stale_sl_exch",
+                                 trigger_price=59800, quantity=0.1)
+        save_order(entry, conn)
+        save_order(phantom_sl, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = {"id": "new-sl-456"}
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+
+        issue = {"scan_id": "scan1", "coin": "BTC", "direction": "LONG",
+                 "type": "phantom_sl", "message": "test"}
+        result = attempt_sl_recovery(issue, config, conn)
+
+        assert result is True
+        orders = get_orders_for_scan("scan1", conn)
+        # Old phantom SL now CANCELLED
+        assert get_order(phantom_sl["order_id"], conn)["status"] == "CANCELLED"
+        # Exactly one PLACED SL — the replacement
+        placed_sls = [o for o in orders if o["order_type"] == "stop_loss" and o["status"] == "PLACED"]
+        assert len(placed_sls) == 1
+        assert placed_sls[0]["exchange_order_id"] == "new-sl-456"
+        assert placed_sls[0]["trigger_price"] == 59800
+
     def test_recovery_no_trigger_price(self, config, conn):
         """No FAILED SL and no scan data -> returns False."""
         from scanner.execution.monitor import attempt_sl_recovery

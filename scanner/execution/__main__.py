@@ -184,7 +184,7 @@ def _cmd_monitor(config, discord_handler=None):
                 from .monitor import attempt_sl_recovery
 
                 for issue in critical:
-                    if issue["type"] == "missing_sl":
+                    if issue["type"] in ("missing_sl", "phantom_sl"):
                         recovered = attempt_sl_recovery(issue, config, conn)
                         if recovered:
                             print(f"  SL recovery SUCCESS: {issue['coin']} {issue['direction']}")

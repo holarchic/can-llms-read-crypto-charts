@@ -929,10 +929,12 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
 def attempt_sl_recovery(
     issue: dict, config: ExecutionConfig, conn,
 ) -> bool:
-    """Try to place a missing SL for an unprotected position.
+    """Try to place a missing or phantom SL for an unprotected position.
 
-    Looks up trigger_price from the FAILED SL order in DB (saved by executor).
-    If none found, falls back to the scan's machine_block + reanchor.
+    For missing_sl: no PLACED SL exists; reads trigger_price from the last
+    SL row (FAILED/CANCELLED) or falls back to scan machine_block.
+    For phantom_sl: a PLACED SL row exists but the exchange has no matching
+    open order; marks that row CANCELLED and places a fresh one.
     Returns True if SL successfully placed.
     """
     scan_id = issue["scan_id"]
@@ -954,11 +956,16 @@ def attempt_sl_recovery(
         log.info("SL recovery: position already closed for %s", coin)
         return True
 
-    # Find trigger_price from FAILED SL record
+    # Prefer the most recent PLACED SL (phantom scenario) — its exch_oid is
+    # stale and its trigger_price is the one we want to re-place. Fall back
+    # to any SL row for trigger_price lookup.
+    sl_orders = [o for o in scan_orders if o["order_type"] == "stop_loss"]
     sl_order = next(
-        (o for o in scan_orders if o["order_type"] == "stop_loss"),
+        (o for o in reversed(sl_orders) if o["status"] == "PLACED"),
         None,
     )
+    if sl_order is None:
+        sl_order = next(iter(sl_orders), None)
     trigger_price = float(sl_order["trigger_price"]) if sl_order and sl_order.get("trigger_price") else None
 
     if trigger_price is None:
@@ -1006,8 +1013,8 @@ def attempt_sl_recovery(
             resp = exchange.create_order(
                 symbol, "market", exit_side, rounded_qty, trigger_price, params,
             )
-            # Mark old FAILED SL as superseded
-            if sl_order and sl_order["status"] == "FAILED":
+            # Supersede the old SL row (PLACED phantom or FAILED).
+            if sl_order and sl_order["status"] in ("FAILED", "PLACED"):
                 update_order_status(sl_order["order_id"], "CANCELLED", conn)
             save_order({
                 "order_id": order_id,
