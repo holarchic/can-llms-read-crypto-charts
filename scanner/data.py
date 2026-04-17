@@ -19,10 +19,34 @@ _lock = threading.Lock()
 _exchange_locks: dict[str, threading.Lock] = {}
 
 
+_TRANSIENT_CCXT = (
+    ccxt.RateLimitExceeded,
+    ccxt.DDoSProtection,
+    ccxt.ExchangeNotAvailable,
+    ccxt.NetworkError,
+    ccxt.RequestTimeout,
+)
+
+
+def _is_transient_ccxt(exc: Exception) -> bool:
+    """Broad retry predicate. Catches ccxt-class errors + vendor strings.
+
+    ccxt often wraps HL rate-limits in a generic ExchangeError with
+    "Too many cumulative requests" in str(exc); string checks catch HTTP
+    4xx/5xx codes that don't always map cleanly to ccxt exception classes.
+    """
+    if isinstance(exc, _TRANSIENT_CCXT):
+        return True
+    msg = str(exc)
+    return any(s in msg for s in ("429", "503", "504", "Too many cumulative"))
+
+
 def get_exchange(exchange_id: str = "hyperliquid") -> object:
     """Get or create a shared exchange instance for the given exchange.
 
     Thread-safe: uses double-checked locking so load_markets() runs once.
+    Retries transient errors on load_markets() so a single HL blip doesn't
+    crash the whole scan cycle.
     """
     if exchange_id in _exchanges:
         return _exchanges[exchange_id]
@@ -31,7 +55,19 @@ def get_exchange(exchange_id: str = "hyperliquid") -> object:
             meta = get_exchange_meta(exchange_id)
             cls = getattr(ccxt, meta["ccxt_class"])
             ex = cls({"timeout": 30000})
-            ex.load_markets()
+            for attempt in range(4):
+                try:
+                    ex.load_markets()
+                    break
+                except Exception as exc:
+                    if attempt >= 3 or not _is_transient_ccxt(exc):
+                        raise
+                    sleep_s = 2 ** attempt
+                    log.warning(
+                        "load_markets(%s) attempt %d/4 failed: %s — retrying in %ds",
+                        exchange_id, attempt + 1, exc, sleep_s,
+                    )
+                    time.sleep(sleep_s)
             _exchange_locks[exchange_id] = threading.Lock()
             _exchanges[exchange_id] = ex
     return _exchanges[exchange_id]
@@ -64,7 +100,21 @@ def fetch_pairs_with_volume(config: ScannerConfig | None = None) -> list[dict]:
     """
     cfg = config or ScannerConfig()
     exchange = get_exchange(cfg.exchange)
-    tickers = exchange.fetch_tickers()
+
+    tickers = None
+    for attempt in range(4):
+        try:
+            tickers = exchange.fetch_tickers()
+            break
+        except Exception as exc:
+            if attempt >= 3 or not _is_transient_ccxt(exc):
+                raise
+            sleep_s = 2 ** attempt
+            log.warning(
+                "fetch_tickers attempt %d/4 failed: %s — retrying in %ds",
+                attempt + 1, exc, sleep_s,
+            )
+            time.sleep(sleep_s)
 
     pairs = []
     for symbol, ticker in tickers.items():
@@ -126,7 +176,7 @@ def fetch_candles(
                 candles = exchange.fetch_ohlcv(symbol, interval, limit=count)
             break
         except Exception as e:
-            if "429" in str(e) and attempt < 4:
+            if attempt < 4 and _is_transient_ccxt(e):
                 time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s, 16s backoff
                 continue
             raise
