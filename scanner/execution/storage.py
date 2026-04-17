@@ -526,16 +526,19 @@ def claim_pending(
 def increment_candles_checked(
     pending_id: str, conn: sqlite3.Connection,
 ) -> int:
-    """Increment candles_checked by 1. Returns new value."""
-    conn.execute(
-        "UPDATE pending_entries SET candles_checked = candles_checked + 1 WHERE pending_id = ?",
+    """Atomically increment candles_checked by 1 and return the new value.
+
+    Uses UPDATE ... RETURNING so a concurrent monitor run can't sneak a
+    second increment between the UPDATE and the read-back (which would
+    report an inflated count and expire the pending prematurely).
+    """
+    cursor = conn.execute(
+        "UPDATE pending_entries SET candles_checked = candles_checked + 1 "
+        "WHERE pending_id = ? RETURNING candles_checked",
         (pending_id,),
     )
+    row = cursor.fetchone()
     conn.commit()
-    row = conn.execute(
-        "SELECT candles_checked FROM pending_entries WHERE pending_id = ?",
-        (pending_id,),
-    ).fetchone()
     return int(row["candles_checked"]) if row else 0
 
 
