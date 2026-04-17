@@ -17,7 +17,7 @@ dependencies = [
 include = ["scanner*"]
 
 [project.optional-dependencies]
-dev = ["ruff", "pytest", "pandas-ta>=0.3.14b"]
+dev = ["ruff", "pytest"]
 
 [tool.ruff]
 target-version = "py312"

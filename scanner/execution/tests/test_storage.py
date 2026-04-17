@@ -18,7 +18,6 @@ from scanner.execution.storage import (
     new_order_id,
     save_order,
     sum_open_notional,
-    update_order_quantity,
     update_order_status,
 )
 
@@ -368,16 +367,6 @@ class TestOrderScanOrdering:
         orders = get_orders_for_scan("s1", conn)
         types = [o["order_type"] for o in orders]
         assert types == ["entry", "stop_loss", "tp1", "tp2"]
-
-
-class TestUpdateOrderQuantity:
-    def test_updates_quantity_and_exchange_id(self, conn):
-        order = _make_order(quantity=0.1, exchange_order_id="old_exch")
-        save_order(order, conn)
-        update_order_quantity(order["order_id"], 0.05, "new_exch", conn)
-        result = get_order(order["order_id"], conn)
-        assert result["quantity"] == 0.05
-        assert result["exchange_order_id"] == "new_exch"
 
 
 class TestFloatingPointPrecision:

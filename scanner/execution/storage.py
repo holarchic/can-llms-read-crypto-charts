@@ -460,27 +460,6 @@ def has_unprotected_positions(
     return row["cnt"] > 0
 
 
-def update_order_quantity(
-    order_id: str,
-    new_quantity: float,
-    new_exchange_order_id: str,
-    conn: sqlite3.Connection,
-    new_trigger_price: float | None = None,
-) -> None:
-    """Update order quantity, exchange order ID, and optionally trigger price."""
-    if new_trigger_price is not None:
-        conn.execute(
-            "UPDATE orders SET quantity = ?, exchange_order_id = ?, trigger_price = ? WHERE order_id = ?",
-            (new_quantity, new_exchange_order_id, new_trigger_price, order_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE orders SET quantity = ?, exchange_order_id = ? WHERE order_id = ?",
-            (new_quantity, new_exchange_order_id, order_id),
-        )
-    conn.commit()
-
-
 # ---------------------------------------------------------------------------
 # Pending entries — conditional entry setups waiting for trigger
 # ---------------------------------------------------------------------------

@@ -1,6 +1,5 @@
 """Discord webhook alerts — formatted embeds with chart images."""
 
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -186,48 +185,6 @@ def format_alert_text(result: ScanResult) -> str:
     lines.append("=" * 60)
 
     return "\n".join(lines)
-
-
-def send_text_alert(
-    text: str,
-    title: str | None = None,
-    config: ScannerConfig | None = None,
-) -> bool:
-    """Post a plain-text message to Discord reports channel.
-
-    Uses discord_reports_webhook_url (falls back to main webhook).
-    Splits into multiple messages if > 1900 chars (Discord 2000 limit).
-    """
-    cfg = config or ScannerConfig()
-    webhook_url = cfg.discord_reports_webhook_url or cfg.discord_ops_webhook_url
-    if not webhook_url:
-        return False
-
-    # Build chunks in code blocks for monospace formatting
-    lines = text.split("\n")
-    chunks: list[str] = []
-    prefix = f"**{title}**\n" if title else ""
-    current = prefix + "```\n"
-
-    for line in lines:
-        if len(current) + len(line) + 5 > 1800:
-            current += "```"
-            chunks.append(current)
-            current = "```\n"
-        current += line + "\n"
-    current += "```"
-    chunks.append(current)
-
-    try:
-        for chunk in chunks:
-            resp = requests.post(webhook_url, json={"content": chunk}, timeout=10)
-            resp.raise_for_status()
-            if len(chunks) > 1:
-                time.sleep(0.5)
-        return True
-    except requests.RequestException as e:
-        print(f"Discord text alert failed: {e}")
-        return False
 
 
 def send_report_embeds(

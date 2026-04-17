@@ -36,3 +36,9 @@ bench/benchmark_scanner_bin
 bench/*.db
 bench/*.db-wal
 bench/*.db-shm
+
+# Claude Code runtime state
+.claude/
+
+# Session artifacts (bug scans, scratch analysis)
+tmp/
