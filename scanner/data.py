@@ -17,6 +17,10 @@ log = logging.getLogger(__name__)
 _exchanges: dict[str, object] = {}
 _lock = threading.Lock()
 _exchange_locks: dict[str, threading.Lock] = {}
+# Permanent-failure cache: if load_markets raised a non-transient error once,
+# don't repeat the attempt for every coin in the scan — fail fast instead.
+# Keyed by exchange_id → the exception to re-raise.
+_exchange_failures: dict[str, Exception] = {}
 
 
 _TRANSIENT_CCXT = (
@@ -27,6 +31,16 @@ _TRANSIENT_CCXT = (
     ccxt.RequestTimeout,
 )
 
+# Signals that the endpoint is unreachable from this host *permanently* — geo-
+# blocks, compliance refusals, CDN-level denials. Retrying these from the same
+# IP never recovers, so we must pre-empt the ccxt class check that would
+# otherwise classify them as transient (ExchangeNotAvailable / NetworkError).
+_PERMANENT_BLOCK_MARKERS = (
+    "CloudFront",          # bybit 403 HTML page from us-central1-a
+    "restricted location",  # binance 451 "Service unavailable from a restricted location"
+    "Eligibility",          # binance compliance terms URL in same 451 body
+)
+
 
 def _is_transient_ccxt(exc: Exception) -> bool:
     """Broad retry predicate. Catches ccxt-class errors + vendor strings.
@@ -34,10 +48,18 @@ def _is_transient_ccxt(exc: Exception) -> bool:
     ccxt often wraps HL rate-limits in a generic ExchangeError with
     "Too many cumulative requests" in str(exc); string checks catch HTTP
     4xx/5xx codes that don't always map cleanly to ccxt exception classes.
+
+    Geo-block errors are checked *first* and classified as non-transient —
+    ccxt maps them to ExchangeNotAvailable, but retrying them from a
+    blocked IP just burns the scan's 30-min cron timeout (see b73b126
+    regression: bybit CloudFront 403 + binance 451 turned an 80-coin scan
+    into a 40-min retry storm, no CONFIRMs, no alerts).
     """
+    msg = str(exc)
+    if any(s in msg for s in _PERMANENT_BLOCK_MARKERS):
+        return False
     if isinstance(exc, _TRANSIENT_CCXT):
         return True
-    msg = str(exc)
     return any(s in msg for s in ("429", "503", "504", "Too many cumulative"))
 
 
@@ -46,30 +68,48 @@ def get_exchange(exchange_id: str = "hyperliquid") -> object:
 
     Thread-safe: uses double-checked locking so load_markets() runs once.
     Retries transient errors on load_markets() so a single HL blip doesn't
-    crash the whole scan cycle.
+    crash the whole scan cycle. Non-transient failures (geo-block, auth,
+    bad endpoint) are cached so we fail the remaining ~80 coin calls in
+    microseconds instead of re-attempting load_markets each time.
     """
     if exchange_id in _exchanges:
         return _exchanges[exchange_id]
+    if exchange_id in _exchange_failures:
+        raise _exchange_failures[exchange_id]
     with _lock:
-        if exchange_id not in _exchanges:
-            meta = get_exchange_meta(exchange_id)
-            cls = getattr(ccxt, meta["ccxt_class"])
-            ex = cls({"timeout": 30000})
-            for attempt in range(4):
-                try:
-                    ex.load_markets()
-                    break
-                except Exception as exc:
-                    if attempt >= 3 or not _is_transient_ccxt(exc):
-                        raise
-                    sleep_s = 2 ** attempt
+        if exchange_id in _exchanges:
+            return _exchanges[exchange_id]
+        if exchange_id in _exchange_failures:
+            raise _exchange_failures[exchange_id]
+        meta = get_exchange_meta(exchange_id)
+        cls = getattr(ccxt, meta["ccxt_class"])
+        ex = cls({"timeout": 30000})
+        for attempt in range(4):
+            try:
+                ex.load_markets()
+                break
+            except Exception as exc:
+                if not _is_transient_ccxt(exc):
+                    # Permanent failure — cache so the remaining coins in
+                    # this scan fail fast instead of each re-running retry.
+                    _exchange_failures[exchange_id] = exc
                     log.warning(
-                        "load_markets(%s) attempt %d/4 failed: %s — retrying in %ds",
-                        exchange_id, attempt + 1, exc, sleep_s,
+                        "load_markets(%s) permanent failure, caching for this scan: %s",
+                        exchange_id, exc,
                     )
-                    time.sleep(sleep_s)
-            _exchange_locks[exchange_id] = threading.Lock()
-            _exchanges[exchange_id] = ex
+                    raise
+                if attempt >= 3:
+                    # Transient but retries exhausted — don't cache; a later
+                    # coin call may succeed if the blip clears.
+                    raise
+                sleep_s = 2 ** attempt
+                log.warning(
+                    "load_markets(%s) attempt %d/4 failed: %s — retrying in %ds",
+                    exchange_id, attempt + 1, exc, sleep_s,
+                )
+                time.sleep(sleep_s)
+        _exchange_locks[exchange_id] = threading.Lock()
+        _exchanges[exchange_id] = ex
     return _exchanges[exchange_id]
 
 
