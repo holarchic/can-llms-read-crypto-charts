@@ -116,13 +116,17 @@ def execute_trade(
     er = ExecutionResult(scan_id=result.scan_id, coin=result.coin)
     er.direction = result.setup_signal.direction.value if result.setup_signal else ""
 
-    # 0. Staleness guard — reject signals older than 30 minutes
-    #    Use detected_at (screener time) when available, not analysis completion time
+    # 0. Staleness guard — reject signals older than the configured limit.
+    #    Uses detected_at (screener time) when available so slow LLM stage2
+    #    still gives the signal its full staleness budget — but budget itself
+    #    (default 45min) has to be wide enough to absorb realistic stage2+
+    #    stage3+stage4 latency, not just the price-moved-too-far concern.
     staleness_ref = result.detected_at or result.timestamp
     age_seconds = (datetime.now(timezone.utc) - staleness_ref).total_seconds()
-    if age_seconds > 1800:
+    max_age = exec_config.signal_staleness_max_seconds
+    if age_seconds > max_age:
         er.skip_reason = "stale_signal"
-        er.error = f"Signal age {age_seconds / 60:.0f}m exceeds 30m limit"
+        er.error = f"Signal age {age_seconds / 60:.0f}m exceeds {max_age // 60}m limit"
         log.warning("%s: stale signal (%.0fm old) — skipping", result.coin, age_seconds / 60)
         return er
 

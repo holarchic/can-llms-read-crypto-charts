@@ -72,6 +72,9 @@ class ExecutionConfig:
     trailing_sl_lookback: int = 3             # swing detection lookback (4H candles each side)
     trailing_sl_min_distance_pct: float = 0.2  # new SL must sit at least N% off current price
 
+    # Signal staleness guard
+    signal_staleness_max_seconds: int = 2700  # 45min; covers slow LLM worst case
+
     # Discord
     discord_ops_webhook_url: str = ""
     discord_urgent_webhook_url: str = ""

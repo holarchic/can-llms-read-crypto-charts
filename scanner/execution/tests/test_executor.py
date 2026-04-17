@@ -245,7 +245,7 @@ class TestExecuteTrade:
 
     def test_skip_stale_signal(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        old_detected = datetime.now(timezone.utc) - timedelta(minutes=35)
+        old_detected = datetime.now(timezone.utc) - timedelta(minutes=60)
         sr = _make_scan_result(detected_at=old_detected)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
@@ -254,7 +254,7 @@ class TestExecuteTrade:
     def test_skip_stale_signal_falls_back_to_timestamp(self, conn, exec_config, scanner_config):
         """When detected_at is None, staleness uses timestamp."""
         from datetime import timedelta
-        old_timestamp = datetime.now(timezone.utc) - timedelta(minutes=35)
+        old_timestamp = datetime.now(timezone.utc) - timedelta(minutes=60)
         sr = _make_scan_result(timestamp=old_timestamp, detected_at=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
