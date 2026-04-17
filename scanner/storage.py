@@ -251,6 +251,11 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout: block up to 10s on SQLITE_BUSY so concurrent writers
+    # (scanner + monitor + cron reports) don't silently fail their UPDATEs.
+    conn.execute("PRAGMA busy_timeout=10000")
+    # synchronous=NORMAL is safe with WAL and ~2x faster than FULL on fsync.
+    conn.execute("PRAGMA synchronous=NORMAL")
 
     resolved = str(path.resolve())
     if resolved not in _migrated:
