@@ -658,12 +658,15 @@ def _round_quantity(exchange, symbol: str, quantity: float) -> float:
 def _place_market_order(
     config, symbol: str, side: str, quantity: float, leverage: int,
     cloid: str | None = None, price: float | None = None,
+    max_retries: int = 3,
 ) -> dict:
-    """Set leverage + place market order.
+    """Set leverage + place market order with retry.
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
     with 5% slippage. Requires current price as the base for slippage calc.
-    Pass price to skip the redundant fetch_ticker() call.
+    Pass price to skip the redundant fetch_ticker() call. Retries on
+    transient network errors; DuplicateOrderId (cloid reuse) returns the
+    existing order. Aborts immediately on rate-limit to avoid escalation.
     """
     exchange = get_auth_exchange(config)
     exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
@@ -674,7 +677,33 @@ def _place_market_order(
     params = {}
     if cloid:
         params["clientOrderId"] = cloid
-    return exchange.create_order(symbol, "market", side, quantity, price, params)
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return exchange.create_order(symbol, "market", side, quantity, price, params)
+        except DuplicateOrderId:
+            log.warning("Entry cloid duplicate for %s — querying exchange", symbol)
+            try:
+                open_orders = exchange.fetch_open_orders(symbol)
+                for oo in open_orders:
+                    if oo.get("clientOrderId") == cloid:
+                        return oo
+            except Exception as fetch_exc:
+                log.warning("Failed to fetch orders after DuplicateOrderId: %s", fetch_exc)
+            raise
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "Entry attempt %d/%d failed for %s: %s",
+                attempt + 1, max_retries, symbol, exc,
+            )
+            if is_rate_limit_error(exc):
+                log.error("Rate limited — aborting entry retries for %s", symbol)
+                raise
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+    raise last_exc if last_exc else RuntimeError("Entry placement failed")
 
 
 def _place_stop_loss(
@@ -717,22 +746,36 @@ def _place_stop_loss(
 
 def _place_take_profit(
     config, symbol: str, side: str, quantity: float, trigger_price: float,
-    cloid: str | None = None,
+    cloid: str | None = None, max_retries: int = 3,
 ) -> dict | None:
-    """Place take profit. Returns None on failure (non-critical)."""
-    try:
-        exchange = get_auth_exchange(config)
-        quantity = _round_quantity(exchange, symbol, quantity)
-        params = {"takeProfitPrice": trigger_price, "reduceOnly": True}
-        if cloid:
-            params["clientOrderId"] = cloid
-        return exchange.create_order(
-            symbol, "market", side, quantity, trigger_price,
-            params,
-        )
-    except Exception as exc:
-        log.warning("TP placement failed for %s: %s", symbol, exc)
-        return None
+    """Place take profit with retry. Returns None on final failure.
+
+    TP missing is silent expectancy degradation — no SL alert, no visible
+    error. Retry on transient, abort on rate-limit. Caller receives None
+    and routes to the errors channel alert.
+    """
+    exchange = get_auth_exchange(config)
+    quantity = _round_quantity(exchange, symbol, quantity)
+    params = {"takeProfitPrice": trigger_price, "reduceOnly": True}
+    if cloid:
+        params["clientOrderId"] = cloid
+
+    for attempt in range(max_retries):
+        try:
+            return exchange.create_order(
+                symbol, "market", side, quantity, trigger_price, params,
+            )
+        except Exception as exc:
+            log.warning(
+                "TP attempt %d/%d failed for %s: %s",
+                attempt + 1, max_retries, symbol, exc,
+            )
+            if is_rate_limit_error(exc):
+                log.error("Rate limited — aborting TP retries for %s", symbol)
+                return None
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+    return None
 
 
 def _place_exit_orders_batch(
