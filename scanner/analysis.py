@@ -160,7 +160,10 @@ def analyze_for_scanner(
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
 
-    client = anthropic.Anthropic()
+    # Explicit timeout + retries — SDK defaults are 10min/2 retries, which
+    # is longer than our staleness budget. Adaptive thinking runs can still
+    # burn ~3min, so 180s is the minimum safe ceiling.
+    client = anthropic.Anthropic(timeout=180.0, max_retries=3)
     response = client.messages.create(
         model=cfg.model,
         max_tokens=16000,
