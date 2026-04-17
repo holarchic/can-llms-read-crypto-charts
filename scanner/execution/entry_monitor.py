@@ -467,7 +467,9 @@ def _execute_triggered_entry(
 
     Atomically claims the pending (ACTIVE -> TRIGGERED) before touching the
     exchange. If another process (scanner immediate-check vs monitor cycle)
-    already claimed it, bail out to avoid double entry.
+    already claimed it, bail out to avoid double entry. On execute_trade
+    failure or skip, flip status to TRIGGER_FAILED so the audit trail shows
+    the trigger happened but the trade did not.
     """
     from .executor import execute_trade
 
@@ -493,10 +495,12 @@ def _execute_triggered_entry(
         if er.executed:
             log.info("Conditional entry executed: %s %s (entry=%s, sl=%s)",
                      coin, direction, er.entry_order_id, er.sl_order_id)
-        elif er.skip_reason:
+        else:
             log.warning("Conditional entry skipped after trigger: %s %s — %s",
-                        coin, direction, er.skip_reason)
+                        coin, direction, er.skip_reason or "unknown")
+            update_pending_status(pending_id, "TRIGGER_FAILED", conn)
     except Exception as exc:
         log.error("execute_trade failed for triggered %s %s: %s", coin, direction, exc)
+        update_pending_status(pending_id, "TRIGGER_FAILED", conn)
 
     return 1
