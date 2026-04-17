@@ -424,10 +424,13 @@ def execute_trade(
                 exec_config,
             )
 
-        # Rescale TP quantities proportionally to actual fill
+        # Rescale TP quantities proportionally to actual fill.
+        # Scale both TP1 and TP2 by the same ratio so a partial entry doesn't
+        # asymmetrically oversize TP2 (old code used filled-tp1 as the TP2
+        # quantity, which absorbed all the fill slack into TP2).
         fill_ratio = filled_qty / pos.quantity
         actual_tp1_qty = pos.tp1_quantity * fill_ratio
-        actual_tp2_qty = filled_qty - actual_tp1_qty
+        actual_tp2_qty = pos.tp2_quantity * fill_ratio
 
         fill_price = float(entry_resp.get("average", entry_resp.get("price", 0)))
         save_order({
