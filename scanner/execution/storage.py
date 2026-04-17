@@ -54,6 +54,22 @@ CREATE INDEX IF NOT EXISTS idx_orders_scan
 ON orders (scan_id)
 """
 
+# Hot-path query: "open positions" — filters by order_type='entry', status='FILLED',
+# exchange, execution_mode. Used by count_open_positions, has_open_position,
+# get_open_entry_orders, sum_open_notional, has_unprotected_positions every
+# monitor cycle. Grows O(n) with DB size without this composite.
+CREATE_ORDERS_OPEN_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_orders_open
+ON orders (order_type, status, exchange, execution_mode)
+"""
+
+# Scoped lookups: "find all orders for this scan of a given type/status".
+# Used heavily by sync_order_status, monitor reconciliation paths.
+CREATE_ORDERS_SCAN_TYPE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_orders_scan_type
+ON orders (scan_id, order_type, status)
+"""
+
 
 CREATE_PENDING_ENTRIES_TABLE = """
 CREATE TABLE IF NOT EXISTS pending_entries (
@@ -85,6 +101,8 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
     """Create orders + pending_entries tables if they don't exist."""
     conn.execute(CREATE_ORDERS_TABLE)
     conn.execute(CREATE_ORDERS_INDEX)
+    conn.execute(CREATE_ORDERS_OPEN_INDEX)
+    conn.execute(CREATE_ORDERS_SCAN_TYPE_INDEX)
     conn.execute(CREATE_PENDING_ENTRIES_TABLE)
 
     # Migration: add risk_mult column (counter-trend R scaling)
