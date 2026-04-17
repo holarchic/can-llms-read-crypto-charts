@@ -127,10 +127,21 @@ def _cmd_monitor(config, discord_handler=None):
                 drift_acted = check_drift_positions(config, conn)
                 if drift_acted:
                     print(f"Drift invalidation: {drift_acted} position(s) acted on")
+                    # Re-sync fills — drift may place an SL that immediately
+                    # triggers (e.g. SL moved to breakeven while price is
+                    # already at entry). Without this, check_positions sees
+                    # a phantom_sl and fires a false urgent alert.
                     try:
                         exchange_open_orders = get_exchange_open_orders(config)
+                        post_drift = sync_order_status(
+                            config, conn,
+                            exchange_open_orders=exchange_open_orders,
+                        )
+                        if post_drift:
+                            print(f"Post-drift sync: {post_drift} order(s) updated")
+                            exchange_open_orders = get_exchange_open_orders(config)
                     except Exception as exc:
-                        print(f"Exchange re-fetch after drift failed: {exc}")
+                        print(f"Post-drift sync/re-fetch failed: {exc}")
         except _TRANSIENT as exc:
             print(f"check_drift_positions skipped (transient): {exc}")
 

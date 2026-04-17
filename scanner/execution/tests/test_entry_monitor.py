@@ -446,7 +446,10 @@ class TestOncePerCandleDedup:
 
         save_pending_entry(_make_pending(trigger_price=100.0, inv_price=90.0, expiry=12), conn)
 
-        candle = {"timestamp": "2026-04-16T14:00:00+00:00",
+        # Use a recent timestamp so the stale-candle guard doesn't skip it
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        ts = now.isoformat()
+        candle = {"timestamp": ts,
                   "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
 
         with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle), \
@@ -458,7 +461,7 @@ class TestOncePerCandleDedup:
             "SELECT candles_checked, last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
         ).fetchone()
         assert row["candles_checked"] == 1
-        assert row["last_checked_hour"] == "2026-04-16T14"
+        assert row["last_checked_hour"] == ts[:13]
 
     @patch("scanner.execution.entry_monitor.is_1h_boundary", return_value=True)
     def test_different_hour_processes_again(self, mock_boundary, ce_config, conn):
@@ -467,15 +470,17 @@ class TestOncePerCandleDedup:
 
         save_pending_entry(_make_pending(trigger_price=100.0, inv_price=90.0, expiry=12), conn)
 
-        candle_14 = {"timestamp": "2026-04-16T14:00:00+00:00",
-                     "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
-        candle_15 = {"timestamp": "2026-04-16T15:00:00+00:00",
-                     "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.5}
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        prev = now - timedelta(hours=1)
+        candle_prev = {"timestamp": prev.isoformat(),
+                       "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
+        candle_now = {"timestamp": now.isoformat(),
+                      "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.5}
 
         with patch("scanner.execution.entry_monitor.has_open_position", return_value=False):
-            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_14):
+            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_prev):
                 check_pending_entries(ce_config, conn)
-            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_15):
+            with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle_now):
                 check_pending_entries(ce_config, conn)
 
         row = conn.execute(
@@ -495,7 +500,9 @@ class TestOncePerCandleDedup:
         ).fetchone()
         assert row["last_checked_hour"] is None
 
-        candle = {"timestamp": "2026-04-16T14:00:00+00:00",
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        ts = now.isoformat()
+        candle = {"timestamp": ts,
                   "open": 97.0, "high": 98.0, "low": 96.0, "close": 97.0}
 
         with patch("scanner.execution.entry_monitor._fetch_1h_candle", return_value=candle), \
@@ -506,7 +513,7 @@ class TestOncePerCandleDedup:
             "SELECT candles_checked, last_checked_hour FROM pending_entries WHERE pending_id = 'p_btc'"
         ).fetchone()
         assert row["candles_checked"] == 1
-        assert row["last_checked_hour"] == "2026-04-16T14"
+        assert row["last_checked_hour"] == ts[:13]
 
 
 # ---------------------------------------------------------------------------
