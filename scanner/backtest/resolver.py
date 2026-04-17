@@ -220,14 +220,18 @@ def resolve_signal(
 
 # --- Price parser for LLM text fields ---
 
-_PRICE_RE = re.compile(r"\$?([\d,]+\.?\d*)")
+# Require a currency symbol or a decimal. "3 or 4 days" otherwise matched as
+# price=$3 on bare-integer capture. Only used in the legacy fallback path
+# (machine_block is preferred); keep conservative.
+_PRICE_RE = re.compile(r"(?:\$([\d,]+\.?\d*)|([\d,]+\.\d+))")
 
 
 def parse_price(text: str | None) -> float | None:
     """Extract a price from LLM text output.
 
     Handles: "$1,234.56", "1234.56", "$1234", "N/A", ranges like "$100-$110".
-    For ranges, returns the midpoint.
+    For ranges, returns the midpoint. Bare integers without a currency symbol
+    are rejected so free-text phrases like "3 or 4 days" don't parse as $3.
     """
     if not text or text.strip().upper() in ("N/A", "NONE", "-", ""):
         return None
@@ -248,10 +252,11 @@ def parse_price(text: str | None) -> float | None:
         high = float(range_match.group(2).replace(",", ""))
         return (low + high) / 2
 
-    # Single price
+    # Single price: require $ or a decimal point
     match = _PRICE_RE.search(text)
     if match:
-        return float(match.group(1).replace(",", ""))
+        raw = match.group(1) or match.group(2)
+        return float(raw.replace(",", ""))
 
     return None
 
