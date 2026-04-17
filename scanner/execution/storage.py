@@ -97,6 +97,11 @@ def ensure_orders_table(conn: sqlite3.Connection) -> None:
     if "last_checked_hour" not in pe_cols:
         conn.execute("ALTER TABLE pending_entries ADD COLUMN last_checked_hour TEXT")
 
+    # Migration: add screener_direction so conditional entries can be flagged
+    # counter-trend when the trigger fires (preserves risk scaling + min_rr gate).
+    if "screener_direction" not in pe_cols:
+        conn.execute("ALTER TABLE pending_entries ADD COLUMN screener_direction TEXT")
+
     conn.execute(CREATE_PENDING_ENTRIES_INDEX)
 
 
@@ -452,8 +457,9 @@ def save_pending_entry(entry: dict, conn: sqlite3.Connection) -> None:
         """INSERT INTO pending_entries
         (pending_id, scan_id, coin, direction, machine_block,
          entry_trigger, entry_trigger_price, invalidation_price,
-         expiry_candles, exchange, execution_mode, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         expiry_candles, exchange, execution_mode, created_at,
+         screener_direction)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry["pending_id"],
             entry["scan_id"],
@@ -467,6 +473,7 @@ def save_pending_entry(entry: dict, conn: sqlite3.Connection) -> None:
             entry.get("exchange", "hyperliquid"),
             entry.get("execution_mode", "testnet"),
             entry["created_at"],
+            entry.get("screener_direction"),
         ),
     )
     conn.commit()

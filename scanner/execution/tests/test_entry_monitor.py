@@ -9,6 +9,7 @@ import pytest
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.entry_monitor import (
+    _reconstruct_scan_result,
     evaluate_entry_trigger,
     is_1h_boundary,
     save_conditional_entry,
@@ -404,6 +405,52 @@ class TestSaveConditionalEntry:
         assert save_conditional_entry(r1, ce_config, conn) is True
         assert save_conditional_entry(r2, ce_config, conn) is False
 
+    @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0)
+    @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
+    def test_saves_screener_direction(self, mock_alert, mock_price, ce_config, conn):
+        """screener_direction (from setup_signal) persisted so counter-trend
+        flag survives the scan → trigger gap."""
+        from scanner.models import (
+            Direction,
+            MarketContext,
+            ScanResult,
+            SetupSignal,
+            SetupType,
+            Structure,
+        )
+
+        ctx = MarketContext(
+            structure=Structure.BULLISH, swings=[], sr_levels=[], msbs=[],
+            range_bounds=None, atr=5.0, current_price=100.0, fib_levels=None,
+        )
+        setup = SetupSignal(
+            coin="BTC", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.7, key_level=100.0, context=ctx,
+            description="same-way level",
+        )
+        # LLM picks SHORT — counter-trend vs screener's LONG
+        result = ScanResult(
+            scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
+            setup_signal=setup, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 105,
+                "tp1": 90, "tp1_exit_pct": 50, "direction": "SHORT",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_below",
+                "entry_trigger_price": 99.0, "invalidation_price": 102.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        save_conditional_entry(result, ce_config, conn)
+
+        row = conn.execute(
+            "SELECT screener_direction FROM pending_entries WHERE scan_id = ?",
+            ("s1",),
+        ).fetchone()
+        assert row["screener_direction"] == "LONG"
+
     def test_expiry_capped(self, ce_config, conn):
         from scanner.models import ScanResult
 
@@ -430,6 +477,65 @@ class TestSaveConditionalEntry:
 
         row = conn.execute("SELECT expiry_candles FROM pending_entries").fetchone()
         assert row["expiry_candles"] == 10
+
+
+# ---------------------------------------------------------------------------
+# _reconstruct_scan_result tests — R:R preservation + counter-trend flag
+# ---------------------------------------------------------------------------
+
+class TestReconstructScanResult:
+
+    def test_reanchors_sl_and_tp_by_trigger_delta(self):
+        """When price has moved between scan and trigger, SL/TP shift by the
+        same delta so R:R is preserved instead of collapsing."""
+        pending = _make_pending(
+            coin="BTC", direction="LONG",
+            trigger="candle_close_above", trigger_price=100.0,
+            inv_price=95.0,
+        )
+        mb = json.loads(pending["machine_block"])
+        # Original plan: entry 99-101 (mid=100), SL 95, TP1 110 → 2R
+        mb["entry_low"] = 99.0
+        mb["entry_high"] = 101.0
+        mb["stop_loss"] = 95.0
+        mb["tp1"] = 110.0
+        mb["tp2"] = 115.0
+        pending["machine_block"] = json.dumps(mb)
+
+        # Trigger fires at 105 (5 above original mid)
+        result = _reconstruct_scan_result(pending, trigger_close=105.0)
+
+        # Entry zone rebuilt around trigger
+        new_mb = result.machine_block
+        assert new_mb["entry_low"] == pytest.approx(105.0 * 0.995)
+        assert new_mb["entry_high"] == pytest.approx(105.0 * 1.005)
+        # SL/TP shifted by delta=+5 → R still = |105-100| = 5, reward = |115-105| = 10
+        assert new_mb["stop_loss"] == pytest.approx(100.0)
+        assert new_mb["tp1"] == pytest.approx(115.0)
+        assert new_mb["tp2"] == pytest.approx(120.0)
+
+    def test_setup_signal_carries_screener_direction(self):
+        """Counter-trend detection works after trigger: reconstructed
+        setup_signal.direction matches the stored screener_direction."""
+        pending = _make_pending(coin="BTC", direction="SHORT")
+        pending["screener_direction"] = "LONG"
+
+        result = _reconstruct_scan_result(pending, trigger_close=99.0)
+
+        assert result.setup_signal is not None
+        assert result.setup_signal.direction.value == "LONG"
+        # mb direction is still SHORT (LLM decision)
+        assert result.machine_block["direction"] == "SHORT"
+
+    def test_missing_screener_direction_leaves_setup_signal_none(self):
+        """Legacy pending rows without screener_direction still reconstruct
+        (setup_signal=None) — executor falls back to non-counter-trend."""
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = None
+
+        result = _reconstruct_scan_result(pending, trigger_close=100.0)
+
+        assert result.setup_signal is None
 
 
 # ---------------------------------------------------------------------------

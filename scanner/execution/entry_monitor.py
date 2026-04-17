@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 import requests
 
 from scanner.config import ScannerConfig
-from scanner.models import ScanResult
+from scanner.models import (
+    Direction,
+    MarketContext,
+    ScanResult,
+    SetupSignal,
+    SetupType,
+    Structure,
+)
 
 from .config import ExecutionConfig
 from .exchange import fetch_current_price
@@ -106,24 +113,77 @@ def _fetch_1h_candle(coin: str) -> dict | None:
         return None
 
 
+def _empty_setup_signal(coin: str, direction: Direction) -> SetupSignal:
+    """Build a placeholder SetupSignal carrying only the screener direction.
+
+    The reconstructed ScanResult from a triggered pending needs enough of a
+    SetupSignal for executor.counter_trend detection. Context fields are
+    defaulted — ATR sanity checks fall through when atr==0.
+    """
+    ctx = MarketContext(
+        structure=Structure.RANGING,
+        swings=[],
+        sr_levels=[],
+        msbs=[],
+        range_bounds=None,
+        atr=0.0,
+        current_price=0.0,
+        fib_levels=None,
+    )
+    return SetupSignal(
+        coin=coin,
+        setup_type=SetupType.A,
+        direction=direction,
+        confidence=0.0,
+        key_level=0.0,
+        context=ctx,
+        description="conditional-entry trigger fired",
+    )
+
+
 def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
     """Rebuild a ScanResult from a pending entry for execute_trade.
 
-    Sets entry_low/entry_high to bracket the trigger close price (+/- 0.5%)
-    and detected_at to now so the staleness check passes.
+    Shifts SL/TP by (trigger_close - original_entry_mid) so the intended R is
+    preserved when price has moved between scan time and trigger time, and
+    brackets entry_low/high around the trigger close.
+
+    Restores the screener direction on setup_signal so executor can still
+    flag counter-trend entries (0.5x risk, min_rr=3.0, shorter timeout).
     """
     mb = json.loads(pending["machine_block"])
+
+    # Shift SL/TP by the delta between trigger_close and original entry_mid.
+    # Same logic as sizing.reanchor_exit_prices but applied to the saved mb.
+    orig_entry_low = float(mb.get("entry_low", 0))
+    orig_entry_high = float(mb.get("entry_high", 0))
+    orig_entry_mid = (orig_entry_low + orig_entry_high) / 2 if orig_entry_low else trigger_close
+    delta = trigger_close - orig_entry_mid
+    if mb.get("stop_loss") is not None:
+        mb["stop_loss"] = float(mb["stop_loss"]) + delta
+    if mb.get("tp1") is not None:
+        mb["tp1"] = float(mb["tp1"]) + delta
+    if mb.get("tp2") is not None:
+        mb["tp2"] = float(mb["tp2"]) + delta
 
     # Bracket the trigger close price for the entry zone
     buffer = trigger_close * 0.005
     mb["entry_low"] = trigger_close - buffer
     mb["entry_high"] = trigger_close + buffer
 
+    setup_signal = None
+    screener_dir = pending.get("screener_direction")
+    if screener_dir:
+        try:
+            setup_signal = _empty_setup_signal(pending["coin"], Direction(screener_dir))
+        except ValueError:
+            log.warning("Unknown screener_direction %s for %s", screener_dir, pending["coin"])
+
     return ScanResult(
         scan_id=pending["scan_id"],
         coin=pending["coin"],
         timestamp=datetime.now(timezone.utc),
-        setup_signal=None,
+        setup_signal=setup_signal,
         decision="CONFIRM",
         confluence_score=None,
         analysis_text=None,
@@ -246,6 +306,10 @@ def save_conditional_entry(
         exec_config.conditional_entry_max_expiry,
     )
 
+    screener_direction = (
+        result.setup_signal.direction.value if result.setup_signal else None
+    )
+
     entry = {
         "pending_id": new_order_id(),
         "scan_id": result.scan_id,
@@ -259,6 +323,7 @@ def save_conditional_entry(
         "exchange": exec_config.exchange,
         "execution_mode": exec_config.mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "screener_direction": screener_direction,
     }
 
     try:
