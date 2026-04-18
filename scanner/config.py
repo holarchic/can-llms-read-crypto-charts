@@ -55,7 +55,10 @@ class ScannerConfig:
 
     # Exchange
     exchange: str = "hyperliquid"
-    candle_exchanges: list = field(default_factory=lambda: ["hyperliquid", "bybit", "binance"])
+    # HL-only by default: bybit (CloudFront 403) and binance (451 restricted
+    # location) are permanently geo-blocked from GCE us-central1-a. Override
+    # on hosts that can reach them. See b73b126 regression + f8178ff follow-up.
+    candle_exchanges: list = field(default_factory=lambda: ["hyperliquid"])
     min_volume_usd: float = 2_000_000
     max_pairs: int = 80
 

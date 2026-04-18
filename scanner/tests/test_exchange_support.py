@@ -47,11 +47,12 @@ class TestExchangeMeta:
 
     def test_config_default_candle_exchanges(self):
         cfg = ScannerConfig()
-        assert cfg.candle_exchanges == ["hyperliquid", "bybit", "binance"]
+        # Default is HL-only; bybit/binance are geo-blocked from GCE us-central1.
+        assert cfg.candle_exchanges == ["hyperliquid"]
 
     def test_config_custom_candle_exchanges(self):
-        cfg = ScannerConfig(candle_exchanges=["hyperliquid"])
-        assert cfg.candle_exchanges == ["hyperliquid"]
+        cfg = ScannerConfig(candle_exchanges=["hyperliquid", "bybit"])
+        assert cfg.candle_exchanges == ["hyperliquid", "bybit"]
 
 
 # --- Data layer ---
