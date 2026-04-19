@@ -356,3 +356,94 @@ class TestConditionalEntryParsing:
         valid, errors = validate_execution_params(block)
         assert valid is False
         assert any("invalidation_price" in e for e in errors)
+
+    def test_limit_at_trigger_accepted(self):
+        block = _valid_block(
+            entry_trigger="limit_at",
+            entry_trigger_price=61000.0,
+            invalidation_price=58500.0,
+            expiry_candles=8,
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["entry_trigger"] == "limit_at"
+
+    def test_deviation_reclaim_trigger_accepted(self):
+        block = _valid_block(
+            entry_trigger="deviation_reclaim",
+            entry_trigger_price=62000.0,
+            invalidation_price=58000.0,
+            expiry_candles=6,
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["entry_trigger"] == "deviation_reclaim"
+
+
+# --- V9.1 observability fields (setup_type, confluence_score, confirming_event) ---
+
+class TestObservabilityFields:
+    """Graceful validation: missing OK, invalid rejected."""
+
+    def test_all_fields_parsed(self):
+        block = _valid_block(
+            setup_type="C",
+            confluence_score=8,
+            confirming_event="1H close above flipped 62k resistance",
+        )
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["setup_type"] == "C"
+        assert result["confluence_score"] == 8
+        assert result["confirming_event"] == "1H close above flipped 62k resistance"
+
+    def test_all_fields_optional(self):
+        """Missing observability fields does not fail parse."""
+        result = parse_machine_block(_wrap(_valid_block()))
+        assert result is not None
+        assert "setup_type" not in result
+        assert "confluence_score" not in result
+        assert "confirming_event" not in result
+
+    def test_setup_type_lowercase_normalized(self):
+        block = _valid_block(setup_type="c")
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["setup_type"] == "C"
+
+    def test_setup_type_invalid_letter_rejected(self):
+        block = _valid_block(setup_type="Z")
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_setup_type_wrong_type_rejected(self):
+        block = _valid_block(setup_type=3)
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_confluence_score_out_of_range_rejected(self):
+        block = _valid_block(confluence_score=20)
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_confluence_score_negative_rejected(self):
+        block = _valid_block(confluence_score=-1)
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_confluence_score_float_coerced_to_int(self):
+        block = _valid_block(confluence_score=7.0)
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["confluence_score"] == 7
+        assert isinstance(result["confluence_score"], int)
+
+    def test_confirming_event_too_short_rejected(self):
+        block = _valid_block(confirming_event="short")
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_confirming_event_too_long_rejected(self):
+        block = _valid_block(confirming_event="x" * 201)
+        assert parse_machine_block(_wrap(block)) is None
+
+    def test_confirming_event_whitespace_trimmed(self):
+        block = _valid_block(confirming_event="   1H close above 62000 flipped resistance   ")
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["confirming_event"] == "1H close above 62000 flipped resistance"

@@ -209,7 +209,10 @@ def parse_machine_block(text: str) -> dict | None:
         data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
 
     # Coerce optional conditional entry fields
-    _VALID_TRIGGERS = ("candle_close_above", "candle_close_below")
+    _VALID_TRIGGERS = (
+        "candle_close_above", "candle_close_below",
+        "limit_at", "deviation_reclaim",
+    )
     if "entry_trigger" in data:
         if data["entry_trigger"] not in _VALID_TRIGGERS:
             return None
@@ -222,6 +225,33 @@ def parse_machine_block(text: str) -> dict | None:
         if not isinstance(data["expiry_candles"], (int, float)):
             return None
         data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
+
+    # V9.1 observability fields (graceful — missing accepted, invalid rejected).
+    # TODO(2026-04-26): review LLM compliance rate for these fields; if > 95%
+    # populated, flip to required in V9.2 so CONFIRM decisions without them
+    # are rejected rather than logged.
+    _VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
+    if "setup_type" in data:
+        if not isinstance(data["setup_type"], str):
+            return None
+        st = data["setup_type"].strip().upper()
+        if st not in _VALID_SETUP_TYPES:
+            return None
+        data["setup_type"] = st
+    if "confluence_score" in data:
+        if not isinstance(data["confluence_score"], (int, float)):
+            return None
+        score = int(data["confluence_score"])
+        if not 0 <= score <= 15:
+            return None
+        data["confluence_score"] = score
+    if "confirming_event" in data:
+        if not isinstance(data["confirming_event"], str):
+            return None
+        ev = data["confirming_event"].strip()
+        if not 10 <= len(ev) <= 200:
+            return None
+        data["confirming_event"] = ev
 
     # Business-rule validation — reject blocks with bad geometry/ranges
     valid, _errors = validate_execution_params(data)
