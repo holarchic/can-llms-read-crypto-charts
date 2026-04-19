@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.02"
+PROMPT_VERSION = "9.03-rollback"
 
 import logging
 import uuid
@@ -122,100 +122,43 @@ def analyze_for_scanner(
     strategy = load_strategy()
     system_text = SYSTEM_PROMPT.format(ruleset=strategy) + (
         "\n\n## SCANNER MODE\n"
-        "Scans run every 4 hours. Put analysis in thinking tokens; the written\n"
-        "response is the decision block (everything between the `/` and `\\`\n"
-        "divider rows) plus the MACHINE_BLOCK JSON — no other prose.\n\n"
-
-        "## ENTRY TYPE — pick one\n"
-        "Default to CONDITIONAL. Use IMMEDIATE only when the confirming event\n"
-        "is already complete on the last closed candle.\n\n"
-
-        "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
-        "must print before entry. The monitor watches spot price or 1H closes,\n"
-        "enters on trigger, kills on invalidation, or expires.\n\n"
-        "Pick the trigger that matches the setup (ruleset §4):\n"
-        "- `limit_at` (§4.2 Outright Price) — fires when price touches the\n"
-        "  specified level. Best for fresh levels and clean retests where\n"
-        "  you want the exact price.\n"
-        "- `candle_close_above` / `candle_close_below` (§4.6 Candle Close) —\n"
-        "  fires when a 1H closes past the level. Best for directional\n"
-        "  confirmation on breakouts and trending continuations.\n"
-        "- `deviation_reclaim` (§4.4 Deviation) — fires after price closes\n"
-        "  OUTSIDE the level then closes back INSIDE. Best for range-bound\n"
-        "  reversals and failed breakouts.\n\n"
-        "Fields:\n"
-        "- entry_trigger: one of the four names above\n"
-        "- entry_trigger_price: the level (limit price, candle-close level,\n"
-        "  or deviation boundary)\n"
-        "- invalidation_price: kills the setup before the trigger fires\n"
-        "  (further from entry than stop_loss)\n"
-        "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
-        "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
-        "  execution re-brackets at trigger time\n\n"
-        "Confirming-event examples by trigger:\n"
-        "- limit_at LONG: price drops to support — fill at the exact level\n"
-        "- limit_at SHORT: price rallies into resistance — fill at the level\n"
-        "- candle_close_above LONG: 1H close above resistance confirms breakout\n"
-        "- candle_close_below SHORT: 1H close below support confirms breakdown\n"
-        "- deviation_reclaim LONG: 1H close back above support after wicking\n"
-        "  below (failed breakdown)\n"
-        "- deviation_reclaim SHORT: 1H close back below resistance after\n"
-        "  wicking above (failed breakout)\n\n"
-
-        "**IMMEDIATE (exception):** The confirming event already printed on\n"
-        "the last closed candle. Name it in Confirming Event.\n"
-        "Examples:\n"
-        "- MSB just confirmed on the last 4H close\n"
-        "- Deviation reclaim just printed on the last 1H close\n"
-        "- Rejection wick off a level with the body closing back on the\n"
-        "  working side\n"
-        "- Structural break in LTF anchoring a HTF setup\n\n"
-        "Fields:\n"
-        "- entry_low/entry_high: bracket current price (within 0.5% of last\n"
-        "  candle close)\n"
-        "- Omit entry_trigger, entry_trigger_price, invalidation_price,\n"
-        "  expiry_candles\n\n"
-
-        "Price at a level without confirmation yet = CONDITIONAL. Specify\n"
-        "the candle close that confirms it.\n\n"
-
+        "In your written response, output ONLY the decision block. "
+        "No step-by-step walkthrough.\n\n"
+        "## DECISION CLASSIFICATION (CONFIRM or REJECT only — no WAIT)\n"
+        "- CONFIRM: A valid trade setup exists. Either:\n"
+        "  (a) Price is at the entry level now → immediate entry "
+        "(entry_low/entry_high bracket current price)\n"
+        "  (b) Setup is valid but entry needs confirmation → conditional entry "
+        "(include entry_trigger, entry_trigger_price, invalidation_price, expiry_candles)\n"
+        "- REJECT: Everything else.\n\n"
         "## INVALIDATION FIELDS (CONFIRM only)\n"
-        "- **Expected Hold:** trade duration estimate (e.g. '1-2 days')\n"
-        "- **Time Invalidation:** abandon point if neither SL nor TP hits\n\n"
-
-        "## MACHINE BLOCK (CONFIRM only)\n"
-        "Append JSON after the decision block:\n\n"
+        "Include in the decision block:\n"
+        "- **Expected Hold:** How long this trade should take (e.g. '1-2 days')\n"
+        "- **Time Invalidation:** When to abandon if neither SL nor TP hit\n\n"
+        "## MACHINE-READABLE OUTPUT (CONFIRM only)\n"
+        "After the decision block, include a JSON machine block:\n\n"
         '<!-- MACHINE_BLOCK\n'
-        '{"entry_low": 61500.0, "entry_high": 62000.0, '
-        '"stop_loss": 59800.0, "tp1": 65000.0, "tp1_exit_pct": 40, '
-        '"tp2": 68000.0, "tp2_exit_pct": 40, "direction": "LONG", '
-        '"confidence": 7, "leverage": 5, '
-        '"setup_type": "C", "confluence_score": 8, '
-        '"confirming_event": "1H close above flipped 62k resistance", '
-        '"entry_trigger": "candle_close_above", '
-        '"entry_trigger_price": 62000.0, '
-        '"invalidation_price": 59000.0, "expiry_candles": 8}\n'
+        '{"entry_low": 61500.0, "entry_high": 62000.0, "stop_loss": 59800.0, '
+        '"tp1": 65000.0, "tp1_exit_pct": 50, "tp2": 68000.0, "tp2_exit_pct": 50, '
+        '"direction": "LONG", "confidence": 7, "leverage": 5}\n'
         "MACHINE_BLOCK -->\n\n"
-
-        "Field rules:\n"
-        "- Prices: plain numbers, no $ or commas\n"
-        "- tp1_exit_pct: 30-50 (TP1 is the conservative FTA — §6.4)\n"
-        "- tp2_exit_pct: 30-50 (when multi-target)\n"
-        "- setup_type: single letter A-G per ruleset §3.1\n"
-        "- confluence_score: integer 0-15 — sum of applicable §3.2 factors\n"
-        "- confirming_event: 10-200 chars naming the specific event that\n"
-        "  confirms entry (for both IMMEDIATE and CONDITIONAL)\n"
-        "- IMMEDIATE: omit entry_trigger, entry_trigger_price,\n"
-        "  invalidation_price, expiry_candles\n"
-        "- Trailing TP: execution trails post-TP1 — provide a concrete TP1\n"
-        "  to anchor the trail\n\n"
-
-        "## CORE RULES (recap)\n"
-        "- Default to CONDITIONAL. IMMEDIATE requires a confirming event on\n"
-        "  the last closed candle.\n"
-        "- Name the confirming event in every CONFIRM.\n"
-        "- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n"
-        "  REJECT.\n"
+        "Rules:\n"
+        "- Include ONLY for CONFIRM decisions\n"
+        "- All prices as plain numbers (no $ signs, no commas)\n"
+        "- entry_low/entry_high: for immediate entry, bracket current price "
+        "(within 0.5% of last candle close). For conditional entry, bracket "
+        "the trigger level.\n"
+        "- tp1_exit_pct: 30-70 (percentage to close at TP1)\n"
+        "- tp2/tp2_exit_pct: include when multi-target appropriate\n"
+        "- If target is a trailing stop (no fixed price), omit machine block\n\n"
+        "CONDITIONAL ENTRY (optional — use when setup is valid but price "
+        "hasn't confirmed the trigger yet):\n"
+        "- entry_trigger: 'candle_close_above' or 'candle_close_below'\n"
+        "- entry_trigger_price: the 1H candle close level that confirms entry\n"
+        "- invalidation_price: what kills the setup before entry "
+        "(must be beyond stop_loss — further from entry than SL)\n"
+        "- expiry_candles: 1H candles to wait before setup expires (1-24)\n"
+        "Omit these fields for immediate entries where price is already at the level."
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
