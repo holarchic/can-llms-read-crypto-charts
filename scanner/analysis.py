@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.00"
+PROMPT_VERSION = "9.01"
 
 import logging
 import uuid
@@ -130,20 +130,36 @@ def analyze_for_scanner(
         "is already complete on the last closed candle.\n\n"
 
         "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
-        "must print before entry. The monitor watches 1H closes, enters on\n"
-        "trigger, kills on invalidation, or expires.\n"
-        "- entry_trigger: 'candle_close_above' or 'candle_close_below'\n"
-        "- entry_trigger_price: the 1H close level that confirms entry\n"
+        "must print before entry. The monitor watches spot price or 1H closes,\n"
+        "enters on trigger, kills on invalidation, or expires.\n\n"
+        "Pick the trigger that matches the setup (ruleset §4):\n"
+        "- `limit_at` (§4.2 Outright Price) — fires when price touches the\n"
+        "  specified level. Best for fresh levels and clean retests where\n"
+        "  you want the exact price.\n"
+        "- `candle_close_above` / `candle_close_below` (§4.6 Candle Close) —\n"
+        "  fires when a 1H closes past the level. Best for directional\n"
+        "  confirmation on breakouts and trending continuations.\n"
+        "- `deviation_reclaim` (§4.4 Deviation) — fires after price closes\n"
+        "  OUTSIDE the level then closes back INSIDE. Best for range-bound\n"
+        "  reversals and failed breakouts.\n\n"
+        "Fields:\n"
+        "- entry_trigger: one of the four names above\n"
+        "- entry_trigger_price: the level (limit price, candle-close level,\n"
+        "  or deviation boundary)\n"
         "- invalidation_price: kills the setup before the trigger fires\n"
         "  (further from entry than stop_loss)\n"
         "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
         "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
         "  execution re-brackets at trigger time\n\n"
-        "Examples of CONDITIONAL confirming events:\n"
-        "- LONG breakout: 1H close above resistance (price below level now)\n"
-        "- SHORT rejection: 1H close back below resistance after an excess wick\n"
-        "- LONG pullback: 1H close above a broken resistance that is now support\n"
-        "- SHORT breakdown: 1H close below a support level price is testing\n\n"
+        "Confirming-event examples by trigger:\n"
+        "- limit_at LONG: price drops to support — fill at the exact level\n"
+        "- limit_at SHORT: price rallies into resistance — fill at the level\n"
+        "- candle_close_above LONG: 1H close above resistance confirms breakout\n"
+        "- candle_close_below SHORT: 1H close below support confirms breakdown\n"
+        "- deviation_reclaim LONG: 1H close back above support after wicking\n"
+        "  below (failed breakdown)\n"
+        "- deviation_reclaim SHORT: 1H close back below resistance after\n"
+        "  wicking above (failed breakout)\n\n"
 
         "**IMMEDIATE (exception):** The confirming event already printed on\n"
         "the last closed candle. Name it in Confirming Event.\n"
@@ -173,6 +189,8 @@ def analyze_for_scanner(
         '"stop_loss": 59800.0, "tp1": 65000.0, "tp1_exit_pct": 40, '
         '"tp2": 68000.0, "tp2_exit_pct": 40, "direction": "LONG", '
         '"confidence": 7, "leverage": 5, '
+        '"setup_type": "C", "confluence_score": 8, '
+        '"confirming_event": "1H close above flipped 62k resistance", '
         '"entry_trigger": "candle_close_above", '
         '"entry_trigger_price": 62000.0, '
         '"invalidation_price": 59000.0, "expiry_candles": 8}\n'
@@ -182,7 +200,12 @@ def analyze_for_scanner(
         "- Prices: plain numbers, no $ or commas\n"
         "- tp1_exit_pct: 30-50 (TP1 is the conservative FTA — §6.4)\n"
         "- tp2_exit_pct: 30-50 (when multi-target)\n"
-        "- IMMEDIATE: omit the four conditional fields above\n"
+        "- setup_type: single letter A-G per ruleset §3.1\n"
+        "- confluence_score: integer 0-15 — sum of applicable §3.2 factors\n"
+        "- confirming_event: 10-200 chars naming the specific event that\n"
+        "  confirms entry (for both IMMEDIATE and CONDITIONAL)\n"
+        "- IMMEDIATE: omit entry_trigger, entry_trigger_price,\n"
+        "  invalidation_price, expiry_candles\n"
         "- Trailing TP: execution trails post-TP1 — provide a concrete TP1\n"
         "  to anchor the trail\n\n"
 
