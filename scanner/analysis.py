@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.01"
+PROMPT_VERSION = "9.02"
 
 import logging
 import uuid
@@ -123,7 +123,8 @@ def analyze_for_scanner(
     system_text = SYSTEM_PROMPT.format(ruleset=strategy) + (
         "\n\n## SCANNER MODE\n"
         "Scans run every 4 hours. Put analysis in thinking tokens; the written\n"
-        "response is the decision block only.\n\n"
+        "response is the decision block (everything between the `/` and `\\`\n"
+        "divider rows) plus the MACHINE_BLOCK JSON — no other prose.\n\n"
 
         "## ENTRY TYPE — pick one\n"
         "Default to CONDITIONAL. Use IMMEDIATE only when the confirming event\n"
