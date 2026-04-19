@@ -1016,18 +1016,43 @@ class TestExchangeReconciliation:
         assert result.skip_reason == "position_limit"
 
     @patch("scanner.execution.executor.get_open_positions")
-    def test_exchange_reconciliation_blocks_mismatch(self, mock_positions, conn, exec_config,
-                                                      scanner_config):
-        """Exchange vs DB count differs → trade blocked."""
+    def test_exchange_reconciliation_blocks_db_undercount(self, mock_positions, conn, exec_config,
+                                                          scanner_config):
+        """DB < exchange → trade blocked (untracked on-exchange position = risk)."""
         mock_positions.return_value = [
             {"coin": "ETH", "direction": "LONG", "size": 1.0, "entry_price": 3000,
              "unrealized_pnl": 50, "leverage": 3},
         ]
-        # DB has 0 positions, exchange has 1 — mismatch
+        # DB has 0 positions, exchange has 1 — untracked position on exchange
         result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "position_mismatch"
         assert "DB positions=0 vs exchange=1" in result.error
+
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    @patch("scanner.execution.executor.get_open_positions")
+    def test_exchange_reconciliation_allows_db_overcount(self, mock_positions, mock_killed,
+                                                          mock_price, conn, exec_config,
+                                                          scanner_config):
+        """DB > exchange → proceed (stale DB open, benign — downstream limits use
+        exchange truth). Regression: 2026-04-17 APT blocked by DB=2/exch=1 drift
+        during the DOT phantom_sl reconciliation.
+        """
+        # Stale DB-tracked entry (a closed position not yet synced)
+        save_order({
+            "order_id": "stale_entry", "scan_id": "stale_scan", "coin": "DOT",
+            "direction": "SHORT", "order_type": "entry", "status": "FILLED",
+            "entry_price": 1.3, "fill_price": 1.3, "quantity": 100,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-04-17T04:00:00+00:00",
+            "created_at": "2026-04-17T04:00:00+00:00",
+        }, conn)
+        # Exchange reports no open positions
+        mock_positions.return_value = []
+        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        # Past the reconciliation gate — downstream reason OK
+        assert result.skip_reason != "position_mismatch"
 
 
 class TestFailPolicy:

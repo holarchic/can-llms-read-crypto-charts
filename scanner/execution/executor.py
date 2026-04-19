@@ -158,17 +158,28 @@ def execute_trade(
                 return er
             log.warning("BTC volatility gate fetch failed: %s — proceeding (testnet)", exc)
 
-    # 0.6 Exchange position reconciliation — ground truth from exchange
+    # 0.6 Exchange position reconciliation — ground truth from exchange.
+    # Asymmetric: block only when DB undercounts (untracked on-exchange position
+    # could run without SL/TP oversight). DB overcount is benign — a closed
+    # position not yet synced — and the downstream position-limit check at
+    # step 7 already prefers exchange truth, so the overcount can't inflate
+    # concurrent-position totals. Regression: 2026-04-17 APT conditional
+    # entry blocked by DB=2 / exch=1 during the DOT phantom_sl reconciliation.
     exchange_positions = None
     try:
         exchange_positions = get_open_positions(exec_config)
         db_count = count_open_positions(conn, exec_config.exchange, exec_config.mode)
         exch_count = len(exchange_positions)
-        if db_count != exch_count:
+        if db_count < exch_count:
             er.skip_reason = "position_mismatch"
             er.error = f"DB positions={db_count} vs exchange={exch_count} — reconcile before trading"
-            log.error("Position count mismatch: DB=%d, exchange=%d — blocking trade", db_count, exch_count)
+            log.error("Position count mismatch: DB=%d < exchange=%d — blocking trade "
+                      "(untracked on-exchange position)", db_count, exch_count)
             return er
+        if db_count > exch_count:
+            log.warning("Position count drift: DB=%d > exchange=%d — proceeding "
+                        "(stale DB open; next sync cycle will reconcile)",
+                        db_count, exch_count)
     except Exception as exc:
         if exec_config.mode == "live":
             er.skip_reason = "reconciliation_error"
