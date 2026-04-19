@@ -61,6 +61,18 @@ def _make_order(scan_id="scan1", coin="BTC", direction="LONG", order_type="entry
     return base
 
 
+def _open_position(coin="BTC", direction="LONG", size=0.1) -> list[dict]:
+    """Mock fetch_positions return shape for an open position."""
+    return [{
+        "symbol": f"{coin}/USDC:USDC",
+        "contracts": size,
+        "side": direction,
+        "entryPrice": 62000,
+        "unrealizedPnl": 0,
+        "leverage": 5,
+    }]
+
+
 def _latest_placed(conn, scan_id: str, order_type: str) -> dict | None:
     """Find the most recent PLACED row for a scan + type.
 
@@ -635,6 +647,7 @@ class TestPartialExitHandling:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
@@ -790,6 +803,7 @@ class TestUnknownOrderStatuses:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "expired"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
@@ -815,6 +829,7 @@ class TestUnknownOrderStatuses:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
@@ -1585,6 +1600,7 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
@@ -1661,6 +1677,7 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.return_value = {"id": "sl_exch2"}
         mock_auth.return_value = mock_exchange
@@ -1687,6 +1704,7 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.side_effect = Exception("exchange down")
         mock_auth.return_value = mock_exchange
@@ -1715,6 +1733,7 @@ class TestRejectedExitOrderReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_auth.return_value = mock_exchange
         mock_post.return_value = MagicMock(status_code=204)
 
@@ -1782,6 +1801,40 @@ class TestRejectedExitOrderReplacement:
         mock_exchange.create_order.assert_not_called()
         # fetch_order never called — entry excluded from open_entries
         mock_exchange.fetch_order.assert_not_called()
+
+    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.monitor.time.sleep")
+    @patch("scanner.execution.monitor.get_auth_exchange")
+    def test_tp_cancel_after_sl_fill_skips_alert(self, mock_auth, mock_sleep,
+                                                  mock_post, config, conn):
+        """SL fill auto-cancels TPs on exchange — DB not yet synced → no false alert.
+
+        Regression for 2026-04-19 XRP: drift moved SL to BE, price triggered the
+        new SL, HL auto-cancelled reduceOnly TPs on position close. sync_order_status
+        visited the TPs before the SL fill was recorded in the DB (TPs have earlier
+        created_at); DB remaining_qty was still > 0 but the position was flat.
+        Verify the exchange position check skips the rejection alert.
+        """
+        config.discord_errors_webhook_url = "https://discord.com/errors"
+        entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
+        tp1 = _make_order(scan_id="s1", order_type="tp1", status="PLACED",
+                          exchange_order_id="tp1_exch1", trigger_price=65000, quantity=0.05)
+        save_order(entry, conn)
+        save_order(tp1, conn)
+
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_order.return_value = {"status": "canceled", "filled": 0}
+        # Position closed on exchange — no entry in fetch_positions
+        mock_exchange.fetch_positions.return_value = []
+        mock_auth.return_value = mock_exchange
+
+        sync_order_status(config, conn)
+
+        tp1_result = get_order(tp1["order_id"], conn)
+        assert tp1_result["status"] == "CANCELLED"
+        # No TP rejection alert — position was already closed
+        mock_post.assert_not_called()
+        mock_exchange.create_order.assert_not_called()
 
 
 class TestGetRemainingQtyPrecision:
@@ -2024,6 +2077,7 @@ class TestRateLimitInReplacement:
 
         mock_exchange = MagicMock()
         mock_exchange.fetch_order.return_value = {"status": "rejected"}
+        mock_exchange.fetch_positions.return_value = _open_position()
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_exchange.create_order.side_effect = Exception(
             "Too many cumulative requests sent (12530 > 12268)"

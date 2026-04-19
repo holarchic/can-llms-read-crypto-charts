@@ -292,6 +292,42 @@ def _get_live_position_qty(
     return db_qty
 
 
+_SIDE_TO_DIRECTION = {
+    "long": "LONG", "short": "SHORT", "buy": "LONG", "sell": "SHORT",
+}
+
+
+def _position_closed_on_exchange(coin: str, direction: str, exchange) -> bool:
+    """Return True iff the exchange confirms the position is closed.
+
+    On exchange error, returns False so callers fall through to existing
+    logic — an erroneous alert is safer than silently skipping a real failure.
+    Uses the passed-in exchange object directly so callers that already hold
+    an authenticated session don't pay a reconnect.
+    """
+    try:
+        positions = exchange.fetch_positions()
+    except Exception as exc:
+        log.warning("Position check failed for %s %s: %s — assuming open",
+                    coin, direction, exc)
+        return False
+    for pos in positions:
+        try:
+            size = float(pos.get("contracts", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if size == 0:
+            continue
+        symbol = pos.get("symbol", "")
+        pos_coin = symbol.split("/")[0] if symbol else ""
+        side = (pos.get("side") or "")
+        side_key = side.lower() if isinstance(side, str) else ""
+        pos_dir = _SIDE_TO_DIRECTION.get(side_key)
+        if pos_coin == coin and pos_dir == direction:
+            return False
+    return True
+
+
 def _handle_partial_exit_fill(
     filled_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
@@ -570,6 +606,16 @@ def _attempt_exit_order_replacement(
     remaining_qty = _get_remaining_qty(entry, conn)
     if remaining_qty <= 0:
         log.info("Skipping %s replacement for %s — position fully closed",
+                 order["order_type"], entry["coin"])
+        return
+
+    # Exchange is source of truth: DB remaining_qty can read open while the
+    # position is already flat (SL fill this cycle triggers HL auto-cancel of
+    # reduceOnly TPs; the TPs reach this path before the SL fill is recorded).
+    # Without this check, collateral cancels surface as false TP rejection
+    # alerts and wasted SL re-placements on a closed position.
+    if _position_closed_on_exchange(entry["coin"], entry["direction"], exchange):
+        log.info("Skipping %s replacement for %s — position closed on exchange",
                  order["order_type"], entry["coin"])
         return
 
