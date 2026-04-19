@@ -12,6 +12,7 @@ from scanner.execution.entry_monitor import (
     _reconstruct_scan_result,
     evaluate_deviation_reclaim,
     evaluate_entry_trigger,
+    evaluate_limit_at_trigger,
     is_1h_boundary,
     save_conditional_entry,
 )
@@ -250,6 +251,73 @@ class TestEvaluateDeviationReclaim:
         )
         assert event == "triggered"
         assert action == "execute"
+
+
+class TestEvaluateLimitAt:
+    """Ruleset §4.2 Trigger 1 — spot-price touch."""
+
+    def test_long_below_trigger_fires(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=95.0,
+            direction="LONG", current_price=99.5,
+        )
+        assert event == "triggered"
+        assert action == "execute"
+
+    def test_long_at_trigger_exactly(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=95.0,
+            direction="LONG", current_price=100.0,
+        )
+        assert event == "triggered"
+
+    def test_long_above_trigger_waits(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=95.0,
+            direction="LONG", current_price=101.5,
+        )
+        assert event is None
+        assert action == "none"
+
+    def test_short_above_trigger_fires(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=105.0,
+            direction="SHORT", current_price=100.5,
+        )
+        assert event == "triggered"
+        assert action == "execute"
+
+    def test_short_at_trigger_exactly(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=105.0,
+            direction="SHORT", current_price=100.0,
+        )
+        assert event == "triggered"
+
+    def test_short_below_trigger_waits(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=105.0,
+            direction="SHORT", current_price=99.5,
+        )
+        assert event is None
+        assert action == "none"
+
+    def test_long_invalidation_overrides_trigger(self):
+        # Price at trigger AND at invalidation — invalidation wins
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=95.0,
+            direction="LONG", current_price=94.5,
+        )
+        assert event == "invalidated"
+        assert action == "kill"
+
+    def test_short_invalidation_overrides_trigger(self):
+        event, action = evaluate_limit_at_trigger(
+            entry_trigger_price=100.0, invalidation_price=105.0,
+            direction="SHORT", current_price=106.0,
+        )
+        assert event == "invalidated"
+        assert action == "kill"
 
 
 # ---------------------------------------------------------------------------

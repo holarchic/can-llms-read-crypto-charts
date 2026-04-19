@@ -83,6 +83,38 @@ def evaluate_entry_trigger(
     return (None, "none")
 
 
+def evaluate_limit_at_trigger(
+    entry_trigger_price: float,
+    invalidation_price: float,
+    direction: str,
+    current_price: float,
+) -> tuple[str | None, str]:
+    """Spot-price touch evaluator for limit_at.
+
+    Ruleset §4.2 Trigger 1 — limit-order semantics implemented as
+    market-on-touch. Fires when spot reaches the buy/sell level:
+    - LONG: current_price ≤ entry_trigger_price (buy level reached)
+    - SHORT: current_price ≥ entry_trigger_price (sell level reached)
+
+    Invalidation checked first. On a real limit the exchange fills
+    deterministically at the level; we use market-on-touch so we still
+    fire if price gaps through with no resting fill — polling resolution
+    is 5 min, so tight hairpin sweeps may be missed. Acceptable for
+    crypto-perp liquidity where gap risk > price-improvement upside.
+    """
+    if direction == "LONG" and current_price <= invalidation_price:
+        return ("invalidated", "kill")
+    if direction == "SHORT" and current_price >= invalidation_price:
+        return ("invalidated", "kill")
+
+    if direction == "LONG" and current_price <= entry_trigger_price:
+        return ("triggered", "execute")
+    if direction == "SHORT" and current_price >= entry_trigger_price:
+        return ("triggered", "execute")
+
+    return (None, "none")
+
+
 def evaluate_deviation_reclaim(
     entry_trigger_price: float,
     invalidation_price: float,
@@ -419,18 +451,35 @@ def save_conditional_entry(
         log.error("Failed to save conditional entry for %s: %s", coin, exc)
         return False
 
-    # Immediate check — fast path using spot price (intentionally different from
-    # the 1H candle-close check in _process_pending_entry). Catches cases where
-    # trigger is already met at save time, avoiding up to 60min wait.
+    # Immediate check — fast path using spot price. Catches setups where
+    # the trigger is already met at save time, avoiding up to 60min wait.
+    # Dispatches by trigger type:
+    # - candle_close_above/below: spot is a reasonable proxy for the next
+    #   1H close (real 1H close check runs at the next boundary regardless)
+    # - limit_at: spot touch semantics apply directly
+    # - deviation_reclaim: needs candle history — no immediate check, the
+    #   first 1H-boundary cycle evaluates it
     try:
         current_price = fetch_current_price(coin, exec_config)
-        event, action = evaluate_entry_trigger(
-            entry["entry_trigger"],
-            entry["entry_trigger_price"],
-            entry["invalidation_price"],
-            direction,
-            current_price,
-        )
+        trigger = entry["entry_trigger"]
+        if trigger == "limit_at":
+            event, action = evaluate_limit_at_trigger(
+                entry["entry_trigger_price"],
+                entry["invalidation_price"],
+                direction,
+                current_price,
+            )
+        elif trigger in ("candle_close_above", "candle_close_below"):
+            event, action = evaluate_entry_trigger(
+                trigger,
+                entry["entry_trigger_price"],
+                entry["invalidation_price"],
+                direction,
+                current_price,
+            )
+        else:
+            _event, action = (None, "none")
+
         if action == "execute":
             log.info("Trigger already met for %s %s at %.5f — executing immediately",
                      coin, direction, current_price)
@@ -441,35 +490,104 @@ def save_conditional_entry(
             update_pending_status(entry["pending_id"], "INVALIDATED", conn)
             _send_resolution_alert(entry, "invalidated", exec_config)
     except Exception as exc:
-        log.warning("Immediate trigger check failed for %s — will retry at 1H boundary: %s", coin, exc)
+        log.warning("Immediate trigger check failed for %s — will retry at next cycle: %s", coin, exc)
 
     return True
 
 
 def check_pending_entries(exec_config: ExecutionConfig, conn) -> int:
-    """Top-level pending entry check. Called from monitor cycle at 1H boundaries.
+    """Top-level pending entry check.
+
+    Candle-based triggers (candle_close_above/below, deviation_reclaim) run
+    only at 1H boundaries — their evaluators depend on completed 1H candles.
+    Spot-based triggers (limit_at) run every monitor cycle so a fast price
+    sweep through the buy/sell level isn't missed by hour-gated polling.
 
     Returns count of entries acted on (triggered + invalidated + expired).
     """
     if not exec_config.conditional_entry_enabled:
         return 0
 
-    if not is_1h_boundary():
-        return 0
-
     pending = get_active_pending_entries(conn, exec_config.exchange, exec_config.mode)
     if not pending:
         return 0
 
+    hour_boundary = is_1h_boundary()
     acted = 0
     for entry in pending:
         try:
-            acted += _process_pending_entry(entry, exec_config, conn)
+            trigger = entry.get("entry_trigger", "")
+            if trigger == "limit_at":
+                acted += _process_limit_at(entry, exec_config, conn)
+            elif hour_boundary:
+                acted += _process_pending_entry(entry, exec_config, conn)
         except Exception as exc:
             log.error("Pending entry check failed for %s %s: %s",
                       entry.get("coin"), entry.get("direction"), exc)
 
     return acted
+
+
+def _process_limit_at(
+    entry: dict, config: ExecutionConfig, conn,
+) -> int:
+    """Process a limit_at pending using spot-price polling (every cycle).
+
+    Expiry is counted in 1H boundary hits, matching the expiry_candles
+    semantic used by the other triggers. Dedup by hour tag so the counter
+    doesn't advance 12x/hour.
+    """
+    coin = entry["coin"]
+    direction = entry["direction"]
+    pending_id = entry["pending_id"]
+
+    if has_open_position(coin, None, conn, config.exchange, config.mode):
+        log.info("Position already exists for %s — invalidating pending", coin)
+        update_pending_status(pending_id, "INVALIDATED", conn)
+        _send_resolution_alert(entry, "invalidated (position exists)", config)
+        return 1
+
+    try:
+        current_price = fetch_current_price(coin, config)
+    except Exception as exc:
+        log.warning("limit_at price fetch failed for %s: %s", coin, exc)
+        return 0
+
+    event, action = evaluate_limit_at_trigger(
+        float(entry["entry_trigger_price"]),
+        float(entry["invalidation_price"]),
+        direction,
+        current_price,
+    )
+
+    if action == "execute":
+        log.info("limit_at fired for %s %s at %.5f (trigger %.5f)",
+                 coin, direction, current_price,
+                 float(entry["entry_trigger_price"]))
+        return _execute_triggered_entry(entry, current_price, config, conn)
+
+    if action == "kill":
+        log.info("limit_at invalidated for %s %s at %.5f",
+                 coin, direction, current_price)
+        update_pending_status(pending_id, "INVALIDATED", conn)
+        _send_resolution_alert(entry, "invalidated", config)
+        return 1
+
+    # Expiry — count 1H boundaries, not monitor cycles
+    hour_tag = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+    if entry.get("last_checked_hour") == hour_tag:
+        return 0
+
+    new_count = increment_candles_checked(pending_id, conn)
+    update_last_checked_hour(pending_id, hour_tag, conn)
+    if new_count >= entry["expiry_candles"]:
+        log.info("limit_at expired for %s %s after %d hours",
+                 coin, direction, new_count)
+        update_pending_status(pending_id, "EXPIRED", conn)
+        _send_resolution_alert(entry, "expired", config)
+        return 1
+
+    return 0
 
 
 def _process_pending_entry(
