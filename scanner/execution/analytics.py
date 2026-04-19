@@ -1,10 +1,27 @@
 """Execution analytics — realized performance, sim vs live comparison."""
 
 import json as _json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 from .storage import EXIT_ORDER_TYPES_SQL
+
+log = logging.getLogger(__name__)
+
+
+def _exit_price(exit_order: dict) -> float | None:
+    """Return an exit fill price or None when both fill_price and trigger_price
+    are missing. Explicit None check — 0 is never a valid crypto perp price,
+    and `dict.get(k) or fallback` would mask a NULL as 0 and produce phantom PnL
+    (see 2026-04-17 DOT incident: manual-close row had no price, silent 0
+    fallback computed a fake +$227.50 win on a SHORT).
+    """
+    for field in ("fill_price", "trigger_price"):
+        val = exit_order.get(field)
+        if val is not None:
+            return float(val)
+    return None
 
 
 @dataclass
@@ -75,19 +92,35 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
         if entry_qty - filled_exit_qty > 1e-9:
             continue
 
-        # Sum PnL across all exit legs
+        # Sum PnL across all exit legs. Skip the whole trade if any leg lacks
+        # a price — silent 0-fallback fabricates PnL (e.g. manual-close rows
+        # inserted without a price field).
         realized_pnl = 0
+        missing_price = False
         for exit_order in exits:
-            exit_fill = exit_order.get("fill_price") or exit_order.get("trigger_price") or 0
+            exit_fill = _exit_price(exit_order)
+            if exit_fill is None:
+                log.warning(
+                    "Skipping trade %s %s — %s exit has no fill_price or trigger_price",
+                    entry["coin"], entry["direction"], exit_order.get("order_type"),
+                )
+                missing_price = True
+                break
             exit_qty = exit_order.get("quantity", 0)
             if entry["direction"] == "LONG":
                 realized_pnl += (exit_fill - entry_fill) * exit_qty
             else:
                 realized_pnl += (entry_fill - exit_fill) * exit_qty
 
-        # Use last exit for labels and holding hours
+        if missing_price:
+            continue
+
+        # Use last exit for labels and holding hours. `continue` above
+        # guarantees every exit has a non-None price, so the assert is a
+        # type-narrowing invariant rather than a runtime guard.
         last_exit = exits[-1]
-        last_exit_fill = last_exit.get("fill_price") or last_exit.get("trigger_price") or 0
+        last_exit_fill = _exit_price(last_exit)
+        assert last_exit_fill is not None
 
         # Funding paid (sum across all orders for this scan)
         funding_row = conn.execute(

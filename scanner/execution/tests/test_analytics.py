@@ -272,6 +272,47 @@ class TestGetClosedTrades:
         assert abs(trades[0].realized_pnl - 40) < 0.01
         assert trades[0].exit_type == "SL"  # Last exit by filled_at
 
+    def test_missing_exit_price_trade_skipped(self, conn, caplog):
+        """Manual-close row with NULL fill_price and NULL trigger_price must
+        not produce a phantom (entry - 0) * qty PnL.
+
+        Regression for the 2026-04-17 DOT incident: close-manual.py inserted
+        a timeout_close row with no price fields; analytics fell through to
+        `or 0` and reported a fake +$227.50 win on a SHORT at ~1.32.
+        """
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_nullfill", "coin": "DOT",
+            "direction": "SHORT", "order_type": "entry", "status": "FILLED",
+            "entry_price": 1.3273, "fill_price": 1.3273, "quantity": 171.4,
+            "leverage": 5, "exchange": "hyperliquid", "execution_mode": "live",
+            "filled_at": "2026-04-16T16:00:00+00:00",
+            "created_at": "2026-04-16T16:00:00+00:00",
+        }, conn)
+        # Cancelled SL (for risk anchor)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_nullfill", "coin": "DOT",
+            "direction": "SHORT", "order_type": "stop_loss", "status": "CANCELLED",
+            "trigger_price": 1.3523, "quantity": 171.4,
+            "exchange": "hyperliquid", "execution_mode": "live",
+            "created_at": "2026-04-16T16:00:00+00:00",
+        }, conn)
+        # Manual-close exit with no fill_price OR trigger_price
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_nullfill", "coin": "DOT",
+            "direction": "SHORT", "order_type": "timeout_close", "status": "FILLED",
+            "quantity": 171.4,
+            "exchange": "hyperliquid", "execution_mode": "live",
+            "filled_at": "2026-04-17T08:17:00+00:00",
+            "created_at": "2026-04-17T08:17:00+00:00",
+        }, conn)
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="scanner.execution.analytics"):
+            trades = get_closed_trades(conn, execution_mode="live")
+
+        assert trades == []
+        assert any("no fill_price or trigger_price" in r.message for r in caplog.records)
+
     def test_partial_exit_not_in_closed_trades(self, conn):
         """Position with only TP1 filled (partial) should NOT appear in closed trades."""
         save_order({
