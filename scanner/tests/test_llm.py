@@ -357,6 +357,34 @@ class TestConditionalEntryParsing:
         assert valid is False
         assert any("invalidation_price" in e for e in errors)
 
+    def test_long_invalidation_equals_stop_accepted(self):
+        """LONG: inv_price == stop_loss is a valid unified kill level."""
+        block = _valid_block(
+            entry_trigger="candle_close_above",
+            entry_trigger_price=62500.0,
+            invalidation_price=59800.0,  # equal to stop_loss
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is True, errors
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["invalidation_price"] == 59800.0
+
+    def test_short_invalidation_equals_stop_accepted(self):
+        """SHORT: inv_price == stop_loss is a valid unified kill level."""
+        block = _valid_block(
+            direction="SHORT",
+            stop_loss=65000.0,
+            tp1=59000.0,
+            entry_trigger="candle_close_below",
+            entry_trigger_price=61000.0,
+            invalidation_price=65000.0,  # equal to stop_loss
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is True, errors
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+
     def test_limit_at_trigger_accepted(self):
         block = _valid_block(
             entry_trigger="limit_at",

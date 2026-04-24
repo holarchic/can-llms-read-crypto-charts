@@ -81,7 +81,7 @@ class ScannerConfig:
     max_setups_per_coin: int = 3
 
     # LLM
-    model: str = "claude-opus-4-6"
+    model: str = "claude-opus-4-7"
     max_llm_calls_per_scan: int = 40
     daily_cost_cap: float = 30.0
 
