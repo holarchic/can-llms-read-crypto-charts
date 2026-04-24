@@ -288,14 +288,14 @@ class TestConditionalEntryParsing:
         block = _valid_block(
             entry_trigger="candle_close_above",
             entry_trigger_price=62500.0,
-            invalidation_price=59000.0,
+            invalidation_price=60500.0,
             expiry_candles=12,
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
         assert result["entry_trigger"] == "candle_close_above"
         assert result["entry_trigger_price"] == 62500.0
-        assert result["invalidation_price"] == 59000.0
+        assert result["invalidation_price"] == 60500.0
         assert result["expiry_candles"] == 12
 
     def test_trigger_fields_optional(self):
@@ -308,7 +308,7 @@ class TestConditionalEntryParsing:
         block = _valid_block(
             entry_trigger="limit_order",  # not in allowed list
             entry_trigger_price=62500.0,
-            invalidation_price=59000.0,
+            invalidation_price=60500.0,
         )
         result = parse_machine_block(_wrap(block))
         assert result is None
@@ -325,33 +325,33 @@ class TestConditionalEntryParsing:
         block = _valid_block(
             entry_trigger="candle_close_above",
             entry_trigger_price=62500.0,
-            invalidation_price=59000.0,
+            invalidation_price=60500.0,
             expiry_candles=48,
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
         assert result["expiry_candles"] == 24
 
-    def test_long_invalidation_above_stop_rejected(self):
-        """LONG: invalidation_price should be below stop_loss."""
+    def test_long_invalidation_below_stop_rejected(self):
+        """LONG: invalidation_price must be >= stop_loss (pre-entry at least as cautious)."""
         block = _valid_block(
             entry_trigger="candle_close_above",
             entry_trigger_price=62500.0,
-            invalidation_price=60000.0,  # above stop_loss of 59800
+            invalidation_price=59000.0,  # below stop_loss of 59800 — looser pre-entry
         )
         valid, errors = validate_execution_params(block)
         assert valid is False
         assert any("invalidation_price" in e for e in errors)
 
-    def test_short_invalidation_below_stop_rejected(self):
-        """SHORT: invalidation_price should be above stop_loss."""
+    def test_short_invalidation_above_stop_rejected(self):
+        """SHORT: invalidation_price must be <= stop_loss (pre-entry at least as cautious)."""
         block = _valid_block(
             direction="SHORT",
             stop_loss=65000.0,
             tp1=59000.0,
             entry_trigger="candle_close_below",
             entry_trigger_price=61000.0,
-            invalidation_price=64000.0,  # below stop_loss of 65000
+            invalidation_price=66000.0,  # above stop_loss of 65000 — looser pre-entry
         )
         valid, errors = validate_execution_params(block)
         assert valid is False
@@ -385,11 +385,40 @@ class TestConditionalEntryParsing:
         result = parse_machine_block(_wrap(block))
         assert result is not None
 
+    def test_long_invalidation_tighter_than_stop_accepted(self):
+        """LONG: inv_price > stop_loss (pre-entry tighter than post-fill) is valid."""
+        block = _valid_block(
+            entry_trigger="candle_close_above",
+            entry_trigger_price=62500.0,
+            invalidation_price=60500.0,  # above stop_loss of 59800, below entry_low
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is True, errors
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["invalidation_price"] == 60500.0
+
+    def test_short_invalidation_tighter_than_stop_accepted(self):
+        """SHORT: inv_price < stop_loss (pre-entry tighter than post-fill) is valid."""
+        block = _valid_block(
+            direction="SHORT",
+            stop_loss=65000.0,
+            tp1=59000.0,
+            entry_trigger="candle_close_below",
+            entry_trigger_price=61000.0,
+            invalidation_price=63500.0,  # below stop_loss of 65000, above entry_high
+        )
+        valid, errors = validate_execution_params(block)
+        assert valid is True, errors
+        result = parse_machine_block(_wrap(block))
+        assert result is not None
+        assert result["invalidation_price"] == 63500.0
+
     def test_limit_at_trigger_accepted(self):
         block = _valid_block(
             entry_trigger="limit_at",
             entry_trigger_price=61000.0,
-            invalidation_price=58500.0,
+            invalidation_price=60000.0,
             expiry_candles=8,
         )
         result = parse_machine_block(_wrap(block))
@@ -400,7 +429,7 @@ class TestConditionalEntryParsing:
         block = _valid_block(
             entry_trigger="deviation_reclaim",
             entry_trigger_price=62000.0,
-            invalidation_price=58000.0,
+            invalidation_price=60200.0,
             expiry_candles=6,
         )
         result = parse_machine_block(_wrap(block))

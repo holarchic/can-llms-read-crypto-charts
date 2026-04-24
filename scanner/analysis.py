@@ -136,7 +136,8 @@ def analyze_for_scanner(
         "- entry_trigger: 'candle_close_above' or 'candle_close_below'\n"
         "- entry_trigger_price: the 1H close level that confirms entry\n"
         "- invalidation_price: kills the setup before the trigger fires\n"
-        "  (further from entry than stop_loss)\n"
+        "  (at or closer to entry than stop_loss — pre-entry must be at\n"
+        "  least as cautious as the post-fill stop)\n"
         "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
         "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
         "  execution re-brackets at trigger time\n\n"
@@ -176,7 +177,7 @@ def analyze_for_scanner(
         '"confidence": 7, "leverage": 5, '
         '"entry_trigger": "candle_close_above", '
         '"entry_trigger_price": 62000.0, '
-        '"invalidation_price": 59000.0, "expiry_candles": 8}\n'
+        '"invalidation_price": 60500.0, "expiry_candles": 8}\n'
         "MACHINE_BLOCK -->\n\n"
 
         "Field rules:\n"

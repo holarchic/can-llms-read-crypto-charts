@@ -340,11 +340,13 @@ def validate_execution_params(
     if has_any and not has_all:
         errors.append("conditional entry: entry_trigger, entry_trigger_price, and invalidation_price must all be present together")
     elif has_all and direction in ("LONG", "SHORT"):
-        # Allow inv_price == stop_loss (unified pre-fill/post-fill kill level).
-        # Only reject when inv is a LOOSER gate than stop (closer to entry).
-        if direction == "LONG" and inv_price > stop:
-            errors.append(f"LONG invalidation_price ({inv_price}) must be at or below stop_loss ({stop})")
-        if direction == "SHORT" and inv_price < stop:
-            errors.append(f"SHORT invalidation_price ({inv_price}) must be at or above stop_loss ({stop})")
+        # Pre-entry invalidation must be at least as cautious as the post-entry
+        # stop: inv triggers on an equal-or-smaller adverse move than stop_loss.
+        # LONG: inv_price >= stop_loss (equal, or closer to entry).
+        # SHORT: inv_price <= stop_loss (equal, or closer to entry).
+        if direction == "LONG" and inv_price < stop:
+            errors.append(f"LONG invalidation_price ({inv_price}) must be at or above stop_loss ({stop})")
+        if direction == "SHORT" and inv_price > stop:
+            errors.append(f"SHORT invalidation_price ({inv_price}) must be at or below stop_loss ({stop})")
 
     return (len(errors) == 0, errors)
