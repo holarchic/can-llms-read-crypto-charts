@@ -72,6 +72,14 @@ REJECT when any hold:
 - Confluence weak (score < 5)
 - Confirming event cannot be named
 
+## SETUP-SPECIFIC RULES
+
+**Setup B (breakout): IMMEDIATE-only.** The breakout candle must have
+already closed beyond the level. Do not emit B with a future
+`candle_close_above/below` trigger. Per ruleset §3.1, pre-close B is
+unresolved — wait for the close, then it is either B (held, IMMEDIATE
+entry or limit_at retest) or F (failed, enter via deviation_reclaim).
+
 ## OUTPUT FORMAT
 
 **For REJECT:**
@@ -92,7 +100,7 @@ REJECT when any hold:
 
 **Direction:** [LONG | SHORT]
 **Setup:** [A-G + short name, e.g. "C (SR flip continuation)"]
-**LLM Confidence:** [1-10]
+**LLM Confidence:** [1-10 — calibrate per scale below]
 **Reasoning:** [1-2 sentences — include the confirming event]
 
 \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -108,6 +116,16 @@ REJECT when any hold:
 \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 ////////////////////////////////////////////////////////////
+
+## CONFIDENCE SCALE
+
+LLM Confidence calibration — use the spread:
+- 1-4: should be REJECT, not CONFIRM
+- 5: marginal — leaning REJECT, confirming on benefit-of-doubt
+- 6: baseline confirm — all DECISION CRITERIA gates clear, no exceptional confluence
+- 7: strong — clean structure + multiple aligned confluences (trend + level + multi-TF)
+- 8: textbook — all confluences stacked, no visible weakness
+- 9-10: rare conviction-grade
 
 ## RULESET
 
