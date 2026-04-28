@@ -23,7 +23,7 @@ from scanner.models import (
 )
 
 from .config import ExecutionConfig
-from .exchange import fetch_current_price
+from .exchange import fetch_current_price, get_open_positions
 from .storage import (
     claim_pending,
     get_active_pending_entries,
@@ -414,6 +414,23 @@ def save_conditional_entry(
     if has_active_pending(coin, conn, exec_config.exchange, exec_config.mode):
         log.info("Pending entry already active for %s — skipping", coin)
         return False
+
+    # Position dedupe — block if coin already held. Prevents the trigger
+    # firing into a duplicate_position skip (TRIGGER_FAILED noise + duplicate
+    # Discord alerts). Match executor.py:168 pattern: prefer exchange truth,
+    # fall back to DB on testnet exception.
+    try:
+        if any(p["coin"] == coin for p in get_open_positions(exec_config)):
+            log.info("Open position exists for %s — skipping pending creation", coin)
+            return False
+    except Exception as exc:
+        if exec_config.mode == "live":
+            log.error("Position fetch failed in LIVE for %s: %s — blocking pending", coin, exc)
+            return False
+        log.warning("Position fetch failed: %s — falling back to DB (testnet)", exc)
+        if has_open_position(coin, None, conn, exec_config.exchange, exec_config.mode):
+            log.info("Open position exists for %s (DB) — skipping pending creation", coin)
+            return False
 
     # Clamp expiry to [1, max]. LLM-emitted expiry_candles=0 otherwise
     # creates a DOA pending that expires on its first monitor tick.

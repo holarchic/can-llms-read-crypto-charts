@@ -519,9 +519,10 @@ class TestCheckPendingEntries:
 
 class TestSaveConditionalEntry:
 
+    @patch("scanner.execution.entry_monitor.get_open_positions", return_value=[])
     @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=2300.0)
     @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
-    def test_saves_entry(self, mock_alert, mock_price, ce_config, conn):
+    def test_saves_entry(self, mock_alert, mock_price, mock_pos, ce_config, conn):
         from scanner.models import ScanResult
 
         result = ScanResult(
@@ -549,9 +550,10 @@ class TestSaveConditionalEntry:
         assert active[0]["coin"] == "ETH"
         assert active[0]["entry_trigger_price"] == 2350.0
 
+    @patch("scanner.execution.entry_monitor.get_open_positions", return_value=[])
     @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0)
     @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
-    def test_dedup_blocks_second(self, mock_alert, mock_price, ce_config, conn):
+    def test_dedup_blocks_second(self, mock_alert, mock_price, mock_pos, ce_config, conn):
         from scanner.models import ScanResult
 
         mb = {
@@ -576,9 +578,10 @@ class TestSaveConditionalEntry:
         assert save_conditional_entry(r1, ce_config, conn) is True
         assert save_conditional_entry(r2, ce_config, conn) is False
 
+    @patch("scanner.execution.entry_monitor.get_open_positions", return_value=[])
     @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0)
     @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
-    def test_saves_screener_direction(self, mock_alert, mock_price, ce_config, conn):
+    def test_saves_screener_direction(self, mock_alert, mock_price, mock_pos, ce_config, conn):
         """screener_direction (from setup_signal) persisted so counter-trend
         flag survives the scan → trigger gap."""
         from scanner.models import (
@@ -643,11 +646,112 @@ class TestSaveConditionalEntry:
                             cost_usd=0.0, machine_block=mb)
 
         with patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True), \
-             patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0):
+             patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0), \
+             patch("scanner.execution.entry_monitor.get_open_positions", return_value=[]):
             save_conditional_entry(result, ce_config, conn)
 
         row = conn.execute("SELECT expiry_candles FROM pending_entries").fetchone()
         assert row["expiry_candles"] == 10
+
+    def test_skips_when_position_open_exchange(self, ce_config, conn):
+        """Pending creation blocked when coin already has an open position
+        (exchange truth path). LLM-confirmed signal still logged in scans
+        upstream — only the pending row + alerts are suppressed here."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_dup", coin="BTC",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 93.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        positions = [{"coin": "BTC", "direction": "LONG", "size": 0.1,
+                      "entry_price": 50000.0, "unrealized_pnl": 0.0, "leverage": 5}]
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=positions), \
+             patch("scanner.execution.entry_monitor._send_pending_alert") as mock_alert:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is False
+        assert not has_active_pending("BTC", conn, "hyperliquid", "testnet")
+        mock_alert.assert_not_called()
+
+    def test_position_fetch_failure_live_blocks(self, ce_config, conn):
+        """In live mode, exchange-position fetch failure blocks pending
+        creation (mirrors executor.py reconciliation_error behavior)."""
+        from scanner.models import ScanResult
+
+        ce_config.mode = "live"
+
+        result = ScanResult(
+            scan_id="s_live", coin="BTC",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 93.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   side_effect=RuntimeError("exchange unreachable")), \
+             patch("scanner.execution.entry_monitor._send_pending_alert") as mock_alert:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is False
+        assert not has_active_pending("BTC", conn, "hyperliquid", "live")
+        mock_alert.assert_not_called()
+
+    @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=97.0)
+    @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
+    def test_position_fetch_failure_testnet_falls_back_to_db(
+        self, mock_alert, mock_price, ce_config, conn,
+    ):
+        """In testnet, exchange-fetch failure falls back to DB has_open_position.
+        With empty DB the save proceeds normally."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_testnet", coin="BTC",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 93.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   side_effect=RuntimeError("transient ccxt error")):
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        assert has_active_pending("BTC", conn, "hyperliquid", "testnet")
 
 
 # ---------------------------------------------------------------------------
