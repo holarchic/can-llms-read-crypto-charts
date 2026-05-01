@@ -1495,6 +1495,32 @@ class TestFillAlert:
         assert "R Value" not in field_names
 
     @patch("scanner.execution.monitor.requests.post")
+    def test_fill_alert_sl_drift_flatten_uses_original_sl(self, mock_post):
+        """Drift-flatten case: SL was moved to entry, then filled at entry.
+        Without using the original SL as risk anchor, risk = 0 → R=None →
+        R Value field omitted from alert (XRP/KBONK 2026-05-01 pattern).
+        With the fix, R reports +0.00R (correct breakeven outcome)."""
+        mock_post.return_value = MagicMock(status_code=204)
+        config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
+        entry = {"coin": "XRP", "direction": "LONG", "entry_price": 1.3704}
+        # Order that just filled is the post-drift SL (trigger == entry)
+        order = {"order_type": "stop_loss", "trigger_price": 1.3704}
+        # Scan order chain: original SL (1.3439) cancelled, drift-moved SL filled
+        scan_orders = [
+            {"order_type": "entry", "trigger_price": None, "created_at": "2026-04-30T12:06:40Z"},
+            {"order_type": "stop_loss", "trigger_price": 1.3439, "created_at": "2026-04-30T12:06:40Z"},
+            {"order_type": "stop_loss", "trigger_price": 1.3704, "created_at": "2026-05-01T00:10:51Z"},
+        ]
+
+        result = _send_fill_alert(entry, order, 1.3704, config, scan_orders=scan_orders)
+
+        assert result is True
+        embed = mock_post.call_args[1]["json"]["embeds"][0]
+        field_values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "R Value" in field_values
+        assert "+0.00R" in field_values["R Value"]
+
+    @patch("scanner.execution.monitor.requests.post")
     def test_fill_alert_no_entry_price(self, mock_post):
         """No entry_price on entry dict → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)

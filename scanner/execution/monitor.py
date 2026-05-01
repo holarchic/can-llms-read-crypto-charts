@@ -697,9 +697,12 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         )
 
         if fill_price is not None:
-            # Fetch SL trigger for R calculation
+            # Fetch ORIGINAL SL trigger for R calculation. Ordering matters —
+            # without it the engine returns whichever row it picks first, which
+            # for drift/trail-affected scans is the moved SL and collapses risk.
             sl_row = conn.execute(
-                "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' LIMIT 1",
+                "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' "
+                "ORDER BY created_at LIMIT 1",
                 (entry["scan_id"],),
             ).fetchone()
             sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
@@ -803,6 +806,25 @@ def _calc_r(entry_price: float, exit_price: float, sl_price: float, direction: s
         return (entry_price - exit_price) / risk
 
 
+def _original_sl_price(scan_orders: list[dict] | None) -> float | None:
+    """First-placed stop_loss trigger price for this scan.
+
+    Risk anchor for R reporting. Drift `sl_move` and post-TP1 trail mutate
+    the current SL; using the original keeps the R denominator stable across
+    the position lifecycle: drift-flatten reports +0.00R (not None) and
+    trailed runners report true R vs. initial risk.
+
+    `get_orders_for_scan` already orders by created_at then type — the first
+    stop_loss row is the original.
+    """
+    if not scan_orders:
+        return None
+    for o in scan_orders:
+        if o["order_type"] == "stop_loss" and o.get("trigger_price"):
+            return float(o["trigger_price"])
+    return None
+
+
 def _send_fill_alert(
     entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig,
     scan_orders: list[dict] | None = None,
@@ -821,14 +843,15 @@ def _send_fill_alert(
     # Calculate R value — scaled by fraction of original position this fill covers
     r_val = None
     if fill_price and entry.get("entry_price"):
-        if order["order_type"] == "stop_loss":
+        # Original (first-placed) SL is the risk anchor — drift sl_move and
+        # post-TP1 trail mutate the current SL, so using the order that just
+        # filled collapses risk to 0 on drift-flatten.
+        sl_price = _original_sl_price(scan_orders)
+        # Fallback for SL fills when scan_orders not passed (legacy callers
+        # / tests). For TP fills there's no fallback — without scan_orders we
+        # have no SL reference, so R stays None (existing behavior).
+        if sl_price is None and order["order_type"] == "stop_loss":
             sl_price = order.get("trigger_price")
-        else:
-            sl_order = next(
-                (o for o in (scan_orders or []) if o["order_type"] == "stop_loss"),
-                None,
-            )
-            sl_price = sl_order.get("trigger_price") if sl_order else None
         if sl_price:
             r_val = _calc_r(float(entry["entry_price"]), fill_price, float(sl_price), entry["direction"])
             # Scale by position fraction (e.g. SL on half position after TP1 = -0.5R not -1R)
