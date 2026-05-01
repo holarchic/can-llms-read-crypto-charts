@@ -537,7 +537,7 @@ class TestSaveConditionalEntry:
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_above",
                 "entry_trigger_price": 2350.0,
-                "invalidation_price": 2180.0,
+                "invalidation_price": 2250.0,
                 "expiry_candles": 12,
             },
         )
@@ -562,7 +562,7 @@ class TestSaveConditionalEntry:
             "confidence": 7, "leverage": 5,
             "entry_trigger": "candle_close_above",
             "entry_trigger_price": 100.0,
-            "invalidation_price": 93.0,
+            "invalidation_price": 96.0,
             "expiry_candles": 12,
         }
 
@@ -636,7 +636,7 @@ class TestSaveConditionalEntry:
             "confidence": 7, "leverage": 5,
             "entry_trigger": "candle_close_above",
             "entry_trigger_price": 100.0,
-            "invalidation_price": 93.0,
+            "invalidation_price": 96.0,
             "expiry_candles": 24,
         }
 
@@ -671,7 +671,7 @@ class TestSaveConditionalEntry:
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_above",
                 "entry_trigger_price": 100.0,
-                "invalidation_price": 93.0,
+                "invalidation_price": 96.0,
                 "expiry_candles": 12,
             },
         )
@@ -706,7 +706,7 @@ class TestSaveConditionalEntry:
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_above",
                 "entry_trigger_price": 100.0,
-                "invalidation_price": 93.0,
+                "invalidation_price": 96.0,
                 "expiry_candles": 12,
             },
         )
@@ -741,7 +741,7 @@ class TestSaveConditionalEntry:
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_above",
                 "entry_trigger_price": 100.0,
-                "invalidation_price": 93.0,
+                "invalidation_price": 96.0,
                 "expiry_candles": 12,
             },
         )
@@ -752,6 +752,40 @@ class TestSaveConditionalEntry:
 
         assert saved is True
         assert has_active_pending("BTC", conn, "hyperliquid", "testnet")
+
+    def test_skips_invalid_machine_block(self, ce_config, conn):
+        """Save-time backstop rejects mb's that violate validate_execution_params
+        (LONG inv<SL or SHORT inv>SL). Without this, ZEC/NEAR-shape blocks
+        become pendings that deterministically TRIGGER_FAILED at execute time."""
+        from scanner.models import ScanResult
+
+        # SHORT with invalidation_price (338) > stop_loss (335) — exact
+        # ZEC 2026-04-29 shape.
+        result = ScanResult(
+            scan_id="s_invalid", coin="ZEC",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 327, "entry_high": 329, "stop_loss": 335.0,
+                "tp1": 310, "tp1_exit_pct": 50, "direction": "SHORT",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_below",
+                "entry_trigger_price": 328.0,
+                "invalidation_price": 338.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor._send_pending_alert") as mock_alert:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is False
+        assert not has_active_pending("ZEC", conn, "hyperliquid", "testnet")
+        mock_alert.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

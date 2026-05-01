@@ -410,6 +410,17 @@ def save_conditional_entry(
     coin = result.coin
     direction = mb.get("direction", "").upper()
 
+    # Param validation — same canonical validator the executor runs.
+    # Without this backstop, blocks that violate LONG inv>=SL / SHORT inv<=SL
+    # (or any other rule) become pending rows that deterministically
+    # TRIGGER_FAILED at execute time (ZEC/NEAR 2026-04-29). Reject early.
+    from scanner.llm import validate_execution_params
+    valid, errors = validate_execution_params(mb)
+    if not valid:
+        log.warning("%s %s: invalid machine_block — %s",
+                    coin, direction, "; ".join(errors))
+        return False
+
     # Dedup — one active pending per coin
     if has_active_pending(coin, conn, exec_config.exchange, exec_config.mode):
         log.info("Pending entry already active for %s — skipping", coin)
