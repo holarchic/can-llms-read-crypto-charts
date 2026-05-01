@@ -510,12 +510,14 @@ def _place_replacement_exit_order(
             update_order_status(old_order["order_id"], "CANCELLED", conn)
             old_order["status"] = "CANCELLED"
         else:
+            # New order is live and the exchange already cleared the old one
+            # (typically "Order was never placed, already canceled, or filled").
+            # reduceOnly guarantees at most one fills. No paging — the prior
+            # URGENT here false-positived on every successful drift sl_move.
             log.warning(
                 "Could not cancel old %s %s for %s — duplicate on exchange (reduceOnly safe)",
                 order_type, old_exch_oid, entry["coin"],
             )
-            if order_type == "stop_loss":
-                _send_urgent_sl_alert(entry["coin"], direction, config)
 
     return True
 

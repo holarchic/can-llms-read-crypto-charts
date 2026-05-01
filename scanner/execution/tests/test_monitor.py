@@ -747,10 +747,14 @@ class TestPartialExitHandling:
     @patch("scanner.execution.monitor.requests.post")
     @patch("scanner.execution.monitor.cancel_order", return_value=False)
     @patch("scanner.execution.monitor.get_auth_exchange")
-    def test_tp1_cancel_failure_sends_urgent_and_still_replaces(
+    def test_tp1_cancel_failure_replaces_silently(
         self, mock_auth, mock_cancel, mock_post, config, conn,
     ):
-        """SL cancel fails after TP1 → new SL placed, old row stays PLACED, URGENT alert."""
+        """SL cleanup-cancel after TP1 returns False (typically because the
+        exchange already cleared the old SL via reduceOnly auto-cancel). New
+        SL is placed first, so the position is fully protected — this branch
+        is reduceOnly-safe and must NOT page. URGENT only fires on placement
+        failure (separate test above)."""
         config.discord_urgent_webhook_url = "https://discord.com/urgent"
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",
@@ -773,10 +777,10 @@ class TestPartialExitHandling:
 
         sync_order_status(config, conn)
 
-        # URGENT alert sent because cancel failed
+        # No URGENT — cleanup-cancel-failure is reduceOnly-safe
         urgent_calls = [c for c in mock_post.call_args_list
                         if "URGENT" in str(c)]
-        assert len(urgent_calls) >= 1
+        assert urgent_calls == []
 
         # New SL row placed at residual; old SL row stays PLACED (cancel failed)
         # Duplicate on exchange is reduceOnly-safe.
