@@ -602,14 +602,15 @@ class TestSaveConditionalEntry:
             confidence=0.7, key_level=100.0, context=ctx,
             description="same-way level",
         )
-        # LLM picks SHORT — counter-trend vs screener's LONG
+        # LLM picks SHORT — counter-trend vs screener's LONG.
+        # tp1=85 → R:R=3.0, satisfying counter_trend_min_rr gate.
         result = ScanResult(
             scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
             cost_usd=0.0, machine_block={
                 "entry_low": 99, "entry_high": 101, "stop_loss": 105,
-                "tp1": 90, "tp1_exit_pct": 50, "direction": "SHORT",
+                "tp1": 85, "tp1_exit_pct": 50, "direction": "SHORT",
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_below",
                 "entry_trigger_price": 99.0, "invalidation_price": 102.0,
@@ -786,6 +787,181 @@ class TestSaveConditionalEntry:
         assert saved is False
         assert not has_active_pending("ZEC", conn, "hyperliquid", "testnet")
         mock_alert.assert_not_called()
+
+    def test_rejects_counter_trend_below_min_rr(self, ce_config, conn):
+        """Counter-trend (screener ≠ LLM direction) with R:R below
+        counter_trend_min_rr rejected at save. Without this, blocks like
+        DOGE/LTC/WLD 2026-04-28..05-05 become pendings that deterministically
+        counter_trend_rr at execute time."""
+        from scanner.models import (
+            Direction,
+            MarketContext,
+            ScanResult,
+            SetupSignal,
+            SetupType,
+            Structure,
+        )
+
+        ctx = MarketContext(
+            structure=Structure.BEARISH, swings=[], sr_levels=[], msbs=[],
+            range_bounds=None, atr=2.0, current_price=100.0, fib_levels=None,
+        )
+        # Screener SHORT, LLM LONG → counter-trend.
+        # entry_mid=100, sl=95, tp1=108 → risk=5, reward=8, R:R=1.6
+        # counter_trend_min_rr default = 3.0 → reject.
+        setup = SetupSignal(
+            coin="DOGE", setup_type=SetupType.A, direction=Direction.SHORT,
+            confidence=0.7, key_level=100.0, context=ctx,
+            description="counter-trend candidate",
+        )
+        result = ScanResult(
+            scan_id="s_ct_low", coin="DOGE",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=setup, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 96.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=100.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert") as mock_alert:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is False
+        assert not has_active_pending("DOGE", conn, "hyperliquid", "testnet")
+        mock_alert.assert_not_called()
+
+    @patch("scanner.execution.entry_monitor.get_open_positions", return_value=[])
+    @patch("scanner.execution.entry_monitor.fetch_current_price", return_value=98.0)
+    @patch("scanner.execution.entry_monitor._send_pending_alert", return_value=True)
+    def test_accepts_same_direction_below_counter_trend_min(
+        self, mock_alert, mock_price, mock_pos, ce_config, conn,
+    ):
+        """Same-direction setup (screener == LLM) with R:R below
+        counter_trend_min_rr but above min_rr_ratio is accepted —
+        counter-trend gate must not apply when no direction flip.
+        current_price=98 keeps trigger (close_above@100) and invalidation
+        (96) untouched so immediate-check doesn't fire into the executor."""
+        from scanner.models import (
+            Direction,
+            MarketContext,
+            ScanResult,
+            SetupSignal,
+            SetupType,
+            Structure,
+        )
+
+        ctx = MarketContext(
+            structure=Structure.BULLISH, swings=[], sr_levels=[], msbs=[],
+            range_bounds=None, atr=2.0, current_price=100.0, fib_levels=None,
+        )
+        # Screener LONG, LLM LONG → not counter-trend.
+        # R:R = 8/5 = 1.6, below counter_trend_min_rr (3.0) but above
+        # base min_rr_ratio (0.5). Should be accepted.
+        setup = SetupSignal(
+            coin="ETH", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.7, key_level=100.0, context=ctx,
+            description="trend-aligned",
+        )
+        result = ScanResult(
+            scan_id="s_same", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=setup, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 96.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
+
+    def test_rejects_price_unit_mismatch(self, ce_config, conn):
+        """LLM emits zone in $K vs spot in $ — caught by check_price_sanity
+        entry_deviation_pct (BTC 2026-05-05 shape: zone [80.45, 80.85] vs
+        spot ~79803)."""
+        from scanner.models import ScanResult
+
+        # entry_mid=80.65 vs current_price=79803 → deviation ~98000% > 5%
+        result = ScanResult(
+            scan_id="s_unit", coin="BTC",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 80.45, "entry_high": 80.85, "stop_loss": 78.4,
+                "tp1": 84.8, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 80.55,
+                "invalidation_price": 78.8,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=79803.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert") as mock_alert:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is False
+        assert not has_active_pending("BTC", conn, "hyperliquid", "testnet")
+        mock_alert.assert_not_called()
+
+    def test_price_fetch_failure_skips_sanity_proceeds(self, ce_config, conn):
+        """If price fetch fails at save, sanity check is skipped and the
+        pending is created — executor will re-check at trigger time. The
+        immediate-check is also skipped (no spot to evaluate against)."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_nofetch", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM",
+            confluence_score=None, analysis_text=None,
+            parsed_decision=None, chart_paths=[], cost_usd=0.0,
+            machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 96.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   side_effect=RuntimeError("network unreachable")), \
+             patch("scanner.execution.entry_monitor._send_pending_alert",
+                   return_value=True):
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
 
 
 # ---------------------------------------------------------------------------

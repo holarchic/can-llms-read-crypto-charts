@@ -24,6 +24,7 @@ from scanner.models import (
 
 from .config import ExecutionConfig
 from .exchange import fetch_current_price, get_open_positions
+from .sanity import check_price_sanity
 from .storage import (
     claim_pending,
     get_active_pending_entries,
@@ -421,6 +422,26 @@ def save_conditional_entry(
                     coin, direction, "; ".join(errors))
         return False
 
+    # Counter-trend R:R gate. Executor enforces counter_trend_min_rr at
+    # execute time — mirroring it here prevents pendings that would
+    # deterministically counter_trend_rr at trigger (DOGE/LTC/WLD
+    # 2026-04-28..05-05; 3 of 7 V9.10 TRIGGER_FAILED cases).
+    screener_direction = (
+        result.setup_signal.direction.value if result.setup_signal else None
+    )
+    if screener_direction and screener_direction != direction:
+        entry_mid = (float(mb["entry_low"]) + float(mb["entry_high"])) / 2
+        risk = abs(entry_mid - float(mb["stop_loss"]))
+        tp = float(mb.get("tp1") or 0) or float(mb.get("tp2") or 0)
+        if risk > 0 and tp > 0:
+            rr = abs(tp - entry_mid) / risk
+            if rr < exec_config.counter_trend_min_rr:
+                log.warning(
+                    "%s %s: counter-trend R:R %.2f below min %.1f — rejecting pending",
+                    coin, direction, rr, exec_config.counter_trend_min_rr,
+                )
+                return False
+
     # Dedup — one active pending per coin
     if has_active_pending(coin, conn, exec_config.exchange, exec_config.mode):
         log.info("Pending entry already active for %s — skipping", coin)
@@ -443,15 +464,29 @@ def save_conditional_entry(
             log.info("Open position exists for %s (DB) — skipping pending creation", coin)
             return False
 
+    # Price sanity at save time. Catches LLM unit mismatches (BTC 2026-05-05
+    # zone in $K vs spot in $) and out-of-tolerance entry deviations before
+    # the pending is created. Best-effort: if price fetch fails, proceed and
+    # let the executor re-check at trigger time.
+    current_price = None
+    try:
+        current_price = fetch_current_price(coin, exec_config)
+    except Exception as exc:
+        log.warning("%s: price fetch failed at save — skipping sanity check (%s)", coin, exc)
+
+    if current_price is not None:
+        atr = result.setup_signal.context.atr if result.setup_signal else 0
+        sanity = check_price_sanity(mb, current_price, atr, exec_config)
+        if not sanity.passed:
+            log.warning("%s %s: price sanity fail at save — %s",
+                        coin, direction, "; ".join(sanity.errors))
+            return False
+
     # Clamp expiry to [1, max]. LLM-emitted expiry_candles=0 otherwise
     # creates a DOA pending that expires on its first monitor tick.
     expiry = max(
         1,
         min(int(mb.get("expiry_candles", 12)), exec_config.conditional_entry_max_expiry),
-    )
-
-    screener_direction = (
-        result.setup_signal.direction.value if result.setup_signal else None
     )
 
     entry = {
@@ -479,46 +514,47 @@ def save_conditional_entry(
         log.error("Failed to save conditional entry for %s: %s", coin, exc)
         return False
 
-    # Immediate check — fast path using spot price. Catches setups where
-    # the trigger is already met at save time, avoiding up to 60min wait.
-    # Dispatches by trigger type:
+    # Immediate check — fast path using the spot price already fetched for
+    # save-time sanity. Catches setups where the trigger is already met at
+    # save time, avoiding up to 60min wait. Dispatches by trigger type:
     # - candle_close_above/below: spot is a reasonable proxy for the next
     #   1H close (real 1H close check runs at the next boundary regardless)
     # - limit_at: spot touch semantics apply directly
     # - deviation_reclaim: needs candle history — no immediate check, the
     #   first 1H-boundary cycle evaluates it
-    try:
-        current_price = fetch_current_price(coin, exec_config)
-        trigger = entry["entry_trigger"]
-        if trigger == "limit_at":
-            event, action = evaluate_limit_at_trigger(
-                entry["entry_trigger_price"],
-                entry["invalidation_price"],
-                direction,
-                current_price,
-            )
-        elif trigger in ("candle_close_above", "candle_close_below"):
-            event, action = evaluate_entry_trigger(
-                trigger,
-                entry["entry_trigger_price"],
-                entry["invalidation_price"],
-                direction,
-                current_price,
-            )
-        else:
-            _event, action = (None, "none")
+    # If save-time fetch failed, skip — next monitor cycle picks it up.
+    if current_price is not None:
+        try:
+            trigger = entry["entry_trigger"]
+            if trigger == "limit_at":
+                event, action = evaluate_limit_at_trigger(
+                    entry["entry_trigger_price"],
+                    entry["invalidation_price"],
+                    direction,
+                    current_price,
+                )
+            elif trigger in ("candle_close_above", "candle_close_below"):
+                event, action = evaluate_entry_trigger(
+                    trigger,
+                    entry["entry_trigger_price"],
+                    entry["invalidation_price"],
+                    direction,
+                    current_price,
+                )
+            else:
+                _event, action = (None, "none")
 
-        if action == "execute":
-            log.info("Trigger already met for %s %s at %.5f — executing immediately",
-                     coin, direction, current_price)
-            _execute_triggered_entry(entry, current_price, exec_config, conn)
-        elif action == "kill":
-            log.info("Invalidation already met for %s %s at %.5f — killing",
-                     coin, direction, current_price)
-            update_pending_status(entry["pending_id"], "INVALIDATED", conn)
-            _send_resolution_alert(entry, "invalidated", exec_config)
-    except Exception as exc:
-        log.warning("Immediate trigger check failed for %s — will retry at next cycle: %s", coin, exc)
+            if action == "execute":
+                log.info("Trigger already met for %s %s at %.5f — executing immediately",
+                         coin, direction, current_price)
+                _execute_triggered_entry(entry, current_price, exec_config, conn)
+            elif action == "kill":
+                log.info("Invalidation already met for %s %s at %.5f — killing",
+                         coin, direction, current_price)
+                update_pending_status(entry["pending_id"], "INVALIDATED", conn)
+                _send_resolution_alert(entry, "invalidated", exec_config)
+        except Exception as exc:
+            log.warning("Immediate trigger check failed for %s — will retry at next cycle: %s", coin, exc)
 
     return True
 
