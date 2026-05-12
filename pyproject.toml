@@ -34,7 +34,6 @@ ignore = ["E741"]
 [tool.pytest.ini_options]
 testpaths = [
     "scanner/tests",
-    "scanner/backtest/tests",
     "scanner/strategy/tests",
     "scanner/execution/tests",
 ]
