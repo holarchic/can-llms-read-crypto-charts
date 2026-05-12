@@ -17,9 +17,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m scanner.cli                                           # Scan HL, HL-only candles (default)
-  python -m scanner.cli --exchange bybit                          # Scan Bybit (requires reachable host)
-  python -m scanner.cli --candle-exchanges hyperliquid bybit binance  # Multi-exchange cache (non-geo-blocked host)
+  python -m scanner.cli                                  # Scan HL (default)
+  python -m scanner.cli --exchange bybit                 # Scan Bybit (requires reachable host)
   python -m scanner.cli --dry-run                        # Stage 1 only, print signals
   python -m scanner.cli --coin BTC                       # Single coin
   python -m scanner.cli --no-discord                     # Skip Discord alerts
@@ -28,8 +27,6 @@ Examples:
     )
     parser.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
                         default="hyperliquid", help="Exchange to scan (default: hyperliquid)")
-    parser.add_argument("--candle-exchanges", nargs="+",
-                        help="Exchanges to collect candles from (default: hyperliquid only)")
     parser.add_argument("--dry-run", action="store_true", help="Run screener only, skip LLM + alerts")
     parser.add_argument("--coin", help="Scan a single coin (e.g. BTC, ETH, SOL)")
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord alerts")
@@ -142,8 +139,7 @@ Examples:
                       f"{r['decision'] or 'N/A':>7}  ${r['cost_usd']:.4f}  {r['timestamp'][:16]}")
         return
 
-    candle_exchanges = args.candle_exchanges if args.candle_exchanges is not None else ["hyperliquid"]
-    config = ScannerConfig(exchange=args.exchange, candle_exchanges=candle_exchanges)
+    config = ScannerConfig(exchange=args.exchange)
 
     # Build execution config with CLI overrides
     exec_config = None

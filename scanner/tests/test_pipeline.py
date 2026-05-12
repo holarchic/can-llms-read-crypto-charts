@@ -10,12 +10,7 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.pipeline import _collect_candles, _select_with_diversity, stage1_screen
-
-
-def test_collect_candles_empty_exchanges():
-    config = ScannerConfig(candle_exchanges=[])
-    _collect_candles([], config)  # should not raise
+from scanner.pipeline import _select_with_diversity, stage1_screen
 
 
 def _make_signal(

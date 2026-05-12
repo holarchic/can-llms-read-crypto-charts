@@ -20,15 +20,3 @@ class TestScannerConfigValidation:
     def test_invalid_exchange_raises(self):
         with pytest.raises(ValueError, match="Unknown exchange: 'kraken'"):
             ScannerConfig(exchange="kraken")
-
-    def test_invalid_candle_exchanges_raises(self):
-        with pytest.raises(ValueError, match="Unknown candle exchange: 'ftx'"):
-            ScannerConfig(candle_exchanges=["hyperliquid", "ftx"])
-
-    def test_valid_candle_exchanges(self):
-        cfg = ScannerConfig(candle_exchanges=["hyperliquid", "bybit"])
-        assert cfg.candle_exchanges == ["hyperliquid", "bybit"]
-
-    def test_empty_candle_exchanges_valid(self):
-        cfg = ScannerConfig(candle_exchanges=[])
-        assert cfg.candle_exchanges == []

@@ -45,15 +45,6 @@ class TestExchangeMeta:
         cfg = ScannerConfig(exchange="binance")
         assert cfg.exchange == "binance"
 
-    def test_config_default_candle_exchanges(self):
-        cfg = ScannerConfig()
-        # Default is HL-only; bybit/binance are geo-blocked from GCE us-central1.
-        assert cfg.candle_exchanges == ["hyperliquid"]
-
-    def test_config_custom_candle_exchanges(self):
-        cfg = ScannerConfig(candle_exchanges=["hyperliquid", "bybit"])
-        assert cfg.candle_exchanges == ["hyperliquid", "bybit"]
-
 
 # --- Data layer ---
 
