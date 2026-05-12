@@ -101,31 +101,6 @@ def db_conn(tmp_path):
     conn.close()
 
 
-class TestCandlesMigration:
-    def test_new_db_has_exchange_column(self, db_conn):
-        cols = {r[1] for r in db_conn.execute("PRAGMA table_info(candles)").fetchall()}
-        assert "exchange" in cols
-
-    def test_candles_pk_includes_exchange(self, db_conn):
-        """Same coin/interval/timestamp on different exchanges should be allowed."""
-        db_conn.execute(
-            "INSERT INTO candles (coin, interval, timestamp, open, high, low, close, volume, exchange) "
-            "VALUES ('BTC', '4h', '2026-01-01T00:00:00', 100, 105, 95, 102, 1000, 'hyperliquid')"
-        )
-        db_conn.execute(
-            "INSERT INTO candles (coin, interval, timestamp, open, high, low, close, volume, exchange) "
-            "VALUES ('BTC', '4h', '2026-01-01T00:00:00', 101, 106, 96, 103, 2000, 'bybit')"
-        )
-        db_conn.commit()
-
-        rows = db_conn.execute(
-            "SELECT exchange, close FROM candles WHERE coin='BTC' AND interval='4h'"
-        ).fetchall()
-        assert len(rows) == 2
-        exchanges = {r["exchange"] for r in rows}
-        assert exchanges == {"hyperliquid", "bybit"}
-
-
 class TestExchangeScopedDedup:
     def test_dedup_scoped_to_exchange(self, db_conn):
         """Duplicate check should be exchange-scoped."""

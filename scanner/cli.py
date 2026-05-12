@@ -8,7 +8,7 @@ import traceback
 from .alerts import COLOR_ERROR, send_ops_log
 from .config import ScannerConfig
 from .pipeline import run_scan
-from .storage import cleanup_old_candles, get_connection, signal_history, signal_stats, stats
+from .storage import get_connection, signal_history, signal_stats, stats
 
 
 def main():
@@ -36,7 +36,6 @@ Examples:
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
     parser.add_argument("--type", dest="setup_type", help="Filter by setup type (A-G)")
     parser.add_argument("--sent-only", action="store_true", help="Only show signals sent to LLM")
-    parser.add_argument("--cleanup-candles", action="store_true", help="Delete old candles per retention policy (15m: 180 days)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output")
 
     # Execution flags
@@ -58,12 +57,6 @@ Examples:
     root.addHandler(handler)
     root.setLevel(logging.WARNING)
     logging.getLogger("scanner.execution").setLevel(logging.INFO)
-
-    if args.cleanup_candles:
-        deleted = cleanup_old_candles()
-        if not args.quiet:
-            print(f"Candle cleanup: {deleted} rows deleted")
-        return
 
     if args.signal_stats:
         conn = get_connection()

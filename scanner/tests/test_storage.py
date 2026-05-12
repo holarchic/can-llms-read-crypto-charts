@@ -238,7 +238,6 @@ class TestMigrationCache:
         conn3.close()
         assert "scans" in tables
         assert "signals" in tables
-        assert "candles" in tables
 
     def test_get_connection_different_paths_both_migrate(self, tmp_path):
         """Two different db paths each get their own migrations."""

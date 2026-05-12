@@ -69,22 +69,6 @@ CREATE INDEX IF NOT EXISTS idx_signals_lookup
 ON signals (coin, setup_type, timestamp)
 """
 
-CREATE_CANDLES_TABLE = """
-CREATE TABLE IF NOT EXISTS candles (
-    coin TEXT NOT NULL,
-    interval TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    open REAL, high REAL, low REAL, close REAL, volume REAL,
-    exchange TEXT NOT NULL DEFAULT 'hyperliquid',
-    PRIMARY KEY (coin, interval, timestamp, exchange)
-)
-"""
-
-CREATE_CANDLES_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_candles_lookup
-ON candles (coin, interval, timestamp)
-"""
-
 CREATE_STRATEGIES_TABLE = """
 CREATE TABLE IF NOT EXISTS strategies (
     strategy_id TEXT PRIMARY KEY,
@@ -120,7 +104,7 @@ ON signals (strategy_id)
 """
 
 
-_VALID_TABLES = {"signals", "scans", "strategies", "candles", "scan_universe"}
+_VALID_TABLES = {"signals", "scans", "strategies", "scan_universe"}
 _VALID_COL_TYPES = {"TEXT", "REAL", "INTEGER"}
 
 
@@ -137,47 +121,6 @@ def _ensure_column(
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")
-
-
-def _migrate_candles_table(conn: sqlite3.Connection) -> None:
-    """Migrate candles table to include exchange in PK if needed.
-
-    Old PK: (coin, interval, timestamp)
-    New PK: (coin, interval, timestamp, exchange)
-    Existing rows get exchange='hyperliquid'.
-    """
-    # Check if candles table exists
-    exists = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='candles'"
-    ).fetchone()
-    if not exists:
-        conn.execute(CREATE_CANDLES_TABLE)
-        return
-
-    # Check if exchange column already exists
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(candles)").fetchall()}
-    if "exchange" in cols:
-        return
-
-    # Migrate: create new table → copy data → swap
-    conn.execute("""
-        CREATE TABLE candles_new (
-            coin TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            open REAL, high REAL, low REAL, close REAL, volume REAL,
-            exchange TEXT NOT NULL DEFAULT 'hyperliquid',
-            PRIMARY KEY (coin, interval, timestamp, exchange)
-        )
-    """)
-    conn.execute("""
-        INSERT INTO candles_new (coin, interval, timestamp, open, high, low, close, volume, exchange)
-        SELECT coin, interval, timestamp, open, high, low, close, volume, 'hyperliquid'
-        FROM candles
-    """)
-    conn.execute("DROP TABLE candles")
-    conn.execute("ALTER TABLE candles_new RENAME TO candles")
-    conn.commit()
 
 
 def _migrate_scans_direction(conn: sqlite3.Connection) -> None:
@@ -212,9 +155,6 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_INDEX)
     conn.execute(CREATE_SIGNALS_TABLE)
     conn.execute(CREATE_SIGNALS_INDEX)
-    # Candles table: migrate PK to include exchange if needed
-    _migrate_candles_table(conn)
-    conn.execute(CREATE_CANDLES_INDEX)
     conn.execute(CREATE_STRATEGIES_TABLE)
     conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
     # Migrate: add strategy_id to existing tables
@@ -552,38 +492,6 @@ def save_scan_universe(
     )
     conn.commit()
     return len(rows)
-
-
-def cleanup_old_candles(
-    retention_days: dict[str, int] | None = None,
-    conn: sqlite3.Connection | None = None,
-) -> int:
-    """Delete candles older than retention policy. Returns rows deleted.
-
-    Default retention: 15m = 180 days, others kept forever.
-    """
-    defaults = {"15m": 180}
-    policy = retention_days or defaults
-
-    own_conn = conn is None
-    if own_conn:
-        conn = get_connection()
-
-    total_deleted = 0
-    for interval, days in policy.items():
-        cursor = conn.execute(
-            "DELETE FROM candles WHERE interval = ? AND datetime(timestamp) < datetime('now', ?)",
-            (interval, f"-{days} days"),
-        )
-        total_deleted += cursor.rowcount
-
-    if total_deleted:
-        conn.commit()
-
-    if own_conn:
-        conn.close()
-
-    return total_deleted
 
 
 def signal_history(
