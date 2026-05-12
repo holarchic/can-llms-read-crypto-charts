@@ -24,13 +24,16 @@ Examples:
   python -m scanner.execution positions       # List open positions
   python -m scanner.execution orders          # Recent orders (7 days)
   python -m scanner.execution orders --days 3 # Recent orders (3 days)
+  python -m scanner.execution report --mode live --discord  # 7d + 28d perf + LLM cost
   python -m scanner.execution kill            # Activate kill switch
   python -m scanner.execution unkill          # Deactivate kill switch
         """,
     )
     parser.add_argument("command", choices=["monitor", "positions", "orders", "kill", "unkill", "report", "open-positions", "pending", "smoke"],
                         help="Subcommand to run")
-    parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
+    parser.add_argument("--days", type=int, default=7,
+                        help="Days of history for 'orders' subcommand (default: 7). "
+                             "'report' always uses 7d + 28d windows.")
     parser.add_argument("--mode", choices=["testnet", "live"], help="Filter by execution mode")
     parser.add_argument("--discord", action="store_true", help="Send report to Discord")
 
@@ -51,7 +54,7 @@ Examples:
     elif args.command == "unkill":
         _cmd_kill(config, active=False)
     elif args.command == "report":
-        _cmd_report(config, args.days, args.mode, args.discord)
+        _cmd_report(config, args.mode, args.discord)
     elif args.command == "open-positions":
         _cmd_open_positions(config, args.discord)
     elif args.command == "pending":
@@ -252,26 +255,35 @@ def _cmd_kill(config, active):
     print(f"Kill switch: {'ACTIVE' if status else 'INACTIVE'}")
 
 
-def _cmd_report(config, days, mode, discord):
+def _cmd_report(config, mode, discord):
+    """Actual-trade performance: 7d + 28d windows + LLM cost.
+
+    `mode` defaults to `config.mode` (so cron without --mode reports against
+    the configured execution mode rather than mixing testnet + live).
+    """
     import requests as req
 
     from scanner.storage import get_connection
 
-    from .analytics import compare_sim_vs_live, compute_live_metrics, get_closed_trades
+    from .analytics import compute_live_metrics, get_closed_trades, llm_cost_summary
     from .report import build_execution_embeds, format_execution_report
 
+    effective_mode = mode or config.mode
+
     conn = get_connection()
-    trades = get_closed_trades(conn, execution_mode=mode, days=days)
-    metrics = compute_live_metrics(trades)
-    sim_vs_live = compare_sim_vs_live(trades, conn)
+    trades_7d = get_closed_trades(conn, execution_mode=effective_mode, days=7)
+    trades_28d = get_closed_trades(conn, execution_mode=effective_mode, days=28)
+    metrics_7d = compute_live_metrics(trades_7d)
+    metrics_28d = compute_live_metrics(trades_28d)
+    cost_7d = llm_cost_summary(conn, 7)
+    cost_28d = llm_cost_summary(conn, 28)
     conn.close()
 
-    report_mode = mode or "all"
-    report = format_execution_report(metrics, sim_vs_live, report_mode)
+    report = format_execution_report(metrics_7d, metrics_28d, cost_7d, cost_28d, effective_mode)
     print(report)
 
     if discord and config.discord_ops_webhook_url:
-        embeds = build_execution_embeds(metrics, sim_vs_live, report_mode)
+        embeds = build_execution_embeds(metrics_7d, metrics_28d, cost_7d, cost_28d, effective_mode)
         try:
             resp = req.post(
                 config.discord_ops_webhook_url,
