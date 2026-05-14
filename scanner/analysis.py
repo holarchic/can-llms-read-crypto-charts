@@ -152,10 +152,11 @@ def analyze_for_scanner(
         "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
         "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
         "  execution re-brackets at trigger time\n\n"
-        "Examples of CONDITIONAL confirming events (Setup C, D — never B or F):\n"
+        "Examples of CONDITIONAL confirming events:\n"
         "- LONG pullback (C): 1H close above a broken resistance that is now support\n"
         "- SHORT pullback (C): 1H close below a broken support that is now resistance\n"
-        "- LONG OTE retrace (D): 1H close inside the 0.618-0.786 zone after bullish MSB\n\n"
+        "- LONG OTE retrace (D): 1H close inside the 0.618-0.786 zone after bullish MSB\n"
+        "- B retest: `limit_at` at the broken level (no `candle_close_*` trigger)\n\n"
 
         "**IMMEDIATE (exception):** The confirming event already printed on\n"
         "the last closed candle. Name it in Confirming Event.\n"
