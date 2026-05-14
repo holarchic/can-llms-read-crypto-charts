@@ -131,7 +131,8 @@ def analyze_for_scanner(
         "is already complete on the last closed candle. **Exception:** Setup B\n"
         "(breakout) and Setup F (deviation) are IMMEDIATE-only per\n"
         "SETUP-SPECIFIC RULES — wait for the confirming close, then emit\n"
-        "IMMEDIATE. No future trigger.\n\n"
+        "IMMEDIATE. (Setup B may also use `limit_at` on a retest; no other\n"
+        "future triggers for B. F is IMMEDIATE only — no future trigger.)\n\n"
 
         "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
         "must print before entry. The monitor watches 1H closes, enters on\n"
@@ -169,7 +170,9 @@ def analyze_for_scanner(
         "  expiry_candles\n\n"
 
         "Price at a level without confirmation yet = CONDITIONAL. Specify\n"
-        "the candle close that confirms it.\n\n"
+        "the candle close that confirms it. (Except for Setup B and Setup F\n"
+        "per SETUP-SPECIFIC RULES — wait for the close instead, then emit\n"
+        "IMMEDIATE on that close.)\n\n"
 
         "## INVALIDATION FIELDS (CONFIRM only)\n"
         "- **Expected Hold:** trade duration estimate (e.g. '1-2 days')\n"
@@ -202,9 +205,12 @@ def analyze_for_scanner(
         "## CORE RULES (recap)\n"
         "- Default to CONDITIONAL. IMMEDIATE requires a confirming event on\n"
         "  the last closed candle.\n"
+        "- **Setup B and Setup F are IMMEDIATE-only** (B may also use\n"
+        "  `limit_at` on a retest). Wait for the confirming close; no future\n"
+        "  trigger for B/F.\n"
         "- Name the confirming event in every CONFIRM.\n"
         "- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n"
-        "  REJECT.\n"
+        "  REJECT — except for B/F (above).\n"
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
