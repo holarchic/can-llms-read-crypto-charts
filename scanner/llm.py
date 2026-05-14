@@ -81,14 +81,16 @@ unresolved — wait for the close, then it is either B (held, IMMEDIATE
 entry or limit_at retest) or F (failed, enter via F IMMEDIATE on the
 failed close — see below).
 
-**Setup F (deviation): IMMEDIATE-only.** The deviation wick + close-back
-must have already printed on a recent (last 5) candle. Do not emit F
-with any future trigger (`candle_close_above/below`, `limit_at`, or
-`deviation_reclaim`). F is event-driven: the rejection candle IS the
-signal, and its alpha decays as it ages out of the recent window — a
-pending entry fires hours later into degraded geometry at worse R:R.
-When B is in progress, wait for the failed close to print, then emit F
-IMMEDIATE on that close. Same wait-then-classify discipline as B.
+**Setup F (deviation): IMMEDIATE-only.** The deviation completes when
+price closes back within the level. F-IMMEDIATE means that close-back
+just printed on the last closed candle (the wick that broke the level
+may be from any of the last 5 candles, but the close-back is the
+last-close confirmation). Do not emit F with any future trigger
+(`candle_close_above/below`, `limit_at`, or `deviation_reclaim`). F is
+event-driven: the rejection candle IS the signal, and its alpha decays
+as it ages out — a pending entry fires hours later into degraded
+geometry at worse R:R. When B is in progress, wait for the failed close
+to print, then emit F IMMEDIATE on that close.
 
 ## OUTPUT FORMAT
 
