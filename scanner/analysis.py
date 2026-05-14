@@ -128,7 +128,10 @@ def analyze_for_scanner(
 
         "## ENTRY TYPE — pick one\n"
         "Default to CONDITIONAL. Use IMMEDIATE only when the confirming event\n"
-        "is already complete on the last closed candle.\n\n"
+        "is already complete on the last closed candle. **Exception:** Setup B\n"
+        "(breakout) and Setup F (deviation) are IMMEDIATE-only per\n"
+        "SETUP-SPECIFIC RULES — wait for the confirming close, then emit\n"
+        "IMMEDIATE. No future trigger.\n\n"
 
         "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
         "must print before entry. The monitor watches 1H closes, enters on\n"
@@ -146,11 +149,10 @@ def analyze_for_scanner(
         "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
         "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
         "  execution re-brackets at trigger time\n\n"
-        "Examples of CONDITIONAL confirming events:\n"
-        "- LONG breakout: 1H close above resistance (price below level now)\n"
-        "- SHORT rejection: 1H close back below resistance after an excess wick\n"
-        "- LONG pullback: 1H close above a broken resistance that is now support\n"
-        "- SHORT breakdown: 1H close below a support level price is testing\n\n"
+        "Examples of CONDITIONAL confirming events (Setup C, D — never B or F):\n"
+        "- LONG pullback (C): 1H close above a broken resistance that is now support\n"
+        "- SHORT pullback (C): 1H close below a broken support that is now resistance\n"
+        "- LONG OTE retrace (D): 1H close inside the 0.618-0.786 zone after bullish MSB\n\n"
 
         "**IMMEDIATE (exception):** The confirming event already printed on\n"
         "the last closed candle. Name it in Confirming Event.\n"
