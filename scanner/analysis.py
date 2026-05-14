@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.10"
+PROMPT_VERSION = "9.11"
 
 import logging
 import uuid
