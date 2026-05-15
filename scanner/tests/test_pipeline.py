@@ -6,11 +6,14 @@ from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
     MarketContext,
+    ScanResult,
     SetupSignal,
     SetupType,
     Structure,
 )
-from scanner.pipeline import _select_with_diversity, stage1_screen
+from datetime import datetime, timezone
+
+from scanner.pipeline import _select_with_diversity, stage1_screen, stage4_execute
 
 
 def _make_signal(
@@ -185,3 +188,56 @@ class TestTestnetPairFilter:
 
             called_coins = mock_batch.call_args[0][0]
             assert set(called_coins) == {"BTC", "ENA"}
+
+
+def _make_scan_result(coin="BTC"):
+    return ScanResult(
+        scan_id=f"scan-{coin}",
+        coin=coin,
+        timestamp=datetime.now(timezone.utc),
+        setup_signal=_make_signal(coin=coin),
+        decision="CONFIRM",
+        confluence_score=None,
+        analysis_text=None,
+        parsed_decision=None,
+        chart_paths=[],
+        cost_usd=0.0,
+        machine_block={
+            "direction": "LONG",
+            "entry_trigger": "limit_at",
+            "entry_trigger_price": 95.0,
+            "invalidation_price": 90.0,
+        },
+    )
+
+
+class TestStage4ConditionalRouting:
+    """A CONFIRM that qualifies as a conditional entry must never fall through
+    to an immediate market order when save_conditional_entry returns False.
+    Falling through bypassed pending dedupe and double-exposed when the
+    existing pending later triggered (Codex audit 2026-05-15, R1)."""
+
+    def _run(self, saved):
+        confirm = _make_scan_result()
+        exec_config = MagicMock(enabled=True, mode="testnet",
+                                conditional_entry_enabled=True)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.execution.entry_monitor.save_conditional_entry",
+                   return_value=saved), \
+             patch("scanner.execution.executor.execute_trade") as mock_exec, \
+             patch("scanner.execution.executor.send_skip_alert"):
+            results = stage4_execute([confirm], ScannerConfig(), exec_config,
+                                     verbose=False)
+        return results, mock_exec
+
+    def test_reject_does_not_market_fill(self):
+        results, mock_exec = self._run(saved=False)
+        mock_exec.assert_not_called()
+        assert len(results) == 1
+        assert results[0].skip_reason == "conditional_rejected"
+
+    def test_saved_records_pending(self):
+        results, mock_exec = self._run(saved=True)
+        mock_exec.assert_not_called()
+        assert len(results) == 1
+        assert results[0].skip_reason == "conditional_pending"

@@ -327,8 +327,8 @@ def stage4_execute(
                     and mb.get("invalidation_price")):
                 from .execution.entry_monitor import save_conditional_entry
                 saved = save_conditional_entry(confirm, exec_config, conn)
+                direction = mb.get("direction", "?")
                 if saved:
-                    direction = mb.get("direction", "?")
                     print(f"  {confirm.coin} {direction}: PENDING conditional entry "
                           f"({mb['entry_trigger']} @ {mb['entry_trigger_price']})")
                     results.append(ExecutionResult(
@@ -337,7 +337,23 @@ def stage4_execute(
                         direction=direction,
                         skip_reason="conditional_pending",
                     ))
-                    continue
+                else:
+                    # save_conditional_entry returned False (invalid params,
+                    # counter-trend R:R, active-pending/open-position dedupe, or
+                    # price-sanity reject). The LLM asked for a conditional entry
+                    # at a trigger price — falling through to execute_trade() here
+                    # would place an immediate market order that bypasses pending
+                    # dedupe and double-exposes when the existing pending later
+                    # triggers. A rejected conditional entry is a skip, never a
+                    # market fill.
+                    print(f"  {confirm.coin} {direction}: SKIPPED — conditional_rejected")
+                    results.append(ExecutionResult(
+                        scan_id=confirm.scan_id,
+                        coin=confirm.coin,
+                        direction=direction,
+                        skip_reason="conditional_rejected",
+                    ))
+                continue
 
             er = execute_trade(confirm, exec_config, scanner_config, conn)
             results.append(er)
