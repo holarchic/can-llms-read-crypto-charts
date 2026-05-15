@@ -963,6 +963,81 @@ class TestSaveConditionalEntry:
         assert saved is True
         assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
 
+    def test_candle_close_met_at_spot_does_not_immediate_execute(
+        self, ce_config, conn,
+    ):
+        """A candle_close_above pending whose trigger is already met at spot
+        must NOT immediate-execute at save time. The trigger is a *completed
+        1H close*; spot is not a proxy for it. Evaluating off spot fired an
+        unconfirmed intrabar market entry (Codex audit 2026-05-15, R2-1).
+        The pending is saved and waits for the 1H-boundary monitor cycle."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_cc_spot", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 96.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=105.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert",
+                   return_value=True), \
+             patch("scanner.execution.entry_monitor._execute_triggered_entry") as mock_exec:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        mock_exec.assert_not_called()
+        assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
+
+    def test_limit_at_met_at_spot_still_immediate_executes(
+        self, ce_config, conn,
+    ):
+        """limit_at retains the spot-touch immediate fast path: an
+        already-reached level fills now rather than waiting up to 60min.
+        Guards against R2-1 over-reach (must not disable limit_at too)."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_la_spot", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block={
+                "entry_low": 99, "entry_high": 101, "stop_loss": 88,
+                "tp1": 120, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "limit_at",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 90.0,
+                "expiry_candles": 12,
+            },
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=97.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert",
+                   return_value=True), \
+             patch("scanner.execution.entry_monitor._execute_triggered_entry") as mock_exec:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        mock_exec.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # _reconstruct_scan_result tests — R:R preservation + counter-trend flag

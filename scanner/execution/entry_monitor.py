@@ -515,27 +515,19 @@ def save_conditional_entry(
         return False
 
     # Immediate check — fast path using the spot price already fetched for
-    # save-time sanity. Catches setups where the trigger is already met at
-    # save time, avoiding up to 60min wait. Dispatches by trigger type:
-    # - candle_close_above/below: spot is a reasonable proxy for the next
-    #   1H close (real 1H close check runs at the next boundary regardless)
-    # - limit_at: spot touch semantics apply directly
-    # - deviation_reclaim: needs candle history — no immediate check, the
-    #   first 1H-boundary cycle evaluates it
+    # save-time sanity. limit_at ONLY: its trigger semantics are spot-touch,
+    # so spot IS the real signal and an already-met level should fill now
+    # rather than wait up to 60min. candle_close_above/below is deliberately
+    # excluded: its trigger is a *completed 1H close*, for which spot is not
+    # a proxy — evaluating it off spot here fires an unconfirmed intrabar
+    # market entry, defeating the close-confirmation the trigger exists for.
+    # candle_close_*/deviation_reclaim wait for the 1H-boundary monitor cycle.
     # If save-time fetch failed, skip — next monitor cycle picks it up.
     if current_price is not None:
         try:
             trigger = entry["entry_trigger"]
             if trigger == "limit_at":
                 event, action = evaluate_limit_at_trigger(
-                    entry["entry_trigger_price"],
-                    entry["invalidation_price"],
-                    direction,
-                    current_price,
-                )
-            elif trigger in ("candle_close_above", "candle_close_below"):
-                event, action = evaluate_entry_trigger(
-                    trigger,
                     entry["entry_trigger_price"],
                     entry["invalidation_price"],
                     direction,
