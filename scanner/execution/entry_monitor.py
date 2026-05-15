@@ -116,53 +116,6 @@ def evaluate_limit_at_trigger(
     return (None, "none")
 
 
-def evaluate_deviation_reclaim(
-    entry_trigger_price: float,
-    invalidation_price: float,
-    direction: str,
-    candle_closes: list[float],
-) -> tuple[str | None, str]:
-    """Detect excess + reclaim over a sequence of 1H candle closes.
-
-    Ruleset §4.4 Trigger 3 — two-part pattern:
-    - LONG (failed breakdown): a close BELOW entry_trigger_price (excess), then
-      a subsequent close ABOVE entry_trigger_price (reclaim) → trigger fires.
-    - SHORT (failed breakout): a close ABOVE entry_trigger_price (excess), then
-      a subsequent close BELOW entry_trigger_price (reclaim) → trigger fires.
-
-    Invalidation short-circuits: if any close breaches invalidation_price,
-    return ("invalidated", "kill") immediately. Ordering matches the single-
-    candle evaluator — safety first.
-
-    Returns ("triggered", "execute") / ("invalidated", "kill") / (None, "none").
-    Pass closes in chronological order (oldest → newest).
-    """
-    excess_seen = False
-    for close in candle_closes:
-        # Invalidation check first — overrides everything
-        if direction == "LONG" and close <= invalidation_price:
-            return ("invalidated", "kill")
-        if direction == "SHORT" and close >= invalidation_price:
-            return ("invalidated", "kill")
-
-        if direction == "LONG":
-            if not excess_seen:
-                if close < entry_trigger_price:
-                    excess_seen = True
-            else:
-                if close > entry_trigger_price:
-                    return ("triggered", "execute")
-        else:  # SHORT
-            if not excess_seen:
-                if close > entry_trigger_price:
-                    excess_seen = True
-            else:
-                if close < entry_trigger_price:
-                    return ("triggered", "execute")
-
-    return (None, "none")
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -192,40 +145,6 @@ def _fetch_1h_candle(coin: str) -> dict | None:
     except Exception as exc:
         log.error("Failed to fetch 1H candle for %s: %s", coin, exc)
         return None
-
-
-def _fetch_1h_candles_since(coin: str, since: datetime, limit: int = 48) -> list[dict]:
-    """Fetch completed 1H candles at or after a given UTC timestamp.
-
-    Returns list of dicts (timestamp, open, high, low, close) oldest first.
-    Drops the in-progress candle. Used by deviation_reclaim where the
-    trigger state depends on the full close sequence since the pending was
-    saved, not just the latest candle.
-    """
-    try:
-        from scanner.data import fetch_candles
-        df = fetch_candles(coin, "1h", limit + 1)
-        if df is None or len(df) < 2:
-            return []
-        df = df.iloc[:-1]  # drop in-progress
-        records = []
-        for ts, row in df.iterrows():
-            # Normalize tz — fetch_candles returns tz-aware UTC but defend anyway
-            ts_aware = ts if ts.tzinfo else ts.tz_localize("UTC")
-            since_aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
-            if ts_aware < since_aware:
-                continue
-            records.append({
-                "timestamp": ts_aware.isoformat(),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-            })
-        return records
-    except Exception as exc:
-        log.error("Failed to fetch 1H candles since %s for %s: %s", since, coin, exc)
-        return []
 
 
 def _empty_setup_signal(coin: str, direction: Direction) -> SetupSignal:
@@ -521,7 +440,7 @@ def save_conditional_entry(
     # excluded: its trigger is a *completed 1H close*, for which spot is not
     # a proxy — evaluating it off spot here fires an unconfirmed intrabar
     # market entry, defeating the close-confirmation the trigger exists for.
-    # candle_close_*/deviation_reclaim wait for the 1H-boundary monitor cycle.
+    # candle_close_* waits for the 1H-boundary monitor cycle.
     # If save-time fetch failed, skip — next monitor cycle picks it up.
     if current_price is not None:
         try:
@@ -554,7 +473,7 @@ def save_conditional_entry(
 def check_pending_entries(exec_config: ExecutionConfig, conn) -> int:
     """Top-level pending entry check.
 
-    Candle-based triggers (candle_close_above/below, deviation_reclaim) run
+    Candle-based triggers (candle_close_above/below) run
     only at 1H boundaries — their evaluators depend on completed 1H candles.
     Spot-based triggers (limit_at) run every monitor cycle so a fast price
     sweep through the buy/sell level isn't missed by hour-gated polling.
@@ -651,9 +570,7 @@ def _process_pending_entry(
 ) -> int:
     """Process a single pending entry against the latest 1H candle(s).
 
-    Dispatches to the appropriate evaluator based on entry_trigger:
-    - candle_close_above/below → single latest candle
-    - deviation_reclaim → candle history since pending created_at
+    Evaluates the trigger against the latest completed 1H candle.
 
     Returns 1 if acted (triggered/invalidated/expired), 0 otherwise.
     """
@@ -670,42 +587,19 @@ def _process_pending_entry(
 
     trigger = entry["entry_trigger"]
 
-    # Deviation reclaim needs the full close sequence since pending was saved
-    if trigger == "deviation_reclaim":
-        try:
-            since = datetime.fromisoformat(entry["created_at"])
-        except (ValueError, TypeError):
-            since = datetime.now(timezone.utc)
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        candles = _fetch_1h_candles_since(coin, since, limit=48)
-        if not candles:
-            log.warning("No 1H candles since %s for %s — skipping", since.isoformat(), coin)
-            return 0
-        latest = candles[-1]
-        latest_close = latest["close"]
-        closes = [c["close"] for c in candles]
-        event, action = evaluate_deviation_reclaim(
-            float(entry["entry_trigger_price"]),
-            float(entry["invalidation_price"]),
-            direction,
-            closes,
-        )
-    else:
-        # Candle-close triggers use the single latest completed candle
-        single = _fetch_1h_candle(coin)
-        if single is None:
-            log.warning("No 1H candle for %s — skipping this cycle", coin)
-            return 0
-        latest = single
-        latest_close = single["close"]
-        event, action = evaluate_entry_trigger(
-            trigger,
-            float(entry["entry_trigger_price"]),
-            float(entry["invalidation_price"]),
-            direction,
-            latest_close,
-        )
+    single = _fetch_1h_candle(coin)
+    if single is None:
+        log.warning("No 1H candle for %s — skipping this cycle", coin)
+        return 0
+    latest = single
+    latest_close = single["close"]
+    event, action = evaluate_entry_trigger(
+        trigger,
+        float(entry["entry_trigger_price"]),
+        float(entry["invalidation_price"]),
+        direction,
+        latest_close,
+    )
 
     # Stale candle protection — latest candle timestamp should be within 2 hours
     try:

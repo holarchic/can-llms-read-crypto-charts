@@ -10,7 +10,6 @@ import pytest
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.entry_monitor import (
     _reconstruct_scan_result,
-    evaluate_deviation_reclaim,
     evaluate_entry_trigger,
     evaluate_limit_at_trigger,
     is_1h_boundary,
@@ -168,89 +167,6 @@ class TestEvaluateEntryTrigger:
             "candle_close_above", 100.0, 90.0, "LONG", 97.0)
         assert event is None
         assert action == "none"
-
-
-class TestEvaluateDeviationReclaim:
-    """Ruleset §4.4: excess + reclaim two-part pattern."""
-
-    def test_long_excess_then_reclaim_fires(self):
-        # Price: 100 (at level), 99 (excess below support), 100.5 (reclaim)
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 99.0, 100.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
-
-    def test_long_no_reclaim_yet(self):
-        # Price goes below but never back above
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 99.0, 98.5, 99.5],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_no_excess_yet(self):
-        # Price stayed above support the whole time — no excess, no trigger
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.5, 101.0, 100.2],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_short_excess_then_reclaim_fires(self):
-        # Resistance at 100: price breaks to 101 (excess above), closes back at 99.5
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.0, 101.0, 99.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
-
-    def test_short_no_reclaim_yet(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.5, 101.0, 101.5],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_invalidation_overrides_reclaim(self):
-        # Excess AND invalidation hit simultaneously — invalidation wins
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 96.5, 100.2],
-        )
-        assert event == "invalidated"
-        assert action == "kill"
-
-    def test_short_invalidation_overrides_reclaim(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.0, 103.5, 99.0],
-        )
-        assert event == "invalidated"
-        assert action == "kill"
-
-    def test_empty_closes_returns_none(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_excess_extends_then_reclaims(self):
-        # Extended excess before reclaim — should still fire on reclaim
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=95.0,
-            direction="LONG",
-            candle_closes=[100.0, 99.0, 98.0, 97.5, 100.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
 
 
 class TestEvaluateLimitAt:

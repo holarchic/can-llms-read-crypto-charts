@@ -425,17 +425,6 @@ class TestConditionalEntryParsing:
         assert result is not None
         assert result["entry_trigger"] == "limit_at"
 
-    def test_deviation_reclaim_trigger_accepted(self):
-        block = _valid_block(
-            entry_trigger="deviation_reclaim",
-            entry_trigger_price=62000.0,
-            invalidation_price=60200.0,
-            expiry_candles=6,
-        )
-        result = parse_machine_block(_wrap(block))
-        assert result is not None
-        assert result["entry_trigger"] == "deviation_reclaim"
-
 
 # --- V9.1 observability fields (setup_type, confluence_score, confirming_event) ---
 

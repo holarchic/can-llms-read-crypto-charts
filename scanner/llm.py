@@ -241,7 +241,7 @@ def parse_machine_block(text: str) -> dict | None:
     # Coerce optional conditional entry fields
     _VALID_TRIGGERS = (
         "candle_close_above", "candle_close_below",
-        "limit_at", "deviation_reclaim",
+        "limit_at",
     )
     if "entry_trigger" in data:
         if data["entry_trigger"] not in _VALID_TRIGGERS:
