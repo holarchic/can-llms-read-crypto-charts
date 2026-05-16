@@ -15,6 +15,7 @@ import requests
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
+    MachineBlock,
     MarketContext,
     ScanResult,
     SetupSignal,
@@ -185,25 +186,11 @@ def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
     Restores the screener direction on setup_signal so executor can still
     flag counter-trend entries (0.5x risk, min_rr=3.0, shorter timeout).
     """
-    mb = json.loads(pending["machine_block"])
-
-    # Shift SL/TP by the delta between trigger_close and original entry_mid.
-    # Same logic as sizing.reanchor_exit_prices but applied to the saved mb.
-    orig_entry_low = float(mb.get("entry_low", 0))
-    orig_entry_high = float(mb.get("entry_high", 0))
-    orig_entry_mid = (orig_entry_low + orig_entry_high) / 2 if orig_entry_low else trigger_close
-    delta = trigger_close - orig_entry_mid
-    if mb.get("stop_loss") is not None:
-        mb["stop_loss"] = float(mb["stop_loss"]) + delta
-    if mb.get("tp1") is not None:
-        mb["tp1"] = float(mb["tp1"]) + delta
-    if mb.get("tp2") is not None:
-        mb["tp2"] = float(mb["tp2"]) + delta
-
-    # Bracket the trigger close price for the entry zone
-    buffer = trigger_close * 0.005
-    mb["entry_low"] = trigger_close - buffer
-    mb["entry_high"] = trigger_close + buffer
+    raw = json.loads(pending["machine_block"])
+    # T-016 C4: parse once through the canonical boundary, then reanchor
+    # purely (replaces the prior in-place dict mutation; arithmetic is
+    # byte-identical — proven by the equivalence battery).
+    mb = MachineBlock.from_raw(raw)
 
     setup_signal = None
     screener_dir = pending.get("screener_direction")
@@ -212,6 +199,23 @@ def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
             setup_signal = _empty_setup_signal(pending["coin"], Direction(screener_dir))
         except ValueError:
             log.warning("Unknown screener_direction %s for %s", screener_dir, pending["coin"])
+
+    if mb is None:
+        # Defensive only: stored pendings are save-validated
+        # (save_conditional_entry runs validate_execution_params and the block
+        # was parse_machine_block'd), so from_raw cannot fail here in
+        # production. If a corrupted/legacy row ever does, fail safe — a None
+        # machine_block makes execute_trade skip ("no_machine_block") and the
+        # trigger flow then marks the pending TRIGGER_FAILED: the same terminal
+        # outcome as the prior path's invalid_params skip, only the
+        # skip_reason label refines.
+        mb_out = None
+        confidence = None
+    else:
+        mb_out = mb.reanchored(trigger_close)
+        # raw (pre-coercion) value, exactly as the prior mb.get("confidence")
+        # — reanchor never touched confidence.
+        confidence = raw.get("confidence")
 
     return ScanResult(
         scan_id=pending["scan_id"],
@@ -224,8 +228,8 @@ def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
         parsed_decision=None,
         chart_paths=[],
         cost_usd=0.0,
-        machine_block=mb,
-        llm_confidence=mb.get("confidence"),
+        machine_block=mb_out,
+        llm_confidence=confidence,
         detected_at=datetime.now(timezone.utc),
     )
 
@@ -324,11 +328,11 @@ def save_conditional_entry(
     Returns True if saved, False on error or duplicate.
     """
     mb = result.machine_block
-    if not mb:
+    if mb is None:
         return False
 
     coin = result.coin
-    direction = mb.get("direction", "").upper()
+    direction = mb.direction.upper()
 
     # Param validation — same canonical validator the executor runs.
     # Without this backstop, blocks that violate LONG inv>=SL / SHORT inv<=SL
@@ -349,9 +353,9 @@ def save_conditional_entry(
         result.setup_signal.direction.value if result.setup_signal else None
     )
     if screener_direction and screener_direction != direction:
-        entry_mid = (float(mb["entry_low"]) + float(mb["entry_high"])) / 2
-        risk = abs(entry_mid - float(mb["stop_loss"]))
-        tp = float(mb.get("tp1") or 0) or float(mb.get("tp2") or 0)
+        entry_mid = (mb.entry_low + mb.entry_high) / 2
+        risk = abs(entry_mid - mb.stop_loss)
+        tp = (mb.tp1 or 0.0) or (mb.tp2 or 0.0)
         if risk > 0 and tp > 0:
             rr = abs(tp - entry_mid) / risk
             if rr < exec_config.counter_trend_min_rr:
@@ -405,7 +409,10 @@ def save_conditional_entry(
     # creates a DOA pending that expires on its first monitor tick.
     expiry = max(
         1,
-        min(int(mb.get("expiry_candles", 12)), exec_config.conditional_entry_max_expiry),
+        min(
+            int(mb.expiry_candles if mb.expiry_candles is not None else 12),
+            exec_config.conditional_entry_max_expiry,
+        ),
     )
 
     entry = {
@@ -414,9 +421,9 @@ def save_conditional_entry(
         "coin": coin,
         "direction": direction,
         "machine_block": json.dumps(mb.to_raw()),
-        "entry_trigger": mb["entry_trigger"],
-        "entry_trigger_price": float(mb["entry_trigger_price"]),
-        "invalidation_price": float(mb["invalidation_price"]),
+        "entry_trigger": mb.entry_trigger,
+        "entry_trigger_price": float(mb.entry_trigger_price),
+        "invalidation_price": float(mb.invalidation_price),
         "expiry_candles": expiry,
         "exchange": exec_config.exchange,
         "execution_mode": exec_config.mode,
@@ -427,7 +434,7 @@ def save_conditional_entry(
     try:
         save_pending_entry(entry, conn)
         log.info("Conditional entry saved: %s %s — trigger %s @ %.5f, expiry %dh",
-                 coin, direction, mb["entry_trigger"], entry["entry_trigger_price"], expiry)
+                 coin, direction, mb.entry_trigger, entry["entry_trigger_price"], expiry)
         _send_pending_alert(entry, exec_config)
     except Exception as exc:
         log.error("Failed to save conditional entry for %s: %s", coin, exc)

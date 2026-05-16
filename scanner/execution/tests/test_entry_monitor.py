@@ -65,9 +65,16 @@ def _make_pending(coin="BTC", direction="LONG", trigger="candle_close_above",
         "scan_id": f"s_{coin.lower()}",
         "coin": coin,
         "direction": direction,
+        # Direction-valid geometry (T-016 C4: the stored block now passes
+        # through from_raw on reconstruction, which runs validate — a SHORT
+        # block needs stop ABOVE entry and tp BELOW, exactly as
+        # save_conditional_entry would have required at save time). LONG path
+        # unchanged.
         "machine_block": json.dumps({
-            "entry_low": 99.0, "entry_high": 101.0, "stop_loss": 95.0,
-            "tp1": 110.0, "tp1_exit_pct": 50, "direction": direction,
+            "entry_low": 99.0, "entry_high": 101.0,
+            "stop_loss": 105.0 if direction == "SHORT" else 95.0,
+            "tp1": 90.0 if direction == "SHORT" else 110.0,
+            "tp1_exit_pct": 50, "direction": direction,
             "confidence": 7, "leverage": 5,
             "entry_trigger": trigger, "entry_trigger_price": trigger_price,
             "invalidation_price": inv_price, "expiry_candles": expiry,
@@ -1022,6 +1029,32 @@ class TestReconstructScanResult:
         result = _reconstruct_scan_result(pending, trigger_close=100.0)
 
         assert result.setup_signal is None
+
+    def test_invalid_stored_block_fails_safe(self):
+        """T-016 C4 reconstruction-of-invalid: stored pendings are
+        save-validated so this is unreachable in production, but a
+        corrupted/legacy row whose machine_block fails from_raw must fail
+        SAFE — machine_block=None so execute_trade skips and the trigger
+        flow marks the pending TRIGGER_FAILED (same terminal outcome as the
+        prior path's invalid_params skip; only the skip_reason label
+        refines). No spurious trade.
+        """
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = "LONG"
+        # Corrupt the stored block: LONG with stop ABOVE entry (validate
+        # rejects) — a state save_conditional_entry could never have
+        # persisted.
+        mb = json.loads(pending["machine_block"])
+        mb["stop_loss"] = 200.0
+        pending["machine_block"] = json.dumps(mb)
+
+        result = _reconstruct_scan_result(pending, trigger_close=100.0)
+
+        assert result.machine_block is None
+        assert result.llm_confidence is None
+        # setup_signal reconstructs independently of machine_block validity
+        # (screener_direction drives counter-trend detection).
+        assert result.setup_signal is not None
 
 
 # ---------------------------------------------------------------------------
