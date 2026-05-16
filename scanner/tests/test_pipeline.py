@@ -253,7 +253,7 @@ class TestStage4ConditionalRouting:
 class TestStage4StalenessRefAdapter:
     """The detected_at-or-timestamp staleness fallback moved from execute_trade
     to the stage4 ExecutionRequest adapter (SPEC #21). Guard it at the layer
-    that now owns it: the request's resolved `detected_at` must be
+    that now owns it: the request's resolved `staleness_ref` must be
     `confirm.detected_at` when set, else `confirm.timestamp`."""
 
     def _plain_confirm(self, detected_at, timestamp):
@@ -295,9 +295,9 @@ class TestStage4StalenessRefAdapter:
         det = datetime(2026, 5, 16, 9, 0, tzinfo=timezone.utc)
         ts = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
         req = self._captured_request(self._plain_confirm(det, ts))
-        assert req.detected_at == det
+        assert req.staleness_ref == det
 
     def test_falls_back_to_timestamp_when_detected_at_none(self):
         ts = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
         req = self._captured_request(self._plain_confirm(None, ts))
-        assert req.detected_at == ts
+        assert req.staleness_ref == ts

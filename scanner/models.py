@@ -341,9 +341,16 @@ class ExecutionRequest:
     conditional-entry triggers to fabricate a synthetic `ScanResult`+empty
     `SetupSignal`. Each caller now builds this directly. `screener_direction`
     is the raw screener side for counter-trend detection (None ⇒ no
-    counter-trend, matching the prior `setup_signal is None` path);
-    `detected_at` is the already-resolved staleness reference (the prior
-    `result.detected_at or result.timestamp`, collapsed at the build site).
+    counter-trend, matching the prior `setup_signal is None` path).
+
+    `staleness_ref` is the single timestamp the executor's staleness guard
+    measures age against — it is NOT necessarily "detection time". Each
+    caller resolves what that reference is: the scan path passes
+    `confirm.detected_at or confirm.timestamp` (the prior in-executor
+    fallback, now collapsed at the build site); the conditional-entry
+    trigger path passes trigger-fire `now()`. Naming it for the invariant
+    (staleness reference) rather than one caller's source keeps the contract
+    discoverable from the type (codex Phase-1b arch review).
     """
 
     scan_id: str
@@ -352,4 +359,4 @@ class ExecutionRequest:
     screener_direction: str | None
     atr: float
     max_leverage: int | None
-    detected_at: datetime
+    staleness_ref: datetime

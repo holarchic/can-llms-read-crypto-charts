@@ -117,11 +117,11 @@ def execute_trade(
     er.direction = req.screener_direction or ""
 
     # 0. Staleness guard — reject signals older than the configured limit.
-    #    Uses detected_at (screener time) when available so slow LLM stage2
-    #    still gives the signal its full staleness budget — but budget itself
-    #    (default 45min) has to be wide enough to absorb realistic stage2+
-    #    stage3+stage4 latency, not just the price-moved-too-far concern.
-    age_seconds = (datetime.now(timezone.utc) - req.detected_at).total_seconds()
+    #    `staleness_ref` is resolved by the caller (scan path: screener
+    #    detected_at, falling back to scan timestamp; trigger path: trigger
+    #    fire time). The budget (default 45min) must be wide enough to absorb
+    #    realistic stage2+stage3+stage4 latency, not just price-moved-too-far.
+    age_seconds = (datetime.now(timezone.utc) - req.staleness_ref).total_seconds()
     max_age = exec_config.signal_staleness_max_seconds
     if age_seconds > max_age:
         er.skip_reason = "stale_signal"

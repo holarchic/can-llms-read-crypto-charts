@@ -363,7 +363,7 @@ def stage4_execute(
                 screener_direction=sig.direction.value if sig else None,
                 atr=sig.context.atr if sig else 0.0,
                 max_leverage=sig.max_leverage if sig else None,
-                detected_at=confirm.detected_at or confirm.timestamp,
+                staleness_ref=confirm.detected_at or confirm.timestamp,
             )
             er = execute_trade(req, exec_config, scanner_config, conn)
             results.append(er)

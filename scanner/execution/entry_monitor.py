@@ -195,7 +195,7 @@ def _build_execution_request(pending: dict, trigger_close: float) -> ExecutionRe
         screener_direction=screener_direction,
         atr=0.0,
         max_leverage=None,
-        detected_at=datetime.now(timezone.utc),
+        staleness_ref=datetime.now(timezone.utc),
     )
 
 

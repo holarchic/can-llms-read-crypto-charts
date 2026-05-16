@@ -106,7 +106,7 @@ def _make_request(machine_block=_UNSET, coin="BTC", screener_direction=_UNSET, *
         "screener_direction": screener_direction,
         "atr": 500.0,
         "max_leverage": 20,
-        "detected_at": datetime.now(timezone.utc),
+        "staleness_ref": datetime.now(timezone.utc),
     }
     defaults.update(overrides)
     return ExecutionRequest(**defaults)
@@ -243,22 +243,22 @@ class TestExecuteTrade:
 
     def test_skip_stale_signal(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        old_detected = datetime.now(timezone.utc) - timedelta(minutes=60)
-        sr = _make_request(detected_at=old_detected)
+        old_ref = datetime.now(timezone.utc) - timedelta(minutes=60)
+        sr = _make_request(staleness_ref=old_ref)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "stale_signal"
 
     # The prior "detected_at None → fall back to timestamp" executor test is
-    # retired here: ExecutionRequest carries a single resolved `detected_at`
+    # retired here: ExecutionRequest carries a single resolved `staleness_ref`
     # (SPEC #21). The detected_at-or-timestamp fallback now lives in the
     # pipeline adapter and is guarded by
-    # test_pipeline.test_stage4_staleness_ref_falls_back_to_timestamp.
+    # test_pipeline.TestStage4StalenessRefAdapter.
 
     def test_fresh_signal_passes_staleness(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        fresh_detected = datetime.now(timezone.utc) - timedelta(minutes=10)
-        sr = _make_request(detected_at=fresh_detected, machine_block=None)
+        fresh_ref = datetime.now(timezone.utc) - timedelta(minutes=10)
+        sr = _make_request(staleness_ref=fresh_ref, machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should pass staleness but fail on no_machine_block (next check)
         assert result.skip_reason == "no_machine_block"
