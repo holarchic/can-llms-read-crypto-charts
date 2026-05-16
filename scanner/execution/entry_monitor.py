@@ -413,7 +413,7 @@ def save_conditional_entry(
         "scan_id": result.scan_id,
         "coin": coin,
         "direction": direction,
-        "machine_block": json.dumps(mb),
+        "machine_block": json.dumps(mb.to_raw()),
         "entry_trigger": mb["entry_trigger"],
         "entry_trigger_price": float(mb["entry_trigger_price"]),
         "invalidation_price": float(mb["invalidation_price"]),

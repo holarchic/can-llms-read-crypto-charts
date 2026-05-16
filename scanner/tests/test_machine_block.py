@@ -11,12 +11,95 @@ this is the pure boundary contract.
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from scanner.llm import parse_machine_block
 from scanner.models import MachineBlock
+
+
+def _legacy_parse_machine_block(text: str):
+    """FROZEN verbatim copy of parse_machine_block as it was BEFORE T-016
+    Phase 1a (commit 83ddd7a), returning a plain dict | None.
+
+    This is the behaviour-preservation baseline. The battery must compare
+    against this frozen reference, NOT the live parse_machine_block — C2
+    rewrites the live function to delegate to MachineBlock.from_raw, so
+    comparing against it would be circular (from_raw vs itself). Do not
+    "tidy" this to call shared code; its whole value is that it cannot drift.
+    """
+    m = re.search(
+        r"<!--\s*MACHINE_BLOCK\s*\n(.+?)\nMACHINE_BLOCK\s*-->", text, re.DOTALL,
+    )
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1).strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    required = {
+        "entry_low": (int, float), "entry_high": (int, float),
+        "stop_loss": (int, float), "tp1": (int, float),
+        "tp1_exit_pct": (int, float), "direction": str,
+        "confidence": (int, float), "leverage": (int, float),
+    }
+    for fld, types in required.items():
+        if fld not in data or not isinstance(data[fld], types):
+            return None
+    for fld in ("entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
+                "confidence", "leverage"):
+        data[fld] = float(data[fld])
+    if "tp2" in data:
+        if not isinstance(data["tp2"], (int, float)):
+            return None
+        data["tp2"] = float(data["tp2"])
+    if "tp2_exit_pct" in data:
+        if not isinstance(data["tp2_exit_pct"], (int, float)):
+            return None
+        data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
+    _VT = ("candle_close_above", "candle_close_below", "limit_at")
+    if "entry_trigger" in data and data["entry_trigger"] not in _VT:
+        return None
+    for opt_num in ("entry_trigger_price", "invalidation_price"):
+        if opt_num in data:
+            if not isinstance(data[opt_num], (int, float)):
+                return None
+            data[opt_num] = float(data[opt_num])
+    if "expiry_candles" in data:
+        if not isinstance(data["expiry_candles"], (int, float)):
+            return None
+        data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
+    _VST = ("A", "B", "C", "D", "E", "F", "G")
+    if "setup_type" in data:
+        if not isinstance(data["setup_type"], str):
+            return None
+        st = data["setup_type"].strip().upper()
+        if st not in _VST:
+            return None
+        data["setup_type"] = st
+    if "confluence_score" in data:
+        if not isinstance(data["confluence_score"], (int, float)):
+            return None
+        score = int(data["confluence_score"])
+        if not 0 <= score <= 15:
+            return None
+        data["confluence_score"] = score
+    if "confirming_event" in data:
+        if not isinstance(data["confirming_event"], str):
+            return None
+        ev = data["confirming_event"].strip()
+        if not 10 <= len(ev) <= 200:
+            return None
+        data["confirming_event"] = ev
+    from scanner.llm import validate_execution_params
+    valid, _e = validate_execution_params(data)
+    if not valid:
+        return None
+    return data
 
 _CORPUS = json.loads(
     (Path(__file__).parent / "fixtures" / "machine_block_corpus.json").read_text()
@@ -61,7 +144,7 @@ def test_corpus_loaded():
 @pytest.mark.parametrize("src,raw", _ROWS, ids=[f"{t}:{i}" for t in ("scans", "pending_entries") for i in range(len(_CORPUS[t]))])
 def test_from_raw_matches_parse_machine_block(src, raw):
     d = json.loads(raw)
-    old = parse_machine_block(_wrap(raw))
+    old = _legacy_parse_machine_block(_wrap(raw))
     mb = MachineBlock.from_raw(d)
 
     # Reject parity: from_raw is None on EXACTLY the inputs parse rejects.
@@ -106,7 +189,7 @@ def _valid_block(**over):
 
 def test_unknown_keys_round_trip_via_extra():
     raw = _valid_block(future_field="v9.3-thing", nested={"a": [1, 2]})
-    old = parse_machine_block(_wrap(json.dumps(raw)))
+    old = _legacy_parse_machine_block(_wrap(json.dumps(raw)))
     mb = MachineBlock.from_raw(raw)
     assert old is not None and mb is not None
     assert mb.extra == {"future_field": "v9.3-thing", "nested": {"a": [1, 2]}}
@@ -130,7 +213,7 @@ def test_unknown_keys_round_trip_via_extra():
 ])
 def test_malformed_rejected_like_parser(bad):
     assert (MachineBlock.from_raw(bad) is None) == (
-        parse_machine_block(_wrap(json.dumps(bad))) is None
+        _legacy_parse_machine_block(_wrap(json.dumps(bad))) is None
     )
     assert MachineBlock.from_raw(bad) is None
 
@@ -161,3 +244,21 @@ def test_shim_matches_dict_semantics():
         _ = mb["confirming_event"]
     # unknown key absent
     assert "totally_unknown" not in mb
+
+
+# --- C2: live parse_machine_block delegates correctly to from_raw ----------
+
+@pytest.mark.parametrize("src,raw", _ROWS, ids=[f"{t}:{i}" for t in ("scans", "pending_entries") for i in range(len(_CORPUS[t]))])
+def test_live_parse_delegates_to_from_raw(src, raw):
+    """C2 contract: the rewritten parse_machine_block returns a typed
+    MachineBlock equal to from_raw, with to_raw matching the frozen legacy
+    dict, over the full real corpus.
+    """
+    live = parse_machine_block(_wrap(raw))
+    legacy = _legacy_parse_machine_block(_wrap(raw))
+    if legacy is None:
+        assert live is None
+        return
+    assert isinstance(live, MachineBlock)
+    assert live == MachineBlock.from_raw(json.loads(raw))
+    assert live.to_raw() == legacy

@@ -24,6 +24,16 @@ from scanner.execution.storage import (
     update_last_checked_hour,
     update_pending_status,
 )
+from scanner.models import MachineBlock
+
+
+def _mb(d):
+    """T-016 C2: the parse boundary now yields a typed MachineBlock, so
+    save_conditional_entry fixtures wrap their raw dict exactly as the real
+    pipeline does (parse_machine_block -> MachineBlock.from_raw). An invalid
+    block -> None, identical to the production reject path (the equivalence
+    battery proves from_raw rejects iff parse_machine_block did)."""
+    return MachineBlock.from_raw(d)
 
 
 @pytest.fixture
@@ -447,7 +457,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 2300, "entry_high": 2350, "stop_loss": 2200,
                 "tp1": 2500, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -455,7 +465,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 2350.0,
                 "invalidation_price": 2250.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         saved = save_conditional_entry(result, ce_config, conn)
@@ -472,7 +482,7 @@ class TestSaveConditionalEntry:
     def test_dedup_blocks_second(self, mock_alert, mock_price, mock_pos, ce_config, conn):
         from scanner.models import ScanResult
 
-        mb = {
+        mb = _mb({
             "entry_low": 99, "entry_high": 101, "stop_loss": 95,
             "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
             "confidence": 7, "leverage": 5,
@@ -480,7 +490,7 @@ class TestSaveConditionalEntry:
             "entry_trigger_price": 100.0,
             "invalidation_price": 96.0,
             "expiry_candles": 12,
-        }
+        })
 
         r1 = ScanResult(scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
                         setup_signal=None, decision="CONFIRM", confluence_score=None,
@@ -524,14 +534,14 @@ class TestSaveConditionalEntry:
             scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 105,
                 "tp1": 85, "tp1_exit_pct": 50, "direction": "SHORT",
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_below",
                 "entry_trigger_price": 99.0, "invalidation_price": 102.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         save_conditional_entry(result, ce_config, conn)
@@ -547,7 +557,7 @@ class TestSaveConditionalEntry:
 
         ce_config.conditional_entry_max_expiry = 10
 
-        mb = {
+        mb = _mb({
             "entry_low": 99, "entry_high": 101, "stop_loss": 95,
             "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
             "confidence": 7, "leverage": 5,
@@ -555,7 +565,7 @@ class TestSaveConditionalEntry:
             "entry_trigger_price": 100.0,
             "invalidation_price": 96.0,
             "expiry_candles": 24,
-        }
+        })
 
         result = ScanResult(scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
                             setup_signal=None, decision="CONFIRM", confluence_score=None,
@@ -582,7 +592,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -590,7 +600,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         positions = [{"coin": "BTC", "direction": "LONG", "size": 0.1,
@@ -617,7 +627,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -625,7 +635,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -652,7 +662,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -660,7 +670,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -684,7 +694,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 327, "entry_high": 329, "stop_loss": 335.0,
                 "tp1": 310, "tp1_exit_pct": 50, "direction": "SHORT",
                 "confidence": 7, "leverage": 5,
@@ -692,7 +702,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 328.0,
                 "invalidation_price": 338.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -735,7 +745,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -743,7 +753,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -794,7 +804,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -802,7 +812,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         saved = save_conditional_entry(result, ce_config, conn)
@@ -823,7 +833,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 80.45, "entry_high": 80.85, "stop_loss": 78.4,
                 "tp1": 84.8, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -831,7 +841,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 80.55,
                 "invalidation_price": 78.8,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -857,7 +867,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -865,7 +875,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -894,7 +904,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=None, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -902,7 +912,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -931,7 +941,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=None, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 88,
                 "tp1": 120, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -939,7 +949,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 90.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",

@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .config import STRATEGY_PATH
+from .models import MachineBlock
 
 
 def load_strategy() -> str:
@@ -183,11 +184,17 @@ def parse_decision_block(text: str) -> dict:
     return result
 
 
-def parse_machine_block(text: str) -> dict | None:
-    """Extract and parse the MACHINE_BLOCK JSON from LLM output.
+def parse_machine_block(text: str) -> MachineBlock | None:
+    """Extract the MACHINE_BLOCK JSON from LLM output and normalize it.
 
     Looks for: <!-- MACHINE_BLOCK\n{json}\nMACHINE_BLOCK -->
-    Returns parsed dict or None if missing/malformed.
+
+    Thin text-extraction boundary only: regex + json.loads, then delegates
+    ALL normalization/validation to the single canonical normalizer
+    `MachineBlock.from_raw` (T-016 Phase 1a, SPEC #20). Returns the typed
+    MachineBlock, or None on exactly the inputs it rejected before (missing
+    block, malformed JSON, structural ∪ business-rule reject — from_raw
+    reproduces the prior contract; proven by the equivalence battery).
     """
     m = re.search(
         r"<!--\s*MACHINE_BLOCK\s*\n(.+?)\nMACHINE_BLOCK\s*-->",
@@ -202,93 +209,7 @@ def parse_machine_block(text: str) -> dict | None:
     except (json.JSONDecodeError, ValueError):
         return None
 
-    if not isinstance(data, dict):
-        return None
-
-    # Required fields and their expected types
-    required = {
-        "entry_low": (int, float),
-        "entry_high": (int, float),
-        "stop_loss": (int, float),
-        "tp1": (int, float),
-        "tp1_exit_pct": (int, float),
-        "direction": str,
-        "confidence": (int, float),
-        "leverage": (int, float),
-    }
-
-    for field, types in required.items():
-        if field not in data:
-            return None
-        if not isinstance(data[field], types):
-            return None
-
-    # Coerce numeric fields to float
-    for field in ("entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
-                  "confidence", "leverage"):
-        data[field] = float(data[field])
-
-    # Coerce optional tp2 fields
-    if "tp2" in data:
-        if not isinstance(data["tp2"], (int, float)):
-            return None
-        data["tp2"] = float(data["tp2"])
-    if "tp2_exit_pct" in data:
-        if not isinstance(data["tp2_exit_pct"], (int, float)):
-            return None
-        data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
-
-    # Coerce optional conditional entry fields
-    _VALID_TRIGGERS = (
-        "candle_close_above", "candle_close_below",
-        "limit_at",
-    )
-    if "entry_trigger" in data:
-        if data["entry_trigger"] not in _VALID_TRIGGERS:
-            return None
-    for opt_num in ("entry_trigger_price", "invalidation_price"):
-        if opt_num in data:
-            if not isinstance(data[opt_num], (int, float)):
-                return None
-            data[opt_num] = float(data[opt_num])
-    if "expiry_candles" in data:
-        if not isinstance(data["expiry_candles"], (int, float)):
-            return None
-        data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
-
-    # V9.1 observability fields (graceful — missing accepted, invalid rejected).
-    # TODO(2026-04-26): review LLM compliance rate for these fields; if > 95%
-    # populated, flip to required in V9.2 so CONFIRM decisions without them
-    # are rejected rather than logged.
-    _VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
-    if "setup_type" in data:
-        if not isinstance(data["setup_type"], str):
-            return None
-        st = data["setup_type"].strip().upper()
-        if st not in _VALID_SETUP_TYPES:
-            return None
-        data["setup_type"] = st
-    if "confluence_score" in data:
-        if not isinstance(data["confluence_score"], (int, float)):
-            return None
-        score = int(data["confluence_score"])
-        if not 0 <= score <= 15:
-            return None
-        data["confluence_score"] = score
-    if "confirming_event" in data:
-        if not isinstance(data["confirming_event"], str):
-            return None
-        ev = data["confirming_event"].strip()
-        if not 10 <= len(ev) <= 200:
-            return None
-        data["confirming_event"] = ev
-
-    # Business-rule validation — reject blocks with bad geometry/ranges
-    valid, _errors = validate_execution_params(data)
-    if not valid:
-        return None
-
-    return data
+    return MachineBlock.from_raw(data)
 
 
 def validate_execution_params(

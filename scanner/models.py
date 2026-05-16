@@ -347,5 +347,5 @@ class ScanResult:
     cost_usd: float
     alerted: bool = False
     llm_confidence: int | None = None
-    machine_block: dict | None = None
+    machine_block: "MachineBlock | None" = None
     detected_at: datetime | None = None

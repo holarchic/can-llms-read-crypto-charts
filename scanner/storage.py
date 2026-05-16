@@ -227,9 +227,13 @@ def save_result(
     from .models import SETUP_NAMES
     setup_name = SETUP_NAMES.get(result.setup_signal.setup_type, "")
 
-    # Extract LLM direction from machine_block if available
+    # Extract LLM direction from machine_block if available.
+    # C2 serialization bridge (T-016): machine_block is now a typed
+    # MachineBlock (not a dict) — the prior isinstance(dict) gate would
+    # silently drop llm_direction. .get() goes via the compat shim until
+    # this cluster migrates to typed access (C5).
     llm_direction = None
-    if result.machine_block and isinstance(result.machine_block, dict):
+    if result.machine_block:
         llm_direction = result.machine_block.get("direction")
 
     scan_id = result.scan_id
@@ -256,7 +260,7 @@ def save_result(
         parsed.get("leverage"),
         exchange,
         result.llm_confidence,
-        _json.dumps(result.machine_block) if result.machine_block else None,
+        _json.dumps(result.machine_block.to_raw()) if result.machine_block else None,
         prompt_version,
         datetime.now(timezone.utc).isoformat(),
     )
