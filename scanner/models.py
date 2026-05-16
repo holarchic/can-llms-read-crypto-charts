@@ -1,6 +1,7 @@
 """Data models for the scanner pipeline."""
 
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -112,6 +113,224 @@ class SetupSignal:
     max_leverage: int | None = None  # exchange max leverage for this pair
     score_components: ScoreComponents | None = None  # individual factors for calibration
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+_MB_REQUIRED_NUMERIC = (
+    "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
+    "confidence", "leverage",
+)
+_MB_REQUIRED = _MB_REQUIRED_NUMERIC + ("direction",)
+_MB_VALID_TRIGGERS = ("candle_close_above", "candle_close_below", "limit_at")
+_MB_VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
+# The full modeled key set — anything outside this goes to `extra` (passthrough).
+_MB_MODELED = (
+    "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
+    "direction", "confidence", "leverage",
+    "tp2", "tp2_exit_pct",
+    "entry_trigger", "entry_trigger_price", "invalidation_price", "expiry_candles",
+    "setup_type", "confluence_score", "confirming_event",
+)
+
+
+@dataclass(frozen=True)
+class MachineBlock:
+    """Typed, single-owner representation of the LLM execution machine_block.
+
+    Parsed once via `from_raw` (the sole canonical normalizer — it reproduces
+    `scanner.llm.parse_machine_block`'s entire rejection contract, including the
+    final business-rule `validate_execution_params` gate). `to_raw` is its
+    semantic inverse over modeled + `extra` keys (T-016 Phase 1a, SPEC #20).
+    Behaviour byte-identical to the prior raw-dict path; persistence JSON shape
+    unchanged. `extra` carries unmodeled/future keys so round-tripping cannot
+    silently drop research fields across prompt-version evolution.
+    """
+
+    entry_low: float
+    entry_high: float
+    stop_loss: float
+    tp1: float
+    tp1_exit_pct: float
+    direction: str
+    confidence: float
+    leverage: float
+    tp2: float | None = None
+    tp2_exit_pct: float | None = None
+    entry_trigger: str | None = None
+    entry_trigger_price: float | None = None
+    invalidation_price: float | None = None
+    expiry_candles: int | None = None
+    setup_type: str | None = None
+    confluence_score: int | None = None
+    confirming_event: str | None = None
+    extra: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, d: dict) -> "MachineBlock | None":
+        """Normalize a raw machine_block dict, or None on exactly the inputs
+        `parse_machine_block` rejects today (structural ∪ business-rule).
+
+        Mirrors scanner/llm.py:205-289 step-for-step. Operates on a copy;
+        never mutates the caller's dict.
+        """
+        if not isinstance(d, dict):
+            return None
+        data = copy.deepcopy(d)
+
+        required = {
+            "entry_low": (int, float),
+            "entry_high": (int, float),
+            "stop_loss": (int, float),
+            "tp1": (int, float),
+            "tp1_exit_pct": (int, float),
+            "direction": str,
+            "confidence": (int, float),
+            "leverage": (int, float),
+        }
+        for fld, types in required.items():
+            if fld not in data:
+                return None
+            if not isinstance(data[fld], types):
+                return None
+        # bool is an int subclass — reject it for numeric fields (parity guard:
+        # parse_machine_block's isinstance(x,(int,float)) also admits bool, so
+        # we deliberately do NOT add a stricter check here; behaviour identical).
+        for fld in _MB_REQUIRED_NUMERIC:
+            data[fld] = float(data[fld])
+
+        if "tp2" in data:
+            if not isinstance(data["tp2"], (int, float)):
+                return None
+            data["tp2"] = float(data["tp2"])
+        if "tp2_exit_pct" in data:
+            if not isinstance(data["tp2_exit_pct"], (int, float)):
+                return None
+            data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
+
+        if "entry_trigger" in data:
+            if data["entry_trigger"] not in _MB_VALID_TRIGGERS:
+                return None
+        for opt_num in ("entry_trigger_price", "invalidation_price"):
+            if opt_num in data:
+                if not isinstance(data[opt_num], (int, float)):
+                    return None
+                data[opt_num] = float(data[opt_num])
+        if "expiry_candles" in data:
+            if not isinstance(data["expiry_candles"], (int, float)):
+                return None
+            data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
+
+        if "setup_type" in data:
+            if not isinstance(data["setup_type"], str):
+                return None
+            st = data["setup_type"].strip().upper()
+            if st not in _MB_VALID_SETUP_TYPES:
+                return None
+            data["setup_type"] = st
+        if "confluence_score" in data:
+            if not isinstance(data["confluence_score"], (int, float)):
+                return None
+            score = int(data["confluence_score"])
+            if not 0 <= score <= 15:
+                return None
+            data["confluence_score"] = score
+        if "confirming_event" in data:
+            if not isinstance(data["confirming_event"], str):
+                return None
+            ev = data["confirming_event"].strip()
+            if not 10 <= len(ev) <= 200:
+                return None
+            data["confirming_event"] = ev
+
+        # Final business-rule gate — identical to parse_machine_block:287-289.
+        # Function-level import: models.py stays app-dependency-free at module
+        # load (llm.py imports models.py); this matches executor.py:64's idiom.
+        from scanner.llm import validate_execution_params
+
+        valid, _errors = validate_execution_params(data)
+        if not valid:
+            return None
+
+        modeled = {k: data[k] for k in _MB_MODELED if k in data}
+        extra = {k: v for k, v in data.items() if k not in _MB_MODELED}
+        return cls(**modeled, extra=extra)
+
+    def to_raw(self) -> dict:
+        """Semantic inverse of `from_raw`: the dict `parse_machine_block`
+        produces today (json.loads-equal). Required keys always; optionals
+        only when present (None == absent); plus `extra` verbatim. Fresh dict.
+        """
+        out: dict = {
+            "entry_low": self.entry_low,
+            "entry_high": self.entry_high,
+            "stop_loss": self.stop_loss,
+            "tp1": self.tp1,
+            "tp1_exit_pct": self.tp1_exit_pct,
+            "direction": self.direction,
+            "confidence": self.confidence,
+            "leverage": self.leverage,
+        }
+        for fld in (
+            "tp2", "tp2_exit_pct", "entry_trigger", "entry_trigger_price",
+            "invalidation_price", "expiry_candles", "setup_type",
+            "confluence_score", "confirming_event",
+        ):
+            v = getattr(self, fld)
+            if v is not None:
+                out[fld] = v
+        out.update(copy.deepcopy(self.extra))
+        return out
+
+    def reanchored(self, trigger_close: float) -> "MachineBlock":
+        """Pure entry-trigger reanchor — replaces the in-place mutation in
+        entry_monitor._reconstruct_scan_result (lines 192-206), arithmetic
+        identical: delta from the ORIGINAL entry-mid, shift SL/TP, then
+        re-bracket entry zone to trigger_close ± 0.5%.
+        """
+        orig_mid = (
+            (self.entry_low + self.entry_high) / 2
+            if self.entry_low
+            else trigger_close
+        )
+        delta = trigger_close - orig_mid
+        buffer = trigger_close * 0.005
+        return replace(
+            self,
+            stop_loss=self.stop_loss + delta,
+            tp1=self.tp1 + delta,
+            tp2=(self.tp2 + delta if self.tp2 is not None else None),
+            entry_low=trigger_close - buffer,
+            entry_high=trigger_close + buffer,
+        )
+
+    # --- TEMPORARY mapping-compat shim (T-016 Phase 1a) -------------------
+    # Lets existing dict-style consumers (`mb["x"]`, `mb.get`, `"x" in mb`)
+    # keep working the instant the parse boundary flips to MachineBlock (C2),
+    # before each consumer cluster is migrated to typed access (C3-C5).
+    # DELETED in C6 with an AST guard test — this must NOT outlive Phase 1a.
+    def _shim_lookup(self, key: str):
+        # Present-key set must equal to_raw()'s: the 8 required always; a
+        # modeled optional only when not None (None == absent); else `extra`.
+        if key in _MB_REQUIRED:
+            return (getattr(self, key), True)
+        if key in _MB_MODELED:
+            v = getattr(self, key)
+            return (v, v is not None)
+        if key in self.extra:
+            return (self.extra[key], True)
+        return (None, False)
+
+    def __getitem__(self, key: str):
+        val, present = self._shim_lookup(key)
+        if not present:
+            raise KeyError(key)
+        return val
+
+    def get(self, key: str, default=None):
+        val, present = self._shim_lookup(key)
+        return val if present else default
+
+    def __contains__(self, key: str) -> bool:
+        return self._shim_lookup(key)[1]
 
 
 @dataclass
