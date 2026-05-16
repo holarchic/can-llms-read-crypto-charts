@@ -266,6 +266,22 @@ def test_unknown_keys_round_trip_via_extra():
     assert mb.extra["nested"]["a"] == [1, 2]
 
 
+def test_reanchored_owns_independent_extra():
+    """Phase-review (architecture R2): frozen=True does not deep-freeze the
+    `extra` dict, and dataclasses.replace would alias it into the reanchored
+    block. reanchored() must deep-copy so each MachineBlock genuinely owns
+    its `extra` — no shared mutable side channel (SPEC #20 immutability).
+    """
+    mb = MachineBlock.from_raw(_valid_block(future_field="x", nested={"a": [1]}))
+    assert mb is not None
+    ra = mb.reanchored(123.45)
+    assert ra.extra == mb.extra
+    assert ra.extra is not mb.extra
+    assert ra.extra["nested"] is not mb.extra["nested"]
+    ra.extra["nested"]["a"].append(99)
+    assert mb.extra["nested"]["a"] == [1]  # original unaffected
+
+
 # --- malformed-rejection parity (synthetic) -------------------------------
 
 @pytest.mark.parametrize("bad", [

@@ -303,6 +303,12 @@ class MachineBlock:
             tp2=(self.tp2 + delta if self.tp2 is not None else None),
             entry_low=trigger_close - buffer,
             entry_high=trigger_close + buffer,
+            # frozen=True does not deep-freeze `extra`; dataclasses.replace
+            # would otherwise alias the same dict into the new block. Deep-copy
+            # so each MachineBlock genuinely owns its `extra` (upholds the
+            # SPEC #20 single-owner/immutability contract — no shared mutable
+            # side channel between the original and the reanchored block).
+            extra=copy.deepcopy(self.extra),
         )
 
 
