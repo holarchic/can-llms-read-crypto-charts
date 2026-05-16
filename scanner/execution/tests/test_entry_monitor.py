@@ -688,9 +688,18 @@ class TestSaveConditionalEntry:
         assert has_active_pending("BTC", conn, "hyperliquid", "testnet")
 
     def test_skips_invalid_machine_block(self, ce_config, conn):
-        """Save-time backstop rejects mb's that violate validate_execution_params
-        (LONG inv<SL or SHORT inv>SL). Without this, ZEC/NEAR-shape blocks
-        become pendings that deterministically TRIGGER_FAILED at execute time."""
+        """Save-time backstop (SPEC #17) rejects mb's that violate
+        validate_execution_params (LONG inv<SL or SHORT inv>SL). Without it,
+        ZEC/NEAR-shape blocks become pendings that deterministically
+        TRIGGER_FAILED at execute time.
+
+        Phase-review R4: built via the DIRECT MachineBlock constructor (NOT
+        from_raw) on purpose — from_raw would reject this geometry up front
+        (returning None), which exercises the early `if mb is None` return,
+        not the save-time validator. Direct construction yields a non-None
+        invalid MachineBlock that actually reaches and trips the SPEC #17
+        backstop at save_conditional_entry's validate_execution_params call.
+        """
         from scanner.models import ScanResult
 
         # SHORT with invalidation_price (338) > stop_loss (335) — exact
@@ -701,15 +710,15 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block=_mb({
-                "entry_low": 327, "entry_high": 329, "stop_loss": 335.0,
-                "tp1": 310, "tp1_exit_pct": 50, "direction": "SHORT",
-                "confidence": 7, "leverage": 5,
-                "entry_trigger": "candle_close_below",
-                "entry_trigger_price": 328.0,
-                "invalidation_price": 338.0,
-                "expiry_candles": 12,
-            }),
+            machine_block=MachineBlock(
+                entry_low=327.0, entry_high=329.0, stop_loss=335.0,
+                tp1=310.0, tp1_exit_pct=50.0, direction="SHORT",
+                confidence=7.0, leverage=5.0,
+                entry_trigger="candle_close_below",
+                entry_trigger_price=328.0,
+                invalidation_price=338.0,
+                expiry_candles=12,
+            ),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
