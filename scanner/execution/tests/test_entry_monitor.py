@@ -1000,12 +1000,12 @@ class TestReconstructScanResult:
 
         # Entry zone rebuilt around trigger
         new_mb = result.machine_block
-        assert new_mb["entry_low"] == pytest.approx(105.0 * 0.995)
-        assert new_mb["entry_high"] == pytest.approx(105.0 * 1.005)
+        assert new_mb.entry_low == pytest.approx(105.0 * 0.995)
+        assert new_mb.entry_high == pytest.approx(105.0 * 1.005)
         # SL/TP shifted by delta=+5 → R still = |105-100| = 5, reward = |115-105| = 10
-        assert new_mb["stop_loss"] == pytest.approx(100.0)
-        assert new_mb["tp1"] == pytest.approx(115.0)
-        assert new_mb["tp2"] == pytest.approx(120.0)
+        assert new_mb.stop_loss == pytest.approx(100.0)
+        assert new_mb.tp1 == pytest.approx(115.0)
+        assert new_mb.tp2 == pytest.approx(120.0)
 
     def test_setup_signal_carries_screener_direction(self):
         """Counter-trend detection works after trigger: reconstructed
@@ -1018,7 +1018,7 @@ class TestReconstructScanResult:
         assert result.setup_signal is not None
         assert result.setup_signal.direction.value == "LONG"
         # mb direction is still SHORT (LLM decision)
-        assert result.machine_block["direction"] == "SHORT"
+        assert result.machine_block.direction == "SHORT"
 
     def test_missing_screener_direction_leaves_setup_signal_none(self):
         """Legacy pending rows without screener_direction still reconstruct

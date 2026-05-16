@@ -119,7 +119,6 @@ _MB_REQUIRED_NUMERIC = (
     "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
     "confidence", "leverage",
 )
-_MB_REQUIRED = _MB_REQUIRED_NUMERIC + ("direction",)
 _MB_VALID_TRIGGERS = ("candle_close_above", "candle_close_below", "limit_at")
 _MB_VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
 # The full modeled key set — anything outside this goes to `extra` (passthrough).
@@ -305,36 +304,6 @@ class MachineBlock:
             entry_low=trigger_close - buffer,
             entry_high=trigger_close + buffer,
         )
-
-    # --- TEMPORARY mapping-compat shim (T-016 Phase 1a) -------------------
-    # Lets existing dict-style consumers (`mb["x"]`, `mb.get`, `"x" in mb`)
-    # keep working the instant the parse boundary flips to MachineBlock (C2),
-    # before each consumer cluster is migrated to typed access (C3-C5).
-    # DELETED in C6 with an AST guard test — this must NOT outlive Phase 1a.
-    def _shim_lookup(self, key: str):
-        # Present-key set must equal to_raw()'s: the 8 required always; a
-        # modeled optional only when not None (None == absent); else `extra`.
-        if key in _MB_REQUIRED:
-            return (getattr(self, key), True)
-        if key in _MB_MODELED:
-            v = getattr(self, key)
-            return (v, v is not None)
-        if key in self.extra:
-            return (self.extra[key], True)
-        return (None, False)
-
-    def __getitem__(self, key: str):
-        val, present = self._shim_lookup(key)
-        if not present:
-            raise KeyError(key)
-        return val
-
-    def get(self, key: str, default=None):
-        val, present = self._shim_lookup(key)
-        return val if present else default
-
-    def __contains__(self, key: str) -> bool:
-        return self._shim_lookup(key)[1]
 
 
 @dataclass

@@ -293,24 +293,25 @@ def test_non_dict_input_rejected():
 
 # --- compat shim parity with a plain dict (removed in C6) -----------------
 
-def test_shim_matches_dict_semantics():
-    # tp2 present (LONG: tp2>tp1 ✓); conditional/observability fields absent.
-    raw = _valid_block(tp2=110.0, tp2_exit_pct=50.0)
-    mb = MachineBlock.from_raw(raw)
+def test_no_mapping_shim_C6_enforcement():
+    """T-016 C6: the temporary expand->migrate->contract compat shim is
+    DELETED and must never return. This is the enforcement guard — the type
+    itself physically refuses mapping access, so any reintroduced
+    `mb["x"]` / `mb.get(...)` / `"x" in mb` on a MachineBlock fails loudly
+    in the suite (stronger and false-positive-free vs an AST/grep scan).
+    """
+    mb = MachineBlock.from_raw(_valid_block(tp2=110.0, tp2_exit_pct=50.0))
     assert mb is not None
-    d = mb.to_raw()
-    for k in ("entry_low", "direction", "tp2", "tp2_exit_pct", "leverage"):
-        assert mb[k] == d[k]
-        assert (k in mb) == (k in d)
-        assert mb.get(k) == d.get(k)
-    # absent optional must behave exactly like a missing dict key
-    assert "confirming_event" not in mb
-    assert mb.get("confirming_event") is None
-    assert mb.get("expiry_candles", 12) == 12
-    with pytest.raises(KeyError):
-        _ = mb["confirming_event"]
-    # unknown key absent
-    assert "totally_unknown" not in mb
+    for attr in ("__getitem__", "get", "__contains__", "_shim_lookup"):
+        assert not hasattr(MachineBlock, attr), f"shim leaked back: {attr}"
+    with pytest.raises(TypeError):
+        _ = mb["entry_low"]
+    with pytest.raises(TypeError):
+        _ = "entry_low" in mb
+    # typed access is the only contract
+    assert mb.entry_low == 100.0
+    assert mb.tp2 == 110.0
+    assert mb.confirming_event is None
 
 
 # --- C2: live parse_machine_block delegates correctly to from_raw ----------

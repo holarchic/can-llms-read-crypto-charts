@@ -38,8 +38,8 @@ class TestParseMachineBlock:
     def test_valid_block(self):
         result = parse_machine_block(_wrap(_valid_block()))
         assert result is not None
-        assert result["entry_low"] == 61500.0
-        assert result["direction"] == "LONG"
+        assert result.entry_low == 61500.0
+        assert result.direction == "LONG"
 
     def test_missing_block(self):
         assert parse_machine_block("No machine block here") is None
@@ -61,15 +61,15 @@ class TestParseMachineBlock:
         data = _valid_block(entry_low=61500, entry_high=62000, confidence=7)
         result = parse_machine_block(_wrap(data))
         assert result is not None
-        assert isinstance(result["entry_low"], float)
-        assert isinstance(result["confidence"], float)
+        assert isinstance(result.entry_low, float)
+        assert isinstance(result.confidence, float)
 
     def test_optional_tp2(self):
         data = _valid_block(tp2=68000.0, tp2_exit_pct=50)
         result = parse_machine_block(_wrap(data))
         assert result is not None
-        assert result["tp2"] == 68000.0
-        assert result["tp2_exit_pct"] == 50.0
+        assert result.tp2 == 68000.0
+        assert result.tp2_exit_pct == 50.0
 
     def test_optional_tp2_wrong_type(self):
         data = _valid_block(tp2="high")
@@ -87,7 +87,7 @@ class TestParseMachineBlock:
         )
         result = parse_machine_block(text)
         assert result is not None
-        assert result["entry_low"] == 61500.0
+        assert result.entry_low == 61500.0
 
     def test_whitespace_tolerance(self):
         text = "<!--  MACHINE_BLOCK \n" + json.dumps(_valid_block()) + "\nMACHINE_BLOCK  -->"
@@ -302,16 +302,16 @@ class TestConditionalEntryParsing:
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["entry_trigger"] == "candle_close_above"
-        assert result["entry_trigger_price"] == 62500.0
-        assert result["invalidation_price"] == 60500.0
-        assert result["expiry_candles"] == 12
+        assert result.entry_trigger == "candle_close_above"
+        assert result.entry_trigger_price == 62500.0
+        assert result.invalidation_price == 60500.0
+        assert result.expiry_candles == 12
 
     def test_trigger_fields_optional(self):
         """Machine block without trigger fields still parses fine."""
         result = parse_machine_block(_wrap(_valid_block()))
         assert result is not None
-        assert "entry_trigger" not in result
+        assert result.entry_trigger is None
 
     def test_invalid_trigger_type_rejected(self):
         block = _valid_block(
@@ -339,7 +339,7 @@ class TestConditionalEntryParsing:
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["expiry_candles"] == 24
+        assert result.expiry_candles == 24
 
     def test_long_invalidation_below_stop_rejected(self):
         """LONG: invalidation_price must be >= stop_loss (pre-entry at least as cautious)."""
@@ -377,7 +377,7 @@ class TestConditionalEntryParsing:
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["invalidation_price"] == 59800.0
+        assert result.invalidation_price == 59800.0
 
     def test_short_invalidation_equals_stop_accepted(self):
         """SHORT: inv_price == stop_loss is a valid unified kill level."""
@@ -405,7 +405,7 @@ class TestConditionalEntryParsing:
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["invalidation_price"] == 60500.0
+        assert result.invalidation_price == 60500.0
 
     def test_short_invalidation_tighter_than_stop_accepted(self):
         """SHORT: inv_price < stop_loss (pre-entry tighter than post-fill) is valid."""
@@ -421,7 +421,7 @@ class TestConditionalEntryParsing:
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["invalidation_price"] == 63500.0
+        assert result.invalidation_price == 63500.0
 
     def test_limit_at_trigger_accepted(self):
         block = _valid_block(
@@ -432,7 +432,7 @@ class TestConditionalEntryParsing:
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["entry_trigger"] == "limit_at"
+        assert result.entry_trigger == "limit_at"
 
 
 # --- V9.1 observability fields (setup_type, confluence_score, confirming_event) ---
@@ -448,23 +448,23 @@ class TestObservabilityFields:
         )
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["setup_type"] == "C"
-        assert result["confluence_score"] == 8
-        assert result["confirming_event"] == "1H close above flipped 62k resistance"
+        assert result.setup_type == "C"
+        assert result.confluence_score == 8
+        assert result.confirming_event == "1H close above flipped 62k resistance"
 
     def test_all_fields_optional(self):
         """Missing observability fields does not fail parse."""
         result = parse_machine_block(_wrap(_valid_block()))
         assert result is not None
-        assert "setup_type" not in result
-        assert "confluence_score" not in result
-        assert "confirming_event" not in result
+        assert result.setup_type is None
+        assert result.confluence_score is None
+        assert result.confirming_event is None
 
     def test_setup_type_lowercase_normalized(self):
         block = _valid_block(setup_type="c")
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["setup_type"] == "C"
+        assert result.setup_type == "C"
 
     def test_setup_type_invalid_letter_rejected(self):
         block = _valid_block(setup_type="Z")
@@ -486,8 +486,8 @@ class TestObservabilityFields:
         block = _valid_block(confluence_score=7.0)
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["confluence_score"] == 7
-        assert isinstance(result["confluence_score"], int)
+        assert result.confluence_score == 7
+        assert isinstance(result.confluence_score, int)
 
     def test_confirming_event_too_short_rejected(self):
         block = _valid_block(confirming_event="short")
@@ -501,4 +501,4 @@ class TestObservabilityFields:
         block = _valid_block(confirming_event="   1H close above 62000 flipped resistance   ")
         result = parse_machine_block(_wrap(block))
         assert result is not None
-        assert result["confirming_event"] == "1H close above 62000 flipped resistance"
+        assert result.confirming_event == "1H close above 62000 flipped resistance"
