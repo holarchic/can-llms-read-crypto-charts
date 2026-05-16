@@ -1,6 +1,7 @@
 """Tests for conditional entry monitor — trigger evaluation, storage, orchestration."""
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -9,7 +10,7 @@ import pytest
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.entry_monitor import (
-    _reconstruct_scan_result,
+    _build_execution_request,
     evaluate_entry_trigger,
     evaluate_limit_at_trigger,
     is_1h_boundary,
@@ -982,10 +983,11 @@ class TestSaveConditionalEntry:
 
 
 # ---------------------------------------------------------------------------
-# _reconstruct_scan_result tests — R:R preservation + counter-trend flag
+# _build_execution_request tests — reanchor R:R preservation + screener-dir
+# coercion (T-016 Phase 1b, SPEC #21). Replaces _reconstruct_scan_result.
 # ---------------------------------------------------------------------------
 
-class TestReconstructScanResult:
+class TestBuildExecutionRequest:
 
     def test_reanchors_sl_and_tp_by_trigger_delta(self):
         """When price has moved between scan and trigger, SL/TP shift by the
@@ -1005,41 +1007,74 @@ class TestReconstructScanResult:
         pending["machine_block"] = json.dumps(mb)
 
         # Trigger fires at 105 (5 above original mid)
-        result = _reconstruct_scan_result(pending, trigger_close=105.0)
+        req = _build_execution_request(pending, trigger_close=105.0)
 
         # Entry zone rebuilt around trigger
-        new_mb = result.machine_block
+        new_mb = req.machine_block
         assert new_mb.entry_low == pytest.approx(105.0 * 0.995)
         assert new_mb.entry_high == pytest.approx(105.0 * 1.005)
         # SL/TP shifted by delta=+5 → R still = |105-100| = 5, reward = |115-105| = 10
         assert new_mb.stop_loss == pytest.approx(100.0)
         assert new_mb.tp1 == pytest.approx(115.0)
         assert new_mb.tp2 == pytest.approx(120.0)
+        # Conditional-entry defaults reproduce the old _empty_setup_signal
+        # context / SetupSignal field defaults exactly (SPEC #21).
+        assert req.atr == 0.0
+        assert req.max_leverage is None
 
-    def test_setup_signal_carries_screener_direction(self):
-        """Counter-trend detection works after trigger: reconstructed
-        setup_signal.direction matches the stored screener_direction."""
+    def test_valid_screener_direction_preserved_for_counter_trend(self):
+        """Counter-trend detection works after trigger: screener_direction is
+        the Direction value string executor.counter_trend formerly read off
+        setup_signal.direction.value."""
         pending = _make_pending(coin="BTC", direction="SHORT")
         pending["screener_direction"] = "LONG"
 
-        result = _reconstruct_scan_result(pending, trigger_close=99.0)
+        req = _build_execution_request(pending, trigger_close=99.0)
 
-        assert result.setup_signal is not None
-        assert result.setup_signal.direction.value == "LONG"
+        assert req.screener_direction == "LONG"
         # mb direction is still SHORT (LLM decision)
-        assert result.machine_block.direction == "SHORT"
+        assert req.machine_block.direction == "SHORT"
 
-    def test_missing_screener_direction_leaves_setup_signal_none(self):
-        """Legacy pending rows without screener_direction still reconstruct
-        (setup_signal=None) — executor falls back to non-counter-trend."""
+    def test_missing_screener_direction_is_none_silently(self, caplog):
+        """None screener_direction → None, NO warning (old code only warned
+        inside `if screener_dir:` — falsy is silent). Executor then sees
+        `req.screener_direction or ""` == "" → no counter-trend."""
         pending = _make_pending(coin="BTC", direction="LONG")
         pending["screener_direction"] = None
 
-        result = _reconstruct_scan_result(pending, trigger_close=100.0)
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
 
-        assert result.setup_signal is None
+        assert req.screener_direction is None
+        assert "screener_direction" not in caplog.text
 
-    def test_invalid_stored_block_fails_safe(self):
+    def test_empty_screener_direction_is_none_silently(self, caplog):
+        """Empty-string screener_direction is falsy → None, NO warning
+        (byte-identical to the old `if screener_dir:` guard)."""
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = ""
+
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
+
+        assert req.screener_direction is None
+        assert "screener_direction" not in caplog.text
+
+    def test_invalid_truthy_screener_direction_warns_and_nulls(self, caplog):
+        """Truthy-unknown screener_direction → None AND the same
+        `log.warning` the old _empty_setup_signal guard emitted. Without the
+        null-coercion, "BAD" would survive into req.screener_direction and
+        "BAD" != mb.direction → false counter-trend (0.5x risk)."""
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = "BAD"
+
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
+
+        assert req.screener_direction is None
+        assert "Unknown screener_direction BAD for BTC" in caplog.text
+
+    def test_invalid_stored_block_fails_safe(self, caplog):
         """T-016 C4 reconstruction-of-invalid: stored pendings are
         save-validated so this is unreachable in production, but a
         corrupted/legacy row whose machine_block fails from_raw must fail
@@ -1057,13 +1092,12 @@ class TestReconstructScanResult:
         mb["stop_loss"] = 200.0
         pending["machine_block"] = json.dumps(mb)
 
-        result = _reconstruct_scan_result(pending, trigger_close=100.0)
+        req = _build_execution_request(pending, trigger_close=100.0)
 
-        assert result.machine_block is None
-        assert result.llm_confidence is None
-        # setup_signal reconstructs independently of machine_block validity
-        # (screener_direction drives counter-trend detection).
-        assert result.setup_signal is not None
+        assert req.machine_block is None
+        # screener_direction resolves independently of machine_block validity
+        # (it drives counter-trend detection regardless).
+        assert req.screener_direction == "LONG"
 
 
 # ---------------------------------------------------------------------------

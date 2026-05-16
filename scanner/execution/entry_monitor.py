@@ -15,12 +15,9 @@ import requests
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
+    ExecutionRequest,
     MachineBlock,
-    MarketContext,
     ScanResult,
-    SetupSignal,
-    SetupType,
-    Structure,
 )
 
 from .config import ExecutionConfig
@@ -148,88 +145,56 @@ def _fetch_1h_candle(coin: str) -> dict | None:
         return None
 
 
-def _empty_setup_signal(coin: str, direction: Direction) -> SetupSignal:
-    """Build a placeholder SetupSignal carrying only the screener direction.
+def _build_execution_request(pending: dict, trigger_close: float) -> ExecutionRequest:
+    """Build the typed `execute_trade` contract from a triggered pending row.
 
-    The reconstructed ScanResult from a triggered pending needs enough of a
-    SetupSignal for executor.counter_trend detection. Context fields are
-    defaulted — ATR sanity checks fall through when atr==0.
-    """
-    ctx = MarketContext(
-        structure=Structure.RANGING,
-        swings=[],
-        sr_levels=[],
-        msbs=[],
-        range_bounds=None,
-        atr=0.0,
-        current_price=0.0,
-        fib_levels=None,
-    )
-    return SetupSignal(
-        coin=coin,
-        setup_type=SetupType.A,
-        direction=direction,
-        confidence=0.0,
-        key_level=0.0,
-        context=ctx,
-        description="conditional-entry trigger fired",
-    )
+    Replaces the prior synthetic-`ScanResult` fabrication
+    (`_reconstruct_scan_result`/`_empty_setup_signal`; T-016 Phase 1b,
+    SPEC #21). Parses the stored block once through the canonical boundary
+    and reanchors purely — SL/TP shift by (trigger_close − original entry-mid)
+    so intended R is preserved across scan→trigger price drift; arithmetic is
+    byte-identical to the prior in-place path (proven by the equivalence
+    battery).
 
-
-def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
-    """Rebuild a ScanResult from a pending entry for execute_trade.
-
-    Shifts SL/TP by (trigger_close - original_entry_mid) so the intended R is
-    preserved when price has moved between scan time and trigger time, and
-    brackets entry_low/high around the trigger close.
-
-    Restores the screener direction on setup_signal so executor can still
-    flag counter-trend entries (0.5x risk, min_rr=3.0, shorter timeout).
+    `screener_direction` coercion is observably identical to the old
+    `_empty_setup_signal` guard: falsy (`None`/`""`) → `None` *silently*;
+    truthy-unknown → `None` + the same `log.warning`; valid → the
+    `Direction` value string the executor's counter-trend check formerly read
+    off `setup_signal.direction.value`. `atr=0.0` / `max_leverage=None`
+    reproduce `_empty_setup_signal`'s context default and `SetupSignal`'s
+    field default. The prior path also set `llm_confidence` from the raw
+    block; `execute_trade` never reads it, so it is intentionally dropped
+    (not part of the execution contract — SPEC #21).
     """
     raw = json.loads(pending["machine_block"])
-    # T-016 C4: parse once through the canonical boundary, then reanchor
-    # purely (replaces the prior in-place dict mutation; arithmetic is
-    # byte-identical — proven by the equivalence battery).
     mb = MachineBlock.from_raw(raw)
+    # Defensive only: stored pendings are save-validated
+    # (save_conditional_entry runs validate_execution_params and the block
+    # was parse_machine_block'd), so from_raw cannot fail here in production.
+    # If a corrupted/legacy row ever does, fail safe — a None machine_block
+    # makes execute_trade skip ("no_machine_block") and the trigger flow then
+    # marks the pending TRIGGER_FAILED: the same terminal outcome as the prior
+    # path's invalid_params skip, only the skip_reason label refines.
+    mb_out = mb.reanchored(trigger_close) if mb is not None else None
 
-    setup_signal = None
-    screener_dir = pending.get("screener_direction")
-    if screener_dir:
-        try:
-            setup_signal = _empty_setup_signal(pending["coin"], Direction(screener_dir))
-        except ValueError:
-            log.warning("Unknown screener_direction %s for %s", screener_dir, pending["coin"])
-
-    if mb is None:
-        # Defensive only: stored pendings are save-validated
-        # (save_conditional_entry runs validate_execution_params and the block
-        # was parse_machine_block'd), so from_raw cannot fail here in
-        # production. If a corrupted/legacy row ever does, fail safe — a None
-        # machine_block makes execute_trade skip ("no_machine_block") and the
-        # trigger flow then marks the pending TRIGGER_FAILED: the same terminal
-        # outcome as the prior path's invalid_params skip, only the
-        # skip_reason label refines.
-        mb_out = None
-        confidence = None
+    coin = pending["coin"]
+    raw_dir = pending.get("screener_direction")
+    if not raw_dir:
+        screener_direction = None
     else:
-        mb_out = mb.reanchored(trigger_close)
-        # raw (pre-coercion) value, exactly as the prior mb.get("confidence")
-        # — reanchor never touched confidence.
-        confidence = raw.get("confidence")
+        try:
+            screener_direction = Direction(raw_dir).value
+        except ValueError:
+            screener_direction = None
+            log.warning("Unknown screener_direction %s for %s", raw_dir, coin)
 
-    return ScanResult(
+    return ExecutionRequest(
         scan_id=pending["scan_id"],
-        coin=pending["coin"],
-        timestamp=datetime.now(timezone.utc),
-        setup_signal=setup_signal,
-        decision="CONFIRM",
-        confluence_score=None,
-        analysis_text=None,
-        parsed_decision=None,
-        chart_paths=[],
-        cost_usd=0.0,
+        coin=coin,
         machine_block=mb_out,
-        llm_confidence=confidence,
+        screener_direction=screener_direction,
+        atr=0.0,
+        max_leverage=None,
         detected_at=datetime.now(timezone.utc),
     )
 
@@ -676,11 +641,11 @@ def _execute_triggered_entry(
     log.info("Trigger fired for %s %s at %.5f — executing", coin, direction, trigger_close)
     _send_trigger_alert(entry, config)
 
-    scan_result = _reconstruct_scan_result(entry, trigger_close)
+    req = _build_execution_request(entry, trigger_close)
     scanner_config = ScannerConfig()
 
     try:
-        er = execute_trade(scan_result, config, scanner_config, conn)
+        er = execute_trade(req, config, scanner_config, conn)
         if er.executed:
             log.info("Conditional entry executed: %s %s (entry=%s, sl=%s)",
                      coin, direction, er.entry_order_id, er.sl_order_id)

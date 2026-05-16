@@ -12,7 +12,7 @@ from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
 from .indicators import build_context
-from .models import MarketContext, ScanResult, SetupSignal
+from .models import ExecutionRequest, MarketContext, ScanResult, SetupSignal
 from .screener import detect_all_setups
 from .storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
 from .strategy.store import get_strategy
@@ -355,7 +355,17 @@ def stage4_execute(
                     ))
                 continue
 
-            er = execute_trade(confirm, exec_config, scanner_config, conn)
+            sig = confirm.setup_signal
+            req = ExecutionRequest(
+                scan_id=confirm.scan_id,
+                coin=confirm.coin,
+                machine_block=confirm.machine_block,
+                screener_direction=sig.direction.value if sig else None,
+                atr=sig.context.atr if sig else 0.0,
+                max_leverage=sig.max_leverage if sig else None,
+                detected_at=confirm.detected_at or confirm.timestamp,
+            )
+            er = execute_trade(req, exec_config, scanner_config, conn)
             results.append(er)
             # Always print execution outcomes — critical ops info, never silenced by -q
             if er.executed:

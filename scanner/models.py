@@ -284,10 +284,12 @@ class MachineBlock:
         return out
 
     def reanchored(self, trigger_close: float) -> "MachineBlock":
-        """Pure entry-trigger reanchor — replaces the in-place mutation in
-        entry_monitor._reconstruct_scan_result (lines 192-206), arithmetic
-        identical: delta from the ORIGINAL entry-mid, shift SL/TP, then
-        re-bracket entry zone to trigger_close ± 0.5%.
+        """Pure entry-trigger reanchor — the conditional-entry reanchor used
+        by entry_monitor._build_execution_request. Arithmetic is byte-identical
+        to the pre-Phase-1a in-place mutation (frozen as the equivalence
+        baseline in test_machine_block._old_reanchor_inplace): delta from the
+        ORIGINAL entry-mid, shift SL/TP, then re-bracket the entry zone to
+        trigger_close ± 0.5%.
         """
         orig_mid = (
             (self.entry_low + self.entry_high) / 2
@@ -328,3 +330,26 @@ class ScanResult:
     llm_confidence: int | None = None
     machine_block: "MachineBlock | None" = None
     detected_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    """Right-sized typed contract for `execute_trade` (T-016 Phase 1b, SPEC #21).
+
+    The executor formerly demanded an analysis-shaped `ScanResult` (heavy
+    `SetupSignal`/`MarketContext`) only to read these seven scalars, forcing
+    conditional-entry triggers to fabricate a synthetic `ScanResult`+empty
+    `SetupSignal`. Each caller now builds this directly. `screener_direction`
+    is the raw screener side for counter-trend detection (None ⇒ no
+    counter-trend, matching the prior `setup_signal is None` path);
+    `detected_at` is the already-resolved staleness reference (the prior
+    `result.detected_at or result.timestamp`, collapsed at the build site).
+    """
+
+    scan_id: str
+    coin: str
+    machine_block: "MachineBlock | None"
+    screener_direction: str | None
+    atr: float
+    max_leverage: int | None
+    detected_at: datetime

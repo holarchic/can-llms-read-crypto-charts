@@ -180,8 +180,10 @@ def _wrap(raw_json: str) -> str:
 
 
 def _old_reanchor_inplace(mb: dict, trigger_close: float) -> dict:
-    """Verbatim copy of entry_monitor._reconstruct_scan_result:192-206 — the
-    pre-Phase-1a in-place reanchor arithmetic. The reference implementation.
+    """Frozen verbatim copy of the pre-Phase-1a in-place reanchor arithmetic
+    (formerly entry_monitor._reconstruct_scan_result; that function was
+    deleted in Phase 1b, SPEC #21). This is the immutable reference
+    implementation MachineBlock.reanchored must stay byte-identical to.
     """
     mb = copy.deepcopy(mb)
     orig_entry_low = float(mb.get("entry_low", 0))
