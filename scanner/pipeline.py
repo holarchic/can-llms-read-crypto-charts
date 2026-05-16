@@ -321,16 +321,16 @@ def stage4_execute(
             # Route conditional entries to pending if feature enabled
             mb = confirm.machine_block
             if (exec_config.conditional_entry_enabled
-                    and mb
-                    and mb.get("entry_trigger")
-                    and mb.get("entry_trigger_price")
-                    and mb.get("invalidation_price")):
+                    and mb is not None
+                    and mb.entry_trigger
+                    and mb.entry_trigger_price
+                    and mb.invalidation_price):
                 from .execution.entry_monitor import save_conditional_entry
                 saved = save_conditional_entry(confirm, exec_config, conn)
-                direction = mb.get("direction", "?")
+                direction = mb.direction
                 if saved:
                     print(f"  {confirm.coin} {direction}: PENDING conditional entry "
-                          f"({mb['entry_trigger']} @ {mb['entry_trigger_price']})")
+                          f"({mb.entry_trigger} @ {mb.entry_trigger_price})")
                     results.append(ExecutionResult(
                         scan_id=confirm.scan_id,
                         coin=confirm.coin,
@@ -471,22 +471,22 @@ def run_scan(
         from .execution.sizing import calculate_position
         for c in confirms:
             mb = c.machine_block
-            if not mb:
+            if mb is None:
                 if verbose:
                     print(f"  {c.coin}: SKIPPED — no machine_block")
                 continue
             errors = validate_execution_params(mb)
             if errors:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — {'; '.join(errors)}")
+                    print(f"  {c.coin} {mb.direction}: SKIPPED — {'; '.join(errors)}")
                 continue
-            entry_mid = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
+            entry_mid = (mb.entry_low + mb.entry_high) / 2
             pos = calculate_position(mb, 10000, 1.0)
             if pos:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: WOULD EXECUTE — "
+                    print(f"  {c.coin} {mb.direction}: WOULD EXECUTE — "
                           f"{pos.quantity:.6f} units @ ${entry_mid:,.2f}, "
-                          f"SL ${mb.get('stop_loss',0):,.2f}, TP ${mb.get('tp1',0):,.2f}")
+                          f"SL ${mb.stop_loss:,.2f}, TP ${mb.tp1:,.2f}")
             else:
                 if verbose:
                     print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — sizing failed")

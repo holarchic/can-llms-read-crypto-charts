@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
+    MachineBlock,
     MarketContext,
     ScanResult,
     SetupSignal,
@@ -202,12 +203,19 @@ def _make_scan_result(coin="BTC"):
         parsed_decision=None,
         chart_paths=[],
         cost_usd=0.0,
-        machine_block={
+        # T-016 C5: ScanResult.machine_block is a typed MachineBlock. A real
+        # conditional CONFIRM always carries a complete, valid block — build
+        # one through the canonical boundary (LONG: stop below entry, tp
+        # above, inv >= stop).
+        machine_block=MachineBlock.from_raw({
             "direction": "LONG",
+            "entry_low": 99.0, "entry_high": 101.0,
+            "stop_loss": 89.0, "tp1": 110.0, "tp1_exit_pct": 50,
+            "confidence": 7, "leverage": 5,
             "entry_trigger": "limit_at",
             "entry_trigger_price": 95.0,
             "invalidation_price": 90.0,
-        },
+        }),
     )
 
 

@@ -260,8 +260,9 @@ def analyze_for_scanner(
     # Try machine block first (more reliable than regex on free text)
     machine_block = parse_machine_block(analysis_text)
 
-    if machine_block and "confidence" in machine_block:
-        llm_confidence = max(1, min(10, int(machine_block["confidence"])))
+    if machine_block is not None:
+        # confidence is a required MachineBlock field — always present.
+        llm_confidence = max(1, min(10, int(machine_block.confidence)))
     else:
         # Regex fallback — reject values out of 1-10 rather than silently
         # clamping (LLM drift to percent-form like "85/100" otherwise looks
