@@ -241,18 +241,22 @@ class MachineBlock:
                 return None
             data["confirming_event"] = ev
 
-        # Final business-rule gate — identical to parse_machine_block:287-289.
-        # Function-level import: models.py stays app-dependency-free at module
-        # load (llm.py imports models.py); this matches executor.py:64's idiom.
-        from scanner.llm import validate_execution_params
-
-        valid, _errors = validate_execution_params(data)
-        if not valid:
-            return None
-
         modeled = {k: data[k] for k in _MB_MODELED if k in data}
         extra = {k: v for k, v in data.items() if k not in _MB_MODELED}
-        return cls(**modeled, extra=extra)
+        candidate = cls(**modeled, extra=extra)
+
+        # Final business-rule gate — identical to parse_machine_block:287-289.
+        # validate_execution_params is now typed (T-016 C3), so it runs on the
+        # constructed candidate. Function-level import: models.py stays
+        # app-dependency-free at module load (llm.py imports models.py); this
+        # matches executor.py:64's idiom. Behaviour-identical to the prior
+        # validate(coerced_dict) — same field values, typed access.
+        from scanner.llm import validate_execution_params
+
+        valid, _errors = validate_execution_params(candidate)
+        if not valid:
+            return None
+        return candidate
 
     def to_raw(self) -> dict:
         """Semantic inverse of `from_raw`: the dict `parse_machine_block`

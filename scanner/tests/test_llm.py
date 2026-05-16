@@ -3,6 +3,16 @@
 import json
 
 from scanner.llm import parse_decision_block, parse_machine_block, validate_execution_params
+from scanner.models import MachineBlock
+
+
+def _vmb(d: dict) -> MachineBlock:
+    """T-016 C3: validate_execution_params is now typed. These tests probe
+    the validator's OWN geometry/range detection, so they construct the
+    MachineBlock DIRECTLY (bypassing from_raw's validate gate) — in
+    production validate only ever runs on a constructed MachineBlock."""
+    return MachineBlock(**d)
+
 
 # --- Helpers ---
 
@@ -109,7 +119,7 @@ class TestParseMachineBlock:
 class TestValidateExecutionParams:
 
     def test_valid_long(self):
-        valid, errors = validate_execution_params(_valid_block())
+        valid, errors = validate_execution_params(_vmb(_valid_block()))
         assert valid is True
         assert errors == []
 
@@ -119,87 +129,86 @@ class TestValidateExecutionParams:
             "stop_loss": 64000.0, "tp1": 59000.0, "tp1_exit_pct": 50,
             "direction": "SHORT", "confidence": 6, "leverage": 3,
         }
-        valid, errors = validate_execution_params(params)
+        valid, errors = validate_execution_params(_vmb(params))
         assert valid is True
 
     def test_invalid_direction(self):
-        valid, errors = validate_execution_params(_valid_block(direction="FLAT"))
+        valid, errors = validate_execution_params(_vmb(_valid_block(direction="FLAT")))
         assert valid is False
         assert any("direction" in e for e in errors)
 
     def test_long_stop_wrong_side(self):
-        valid, errors = validate_execution_params(_valid_block(stop_loss=63000.0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(stop_loss=63000.0)))
         assert valid is False
         assert any("stop" in e.lower() for e in errors)
 
     def test_long_tp_wrong_side(self):
-        valid, errors = validate_execution_params(_valid_block(tp1=60000.0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(tp1=60000.0)))
         assert valid is False
         assert any("tp1" in e.lower() for e in errors)
 
     def test_short_stop_wrong_side(self):
         params = _valid_block(direction="SHORT", entry_low=100.0, entry_high=101.0,
                               stop_loss=99.0, tp1=90.0)
-        valid, errors = validate_execution_params(params)
+        valid, errors = validate_execution_params(_vmb(params))
         assert valid is False
         assert any("stop" in e.lower() for e in errors)
 
     def test_short_tp_wrong_side(self):
         params = _valid_block(direction="SHORT", entry_low=100.0, entry_high=101.0,
                               stop_loss=105.0, tp1=110.0)
-        valid, errors = validate_execution_params(params)
+        valid, errors = validate_execution_params(_vmb(params))
         assert valid is False
         assert any("tp1" in e.lower() for e in errors)
 
     def test_entry_low_gt_entry_high(self):
-        valid, errors = validate_execution_params(_valid_block(entry_low=63000.0, entry_high=62000.0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(entry_low=63000.0, entry_high=62000.0)))
         assert valid is False
         assert any("entry_low" in e for e in errors)
 
     def test_exit_pcts_over_100(self):
-        valid, errors = validate_execution_params(
-            _valid_block(tp1_exit_pct=60, tp2=68000.0, tp2_exit_pct=50)
+        valid, errors = validate_execution_params(_vmb(_valid_block(tp1_exit_pct=60, tp2=68000.0, tp2_exit_pct=50))
         )
         assert valid is False
         assert any("100" in e for e in errors)
 
     def test_confidence_too_low(self):
-        valid, errors = validate_execution_params(_valid_block(confidence=0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(confidence=0)))
         assert valid is False
         assert any("confidence" in e for e in errors)
 
     def test_confidence_too_high(self):
-        valid, errors = validate_execution_params(_valid_block(confidence=11))
+        valid, errors = validate_execution_params(_vmb(_valid_block(confidence=11)))
         assert valid is False
 
     def test_leverage_zero(self):
-        valid, errors = validate_execution_params(_valid_block(leverage=0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(leverage=0)))
         assert valid is False
         assert any("leverage" in e for e in errors)
 
     def test_max_leverage_exceeded(self):
-        valid, errors = validate_execution_params(_valid_block(leverage=10), max_leverage=5)
+        valid, errors = validate_execution_params(_vmb(_valid_block(leverage=10)), max_leverage=5)
         assert valid is False
         assert any("max" in e.lower() for e in errors)
 
     def test_max_leverage_ok(self):
-        valid, errors = validate_execution_params(_valid_block(leverage=5), max_leverage=10)
+        valid, errors = validate_execution_params(_vmb(_valid_block(leverage=5)), max_leverage=10)
         assert valid is True
 
     def test_negative_price(self):
-        valid, errors = validate_execution_params(_valid_block(entry_low=-100.0))
+        valid, errors = validate_execution_params(_vmb(_valid_block(entry_low=-100.0)))
         assert valid is False
         assert any("positive" in e for e in errors)
 
     def test_tp2_ordering_long(self):
         params = _valid_block(tp2=64000.0, tp2_exit_pct=50)
-        valid, errors = validate_execution_params(params)
+        valid, errors = validate_execution_params(_vmb(params))
         assert valid is False
         assert any("tp2" in e.lower() for e in errors)
 
     def test_multiple_errors_collected(self):
         params = _valid_block(direction="INVALID", confidence=0, leverage=-1)
-        valid, errors = validate_execution_params(params)
+        valid, errors = validate_execution_params(_vmb(params))
         assert valid is False
         assert len(errors) >= 3
 
@@ -317,7 +326,7 @@ class TestConditionalEntryParsing:
         """All-or-none: having entry_trigger without price fails validation."""
         block = _valid_block(entry_trigger="candle_close_above")
         # Missing entry_trigger_price and invalidation_price
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is False
         assert any("must all be present" in e for e in errors)
 
@@ -339,7 +348,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=62500.0,
             invalidation_price=59000.0,  # below stop_loss of 59800 — looser pre-entry
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is False
         assert any("invalidation_price" in e for e in errors)
 
@@ -353,7 +362,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=61000.0,
             invalidation_price=66000.0,  # above stop_loss of 65000 — looser pre-entry
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is False
         assert any("invalidation_price" in e for e in errors)
 
@@ -364,7 +373,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=62500.0,
             invalidation_price=59800.0,  # equal to stop_loss
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
@@ -380,7 +389,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=61000.0,
             invalidation_price=65000.0,  # equal to stop_loss
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
@@ -392,7 +401,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=62500.0,
             invalidation_price=60500.0,  # above stop_loss of 59800, below entry_low
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None
@@ -408,7 +417,7 @@ class TestConditionalEntryParsing:
             entry_trigger_price=61000.0,
             invalidation_price=63500.0,  # below stop_loss of 65000, above entry_high
         )
-        valid, errors = validate_execution_params(block)
+        valid, errors = validate_execution_params(_vmb(block))
         assert valid is True, errors
         result = parse_machine_block(_wrap(block))
         assert result is not None

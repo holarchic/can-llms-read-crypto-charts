@@ -22,6 +22,7 @@ from scanner.execution.executor import (
 from scanner.execution.storage import ensure_orders_table, get_orders_for_scan, save_order
 from scanner.models import (
     Direction,
+    MachineBlock,
     MarketContext,
     ScanResult,
     SetupSignal,
@@ -75,14 +76,29 @@ def _make_machine_block(**overrides):
     return base
 
 
+def _vmb(d: dict) -> MachineBlock:
+    """T-016 C3: validate_execution_params is now typed. These tests probe
+    the validator's OWN geometry/range detection, so they construct the
+    MachineBlock DIRECTLY (bypassing from_raw's validate gate) — in
+    production validate only ever runs on a constructed MachineBlock."""
+    return MachineBlock(**d)
+
+
 _UNSET = object()
 
 
 def _make_scan_result(machine_block=_UNSET, coin="BTC", screener_direction=None, **overrides):
     mb = _make_machine_block() if machine_block is _UNSET else machine_block
+    # T-016 C3: ScanResult.machine_block is a typed MachineBlock|None in
+    # production. Normalize a dict fixture through the canonical boundary
+    # exactly as the real pipeline does (invalid dict -> None). A MachineBlock
+    # passed directly (e.g. an intentionally validate-invalid one built via
+    # the constructor) flows through untouched.
+    if isinstance(mb, dict):
+        mb = MachineBlock.from_raw(mb)
     # Default screener direction matches machine_block to avoid unintended counter-trend
     if screener_direction is None:
-        mb_dir = mb.get("direction", "LONG").upper() if mb else "LONG"
+        mb_dir = mb.direction.upper() if mb is not None else "LONG"
         screener_direction = Direction.LONG if mb_dir == "LONG" else Direction.SHORT
     ctx = MarketContext(
         structure=Structure.BULLISH,
@@ -132,67 +148,70 @@ def _mock_exchange_success(filled=None):
 
 class TestValidateExecutionParams:
     def test_valid_long(self):
-        assert validate_execution_params(_make_machine_block()) == []
+        assert validate_execution_params(_vmb(_make_machine_block())) == []
 
-    def test_missing_direction(self):
+    def test_missing_direction_rejected_at_boundary(self):
+        # Pre-C3 validate_execution_params flagged a missing direction. Post
+        # T-016 a MachineBlock cannot omit a required field — that rejection
+        # moves to from_raw, so validate never sees a direction-less block in
+        # production.
         mb = _make_machine_block()
         del mb["direction"]
-        errors = validate_execution_params(mb)
-        assert any("direction" in e.lower() for e in errors)
+        assert MachineBlock.from_raw(mb) is None
 
     def test_invalid_direction(self):
-        errors = validate_execution_params(_make_machine_block(direction="UP"))
+        errors = validate_execution_params(_vmb(_make_machine_block(direction="UP")))
         assert any("direction" in e.lower() for e in errors)
 
     def test_invalid_leverage(self):
-        errors = validate_execution_params(_make_machine_block(leverage=-1))
+        errors = validate_execution_params(_vmb(_make_machine_block(leverage=-1)))
         assert any("leverage" in e.lower() for e in errors)
 
     def test_validates_exit_pcts_over_100(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=70, tp2_exit_pct=50))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=70, tp2_exit_pct=50)))
         assert any("exit pcts sum" in e for e in errors)
 
     def test_validates_exit_pct_negative(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=-10))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=-10)))
         assert any("tp1_exit_pct must be positive" in e for e in errors)
 
     def test_validates_tp2_exit_pct_negative(self):
-        errors = validate_execution_params(_make_machine_block(tp2_exit_pct=-5))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp2_exit_pct=-5)))
         assert any("tp2_exit_pct must be non-negative" in e for e in errors)
 
     def test_valid_exit_pcts_no_errors(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40)))
         assert errors == []
 
     def test_long_stop_above_entry(self):
-        errors = validate_execution_params(_make_machine_block(stop_loss=62000))
+        errors = validate_execution_params(_vmb(_make_machine_block(stop_loss=62000)))
         assert any("LONG stop" in e for e in errors)
 
     def test_short_stop_below_entry(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=61000, tp1=59000, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert any("SHORT stop" in e for e in errors)
 
     def test_long_tp1_below_entry(self):
-        errors = validate_execution_params(_make_machine_block(tp1=61000))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1=61000)))
         assert any("LONG tp1" in e for e in errors)
 
     def test_short_tp1_above_entry(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=62500, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert any("SHORT tp1" in e for e in errors)
 
     def test_entry_low_above_entry_high(self):
-        errors = validate_execution_params(_make_machine_block(entry_low=63000, entry_high=61000))
+        errors = validate_execution_params(_vmb(_make_machine_block(entry_low=63000, entry_high=61000)))
         assert any("entry_low" in e for e in errors)
 
     def test_long_tp2_below_tp1(self):
-        errors = validate_execution_params(_make_machine_block(tp2=64000))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp2=64000)))
         assert any("LONG tp2" in e for e in errors)
 
     def test_valid_short(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=59000, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert errors == []
 
 
@@ -275,7 +294,17 @@ class TestExecuteTrade:
         assert result.skip_reason == "no_machine_block"
 
     def test_skip_invalid_params(self, conn, exec_config, scanner_config):
-        sr = _make_scan_result(machine_block={"direction": "INVALID"})
+        # A validate-invalid block can no longer exist as a dict on
+        # ScanResult (from_raw would reject it -> None -> no_machine_block).
+        # Build a MachineBlock directly with bad LONG geometry (stop above
+        # entry_low) so execute_trade's step-2 validate gate still fires and
+        # yields invalid_params — exercising that gate as before.
+        bad = MachineBlock(
+            entry_low=61800.0, entry_high=62200.0, stop_loss=63000.0,
+            tp1=65000.0, tp1_exit_pct=50.0, direction="LONG",
+            confidence=7.0, leverage=5.0,
+        )
+        sr = _make_scan_result(machine_block=bad)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "invalid_params"

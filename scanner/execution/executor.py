@@ -9,7 +9,7 @@ import requests
 from ccxt.base.errors import DuplicateOrderId
 
 from scanner.config import get_exchange_meta
-from scanner.models import ScanResult
+from scanner.models import MachineBlock, ScanResult
 
 from .config import ExecutionConfig
 from .exchange import (
@@ -53,7 +53,7 @@ class ExecutionResult:
     error: str = ""
 
 
-def validate_execution_params(machine_block: dict) -> list[str]:
+def validate_execution_params(machine_block: MachineBlock) -> list[str]:
     """Check that required machine_block fields exist and are valid.
 
     Delegates to the canonical validator in scanner.llm. Conditional-entry
@@ -190,11 +190,11 @@ def execute_trade(
 
     # 1. Check machine_block exists
     mb = result.machine_block
-    if not mb:
+    if mb is None:
         er.skip_reason = "no_machine_block"
         return er
 
-    er.direction = mb.get("direction", "").upper()
+    er.direction = mb.direction.upper()
 
     # 1b. Detect counter-trend (screener direction ≠ LLM direction)
     screener_dir = result.setup_signal.direction.value if result.setup_signal else ""
@@ -232,8 +232,8 @@ def execute_trade(
         return er
 
     # 5. Entry zone check (direction-aware buffer for momentum entries)
-    entry_low = mb["entry_low"]
-    entry_high = mb["entry_high"]
+    entry_low = mb.entry_low
+    entry_high = mb.entry_high
     if not is_price_in_entry_zone(
         current_price, entry_low, entry_high,
         direction=er.direction, buffer_pct=exec_config.entry_zone_buffer_pct,
@@ -471,9 +471,9 @@ def execute_trade(
                 "%s reanchored exits: delta=%+.4f fill=%.4f | "
                 "sl %.4f→%.4f tp1 %s→%s tp2 %s→%s",
                 result.coin, reanchored["delta"], fill_price,
-                mb["stop_loss"], reanchored["stop_loss"],
-                mb.get("tp1"), reanchored.get("tp1"),
-                mb.get("tp2"), reanchored.get("tp2"),
+                mb.stop_loss, reanchored["stop_loss"],
+                mb.tp1, reanchored.get("tp1"),
+                mb.tp2, reanchored.get("tp2"),
             )
     except Exception as exc:
         er.skip_reason = "entry_failed"
@@ -488,11 +488,11 @@ def execute_trade(
     sl_oid = new_order_id()
     sl_cloid = make_cloid(sl_oid)
 
-    tp1_price = reanchored.get("tp1", mb.get("tp1"))
+    tp1_price = reanchored.get("tp1", mb.tp1)
     tp1_oid = new_order_id() if tp1_price and actual_tp1_qty > 0 else None
     tp1_cloid = make_cloid(tp1_oid) if tp1_oid else None
 
-    tp2_price = reanchored.get("tp2", mb.get("tp2"))
+    tp2_price = reanchored.get("tp2", mb.tp2)
     tp2_oid = new_order_id() if tp2_price and actual_tp2_qty > 0 else None
     tp2_cloid = make_cloid(tp2_oid) if tp2_oid else None
 

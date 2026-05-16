@@ -20,6 +20,74 @@ from scanner.llm import parse_machine_block
 from scanner.models import MachineBlock
 
 
+def _legacy_validate_execution_params(params: dict, max_leverage=None):
+    """FROZEN verbatim copy of validate_execution_params as it was BEFORE
+    T-016 C3 (dict-accepting, .get-based). C3 migrates the live function to
+    typed MachineBlock access; the behaviour baseline must not drift with it,
+    so the frozen legacy parser calls THIS, not the live validator. Do not
+    tidy or share — its value is immutability.
+    """
+    errors: list[str] = []
+    direction = params.get("direction", "").upper()
+    if direction not in ("LONG", "SHORT"):
+        errors.append(f"invalid direction: {params.get('direction')}")
+    entry_low = params.get("entry_low", 0)
+    entry_high = params.get("entry_high", 0)
+    stop = params.get("stop_loss", 0)
+    tp1 = params.get("tp1", 0)
+    confidence = params.get("confidence", 0)
+    leverage = params.get("leverage", 0)
+    for name, val in [("entry_low", entry_low), ("entry_high", entry_high),
+                      ("stop_loss", stop), ("tp1", tp1)]:
+        if val <= 0:
+            errors.append(f"{name} must be positive: {val}")
+    if entry_low > entry_high:
+        errors.append(f"entry_low ({entry_low}) > entry_high ({entry_high})")
+    if direction == "LONG" and stop > 0 and entry_low > 0:
+        if stop >= entry_low:
+            errors.append(f"LONG stop ({stop}) must be below entry_low ({entry_low})")
+        if tp1 > 0 and tp1 <= entry_high:
+            errors.append(f"LONG tp1 ({tp1}) must be above entry_high ({entry_high})")
+    elif direction == "SHORT" and stop > 0 and entry_high > 0:
+        if stop <= entry_high:
+            errors.append(f"SHORT stop ({stop}) must be above entry_high ({entry_high})")
+        if tp1 > 0 and tp1 >= entry_low:
+            errors.append(f"SHORT tp1 ({tp1}) must be below entry_low ({entry_low})")
+    tp2 = params.get("tp2")
+    if tp2 is not None and tp1 > 0:
+        if direction == "LONG" and tp2 <= tp1:
+            errors.append(f"LONG tp2 ({tp2}) must be above tp1 ({tp1})")
+        elif direction == "SHORT" and tp2 >= tp1:
+            errors.append(f"SHORT tp2 ({tp2}) must be below tp1 ({tp1})")
+    tp1_pct = params.get("tp1_exit_pct", 0)
+    tp2_pct = params.get("tp2_exit_pct", 0)
+    if tp1_pct is not None and tp1_pct <= 0:
+        errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
+    if tp2_pct < 0:
+        errors.append(f"tp2_exit_pct must be non-negative: {tp2_pct}")
+    if tp1_pct + tp2_pct > 100:
+        errors.append(f"exit pcts sum ({tp1_pct} + {tp2_pct} = {tp1_pct + tp2_pct}) > 100")
+    if not (1 <= confidence <= 10):
+        errors.append(f"confidence ({confidence}) must be 1-10")
+    if leverage <= 0:
+        errors.append(f"leverage must be positive: {leverage}")
+    if max_leverage is not None and leverage > max_leverage:
+        errors.append(f"leverage ({leverage}) exceeds max ({max_leverage})")
+    trigger = params.get("entry_trigger")
+    trigger_price = params.get("entry_trigger_price")
+    inv_price = params.get("invalidation_price")
+    has_any = any(v is not None for v in (trigger, trigger_price, inv_price))
+    has_all = all(v is not None for v in (trigger, trigger_price, inv_price))
+    if has_any and not has_all:
+        errors.append("conditional entry: entry_trigger, entry_trigger_price, and invalidation_price must all be present together")
+    elif has_all and direction in ("LONG", "SHORT"):
+        if direction == "LONG" and inv_price < stop:
+            errors.append(f"LONG invalidation_price ({inv_price}) must be at or above stop_loss ({stop})")
+        if direction == "SHORT" and inv_price > stop:
+            errors.append(f"SHORT invalidation_price ({inv_price}) must be at or below stop_loss ({stop})")
+    return (len(errors) == 0, errors)
+
+
 def _legacy_parse_machine_block(text: str):
     """FROZEN verbatim copy of parse_machine_block as it was BEFORE T-016
     Phase 1a (commit 83ddd7a), returning a plain dict | None.
@@ -95,8 +163,7 @@ def _legacy_parse_machine_block(text: str):
         if not 10 <= len(ev) <= 200:
             return None
         data["confirming_event"] = ev
-    from scanner.llm import validate_execution_params
-    valid, _e = validate_execution_params(data)
+    valid, _e = _legacy_validate_execution_params(data)
     if not valid:
         return None
     return data
@@ -262,3 +329,71 @@ def test_live_parse_delegates_to_from_raw(src, raw):
     assert isinstance(live, MachineBlock)
     assert live == MachineBlock.from_raw(json.loads(raw))
     assert live.to_raw() == legacy
+
+
+# --- C3: typed sizing/sanity/validate reproduce the pre-C3 snapshot --------
+# scanner/tests/fixtures/c3_pre_snapshot.json was captured by running the
+# DICT-era calculate_position / check_price_sanity / reanchor_exit_prices /
+# validate_execution_params over the full corpus BEFORE the C3 typed rewrite.
+# The typed implementations must reproduce it byte-for-byte. This is the
+# real-money behaviour-preservation gate for C3.
+
+from dataclasses import asdict  # noqa: E402
+
+from scanner.execution.config import ExecutionConfig  # noqa: E402
+from scanner.execution.sanity import check_price_sanity  # noqa: E402
+from scanner.execution.sizing import (  # noqa: E402
+    calculate_position,
+    reanchor_exit_prices,
+)
+from scanner.llm import validate_execution_params  # noqa: E402
+
+_C3_SNAP = json.loads(
+    (Path(__file__).parent / "fixtures" / "c3_pre_snapshot.json").read_text()
+)
+_C3_CFG = ExecutionConfig(
+    enabled=True, mode="testnet", private_key="0x", wallet_address="0x",
+)
+# Exact input grids the snapshot was generated with — must not change.
+_CALC_PARAMS = [(1000.0, 1.0, None), (500.0, 0.5, 10), (10000.0, 2.0, 3)]
+
+
+@pytest.mark.parametrize(
+    "rec", _C3_SNAP,
+    ids=[f"row{i}" for i in range(len(_C3_SNAP))],
+)
+def test_c3_typed_matches_pre_snapshot(rec):
+    d = json.loads(rec["raw"])
+    mb = MachineBlock.from_raw(d)
+
+    if mb is None:
+        # from_raw rejects exactly the inputs the pre-C3 path rejected, so the
+        # snapshot's (legacy) validate must also be invalid. Invalid rows never
+        # reach calc/sanity/reanchor in production (rejected at the boundary);
+        # reject-parity is proven against the frozen legacy parser elsewhere.
+        assert rec["validate"][0] is False, (
+            f"from_raw->None but pre-C3 validate passed: {rec['validate']}"
+        )
+        return
+
+    # validate: typed result == the pre-C3 dict-era result, every valid row.
+    v, errs = validate_execution_params(mb)
+    assert [v, errs] == rec["validate"], (
+        f"validate divergence: typed={[v, errs]} snap={rec['validate']}"
+    )
+
+    em = (mb.entry_low + mb.entry_high) / 2 or 1.0
+
+    for (bal, risk, ml), snap in zip(_CALC_PARAMS, rec["calc"]):
+        ps = calculate_position(mb, bal, risk, ml)
+        got = None if ps is None else asdict(ps)
+        assert got == snap, f"calc divergence bal={bal} risk={risk} ml={ml}"
+
+    for (price, atr), snap in zip(
+        [(em, 0.0), (em * 1.03, em * 0.01), (em * 0.9, em * 0.02)], rec["sanity"]
+    ):
+        r = check_price_sanity(mb, price, atr, _C3_CFG)
+        assert [r.passed, r.errors] == snap, f"sanity divergence price={price} atr={atr}"
+
+    for fp, snap in zip([em, em * 1.01, em * 0.985], rec["reanchor"]):
+        assert reanchor_exit_prices(mb, fp) == snap, f"reanchor divergence fp={fp}"

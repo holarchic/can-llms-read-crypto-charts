@@ -213,24 +213,27 @@ def parse_machine_block(text: str) -> MachineBlock | None:
 
 
 def validate_execution_params(
-    params: dict, max_leverage: int | None = None,
+    params: MachineBlock, max_leverage: int | None = None,
 ) -> tuple[bool, list[str]]:
     """Validate machine block params for trade execution.
 
-    Returns (valid, errors). Empty errors list = valid.
+    Returns (valid, errors). Empty errors list = valid. Typed access (T-016
+    C3) — behaviour byte-identical to the prior dict version; the required
+    fields are always present so the old .get(...) defaults were dead, the
+    optional tp2/tp2_exit_pct/trigger reads preserve absent==None/0 exactly.
     """
     errors: list[str] = []
-    direction = params.get("direction", "").upper()
+    direction = params.direction.upper()
 
     if direction not in ("LONG", "SHORT"):
-        errors.append(f"invalid direction: {params.get('direction')}")
+        errors.append(f"invalid direction: {params.direction}")
 
-    entry_low = params.get("entry_low", 0)
-    entry_high = params.get("entry_high", 0)
-    stop = params.get("stop_loss", 0)
-    tp1 = params.get("tp1", 0)
-    confidence = params.get("confidence", 0)
-    leverage = params.get("leverage", 0)
+    entry_low = params.entry_low
+    entry_high = params.entry_high
+    stop = params.stop_loss
+    tp1 = params.tp1
+    confidence = params.confidence
+    leverage = params.leverage
 
     # Price sanity
     for name, val in [("entry_low", entry_low), ("entry_high", entry_high),
@@ -254,16 +257,17 @@ def validate_execution_params(
             errors.append(f"SHORT tp1 ({tp1}) must be below entry_low ({entry_low})")
 
     # TP2 ordering
-    tp2 = params.get("tp2")
+    tp2 = params.tp2
     if tp2 is not None and tp1 > 0:
         if direction == "LONG" and tp2 <= tp1:
             errors.append(f"LONG tp2 ({tp2}) must be above tp1 ({tp1})")
         elif direction == "SHORT" and tp2 >= tp1:
             errors.append(f"SHORT tp2 ({tp2}) must be below tp1 ({tp1})")
 
-    # Exit percentages
-    tp1_pct = params.get("tp1_exit_pct", 0)
-    tp2_pct = params.get("tp2_exit_pct", 0)
+    # Exit percentages — tp1_exit_pct required (always present); tp2_exit_pct
+    # optional, absent must read as 0 exactly as the prior .get(...,0) did.
+    tp1_pct = params.tp1_exit_pct
+    tp2_pct = params.tp2_exit_pct if params.tp2_exit_pct is not None else 0
     if tp1_pct is not None and tp1_pct <= 0:
         errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
     if tp2_pct < 0:
@@ -282,9 +286,9 @@ def validate_execution_params(
         errors.append(f"leverage ({leverage}) exceeds max ({max_leverage})")
 
     # Conditional entry cross-validation (all-or-none for trigger fields)
-    trigger = params.get("entry_trigger")
-    trigger_price = params.get("entry_trigger_price")
-    inv_price = params.get("invalidation_price")
+    trigger = params.entry_trigger
+    trigger_price = params.entry_trigger_price
+    inv_price = params.invalidation_price
     has_any = any(v is not None for v in (trigger, trigger_price, inv_price))
     has_all = all(v is not None for v in (trigger, trigger_price, inv_price))
 

@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from scanner.models import MachineBlock
+
 
 @dataclass
 class PositionSize:
@@ -17,7 +19,7 @@ class PositionSize:
 
 
 def calculate_position(
-    machine_block: dict,
+    machine_block: MachineBlock,
     balance: float,
     risk_pct: float,
     max_leverage: int | None = None,
@@ -26,13 +28,13 @@ def calculate_position(
 
     Returns None if inputs are invalid (zero risk, missing fields).
     """
-    entry_low = machine_block.get("entry_low", 0)
-    entry_high = machine_block.get("entry_high", 0)
-    stop_loss = machine_block.get("stop_loss", 0)
-    tp1 = machine_block.get("tp1")
-    tp2 = machine_block.get("tp2")
-    direction = machine_block.get("direction", "").upper()
-    leverage = machine_block.get("leverage", 1)
+    entry_low = machine_block.entry_low
+    entry_high = machine_block.entry_high
+    stop_loss = machine_block.stop_loss
+    tp1 = machine_block.tp1
+    tp2 = machine_block.tp2
+    direction = machine_block.direction.upper()
+    leverage = machine_block.leverage
 
     if not entry_low or not entry_high or not stop_loss:
         return None
@@ -69,8 +71,12 @@ def calculate_position(
         rr_ratio = 0
 
     # TP quantity split — normalize to sum to 100% (LLM may produce 60+30=90 etc)
-    tp1_exit_pct = machine_block.get("tp1_exit_pct", 50)
-    tp2_exit_pct = machine_block.get("tp2_exit_pct", 50)
+    # tp1_exit_pct is required (always present); tp2_exit_pct is optional —
+    # absent must still default to 50 exactly as the prior .get(...,50) did.
+    tp1_exit_pct = machine_block.tp1_exit_pct
+    tp2_exit_pct = (
+        machine_block.tp2_exit_pct if machine_block.tp2_exit_pct is not None else 50
+    )
 
     if tp1 and tp2:
         total_pct = tp1_exit_pct + tp2_exit_pct
@@ -100,7 +106,7 @@ def calculate_position(
     )
 
 
-def reanchor_exit_prices(machine_block: dict, fill_price: float) -> dict:
+def reanchor_exit_prices(machine_block: MachineBlock, fill_price: float) -> dict:
     """Shift SL/TP levels by the delta between fill price and entry_mid.
 
     The LLM picks absolute levels based on the chart at scan time. Entry fills
@@ -108,19 +114,19 @@ def reanchor_exit_prices(machine_block: dict, fill_price: float) -> dict:
     actual R matches the intended R.
 
     Returns dict with stop_loss, delta, and tp1/tp2 if present in machine_block.
+    (Output stays a plain dict — it is an internal computation result, not the
+    cross-module contract; only the input type is migrated. T-016 C3.)
     """
-    entry_low = machine_block.get("entry_low", 0)
-    entry_high = machine_block.get("entry_high", 0)
-    entry_mid = (entry_low + entry_high) / 2
+    entry_mid = (machine_block.entry_low + machine_block.entry_high) / 2
 
     delta = fill_price - entry_mid
 
     result = {
-        "stop_loss": machine_block["stop_loss"] + delta,
+        "stop_loss": machine_block.stop_loss + delta,
         "delta": delta,
     }
-    if machine_block.get("tp1") is not None:
-        result["tp1"] = machine_block["tp1"] + delta
-    if machine_block.get("tp2") is not None:
-        result["tp2"] = machine_block["tp2"] + delta
+    if machine_block.tp1 is not None:
+        result["tp1"] = machine_block.tp1 + delta
+    if machine_block.tp2 is not None:
+        result["tp2"] = machine_block.tp2 + delta
     return result

@@ -1176,9 +1176,15 @@ def attempt_sl_recovery(
             ).fetchone()
             scanner_conn.close()
             if row and row["machine_block"]:
-                mb = json.loads(row["machine_block"])
+                # T-016 C3: normalize the stored block through the single
+                # canonical boundary before the now-typed reanchor helper
+                # (preserves the single-boundary invariant; from_raw -> None on
+                # a degraded stored block falls through exactly as the prior
+                # missing-stop_loss guard did).
+                from scanner.models import MachineBlock
+                mb = MachineBlock.from_raw(json.loads(row["machine_block"]))
                 fill_price = float(entry.get("fill_price") or entry.get("entry_price") or 0)
-                if fill_price and mb.get("stop_loss"):
+                if fill_price and mb is not None and mb.stop_loss:
                     from .sizing import reanchor_exit_prices
                     reanchored = reanchor_exit_prices(mb, fill_price)
                     trigger_price = reanchored["stop_loss"]
