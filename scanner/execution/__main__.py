@@ -340,6 +340,8 @@ def _cmd_open_positions(config, discord):
 
 def _cmd_smoke(config):
     """Execution-path smoke test."""
+    from scanner.models import MachineBlock
+
     from .executor import preflight_check, validate_execution_params
 
     errors = []
@@ -347,11 +349,16 @@ def _cmd_smoke(config):
     # 1. Config loaded (already done)
     print("  Config load: OK")
 
-    # 2. Param validation logic works
-    validate_execution_params({
-        "direction": "LONG", "entry_low": 100, "entry_high": 110,
-        "stop_loss": 90, "leverage": 5,
+    # 2. Param validation logic works (T-016: the validator is typed — build
+    #    a complete valid MachineBlock through the canonical boundary, exactly
+    #    as the live pipeline does, then run the validator on it).
+    mb = MachineBlock.from_raw({
+        "direction": "LONG", "entry_low": 100.0, "entry_high": 110.0,
+        "stop_loss": 90.0, "tp1": 130.0, "tp1_exit_pct": 50,
+        "confidence": 7, "leverage": 5,
     })
+    assert mb is not None, "smoke: canonical MachineBlock.from_raw failed"
+    validate_execution_params(mb)
     print("  Param validation: OK")
 
     # 3. Monitor imports
