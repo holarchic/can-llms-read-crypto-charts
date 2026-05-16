@@ -489,7 +489,7 @@ def run_scan(
                           f"SL ${mb.stop_loss:,.2f}, TP ${mb.tp1:,.2f}")
             else:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — sizing failed")
+                    print(f"  {c.coin} {mb.direction}: SKIPPED — sizing failed")
 
     elif exec_config and exec_config.enabled and confirms:
         # Always print — execution status is critical ops info

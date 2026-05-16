@@ -228,13 +228,11 @@ def save_result(
     setup_name = SETUP_NAMES.get(result.setup_signal.setup_type, "")
 
     # Extract LLM direction from machine_block if available.
-    # C2 serialization bridge (T-016): machine_block is now a typed
-    # MachineBlock (not a dict) — the prior isinstance(dict) gate would
-    # silently drop llm_direction. .get() goes via the compat shim until
-    # this cluster migrates to typed access (C5).
+    # T-016: machine_block is a typed MachineBlock | None (direction is a
+    # required field, always present on a constructed block).
     llm_direction = None
-    if result.machine_block:
-        llm_direction = result.machine_block.get("direction")
+    if result.machine_block is not None:
+        llm_direction = result.machine_block.direction
 
     scan_id = result.scan_id
     values = (
