@@ -15,10 +15,12 @@ zero today — the oracle is the fixture, not prod divergence; LESSONS
 import sqlite3
 from unittest.mock import patch
 
+import pytest
+
 from scanner.execution import drift as D
 from scanner.execution import monitor as M
 from scanner.execution.config import ExecutionConfig
-from scanner.execution.storage import ensure_orders_table
+from scanner.execution.storage import ensure_orders_table, original_stop_price
 
 # ---------------------------------------------------------------------------
 # Fix 3 — market_close_position: confirmed-fill gating
@@ -249,3 +251,75 @@ def test_timeout_none_keeps_sl_and_alerts():
         "SELECT status FROM orders WHERE order_type='stop_loss'"
     ).fetchone()
     assert sl["status"] == "PLACED"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — drift-close alert R anchored on the storage-owned original SL
+# ---------------------------------------------------------------------------
+
+def _adversarial_drift_conn():
+    """scan with SL_drift (95.0, LATER created_at, inserted FIRST → lower
+    rowid) and SL_orig (100.0, EARLIER created_at, inserted SECOND). A bare
+    `LIMIT 1` (rowid order) picks the non-original 95.0; original_stop_price
+    (ORDER BY created_at ASC) picks 100.0."""
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, fill_price, entry_price, quantity, exchange, execution_mode,
+        created_at, filled_at)
+        VALUES ('e','s1','ABC','LONG','entry','FILLED',105.0,105.0,1.0,
+                'hyperliquid','testnet','2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00')""",
+    )
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, trigger_price, quantity, exchange, execution_mode, created_at)
+        VALUES ('sl_drift','s1','ABC','LONG','stop_loss','CANCELLED',95.0,1.0,
+                'hyperliquid','testnet','2026-01-01T06:00:00+00:00')""",
+    )
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, trigger_price, quantity, exchange, execution_mode, created_at)
+        VALUES ('sl_orig','s1','ABC','LONG','stop_loss','CANCELLED',100.0,1.0,
+                'hyperliquid','testnet','2026-01-01T00:00:00+00:00')""",
+    )
+    conn.commit()
+    return conn
+
+
+def test_original_stop_price_picks_original_not_rowid_first():
+    conn = _adversarial_drift_conn()
+    frozen_old = conn.execute(
+        "SELECT trigger_price FROM orders WHERE scan_id = ? "
+        "AND order_type = 'stop_loss' LIMIT 1",
+        ("s1",),
+    ).fetchone()
+    assert float(frozen_old["trigger_price"]) == 95.0  # bug: rowid-first
+    assert original_stop_price("s1", conn, "testnet", "hyperliquid") == 100.0
+
+
+def test_drift_close_alert_r_anchored_on_original_sl():
+    """By-construction divergence: LONG entry 105, drift_close fill 102, qty 1.
+      frozen-old (bare LIMIT 1 → SL 95):  R = (102-105)/|105-95|  = -0.3
+      new (original_stop_price → SL 100): R = (102-105)/|105-100| = -0.6
+    """
+    conn = _adversarial_drift_conn()
+    entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
+             "quantity": 1.0, "fill_price": 105.0}
+    captured = {}
+
+    def _capture_alert(e, trig, fp, r_val, cfg):
+        captured["r"] = r_val
+
+    with patch.object(D, "market_close_position", return_value=102.0), \
+         patch.object(D, "cancel_remaining_orders"), \
+         patch.object(D, "_send_drift_close_alert", side_effect=_capture_alert):
+        rc = D._execute_force_close(
+            entry, "reversal", {}, "ABC/USDC:USDC", object(), _cfg(), conn,
+        )
+
+    assert rc == 1
+    assert captured["r"] == pytest.approx(-0.6)   # fix: original SL anchor
+    frozen_old_r = (102.0 - 105.0) / abs(105.0 - 95.0)
+    assert frozen_old_r == pytest.approx(-0.3)
+    assert captured["r"] != pytest.approx(frozen_old_r)  # anti-vacuity

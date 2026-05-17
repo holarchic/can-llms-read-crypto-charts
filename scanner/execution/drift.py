@@ -31,6 +31,7 @@ from .monitor import (
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
+    original_stop_price,
 )
 
 log = logging.getLogger(__name__)
@@ -608,12 +609,14 @@ def _execute_force_close(
     )
 
     if fill_price is not None:
-        # Get SL price for R calculation
-        sl_row = conn.execute(
-            "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' LIMIT 1",
-            (entry["scan_id"],),
-        ).fetchone()
-        sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
+        # Original (first-by-created_at) SL is the risk anchor for the alert R.
+        # drift sl_move and post-TP1 trail insert NEW stop_loss rows (decision
+        # #13), so a bare LIMIT 1 (SQLite's undefined row order) could pick a
+        # post-drift/trail SL and mis-state R. Storage owner, mode/exchange-
+        # scoped + ORDER BY created_at ASC (SPEC #24, KL#2 ledger iii).
+        sl_price = original_stop_price(
+            entry["scan_id"], conn, config.mode, config.exchange,
+        )
 
         r_val = None
         if sl_price and entry.get("fill_price"):
