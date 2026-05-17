@@ -64,7 +64,13 @@ def transaction(conn: sqlite3.Connection):
         yield
         conn.commit()
     except BaseException:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            # A rollback failure must NOT mask the original error — log it and
+            # re-raise the original (bare `raise` re-raises the in-flight
+            # exception; the rollback error is chained as __context__).
+            log.exception("transaction(): rollback failed; re-raising original")
         raise
     finally:
         del _TX_DEPTH[cid]

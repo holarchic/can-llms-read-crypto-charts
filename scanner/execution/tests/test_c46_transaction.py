@@ -119,6 +119,34 @@ def test_foreign_uncommitted_txn_fails_fast(db):
     assert id(conn) not in _TX_DEPTH  # guard fired before ownership recorded
 
 
+class _RollbackBoom(sqlite3.Connection):
+    """rollback() raises — sqlite3.Connection.rollback is read-only on the C
+    type, so a subclass factory is the only way to inject the failure."""
+
+    def rollback(self):
+        raise sqlite3.OperationalError("rb boom")
+
+
+def test_rollback_failure_preserves_original_exception(tmp_path, caplog):
+    import logging
+
+    path = tmp_path / "rb.db"
+    conn = sqlite3.connect(str(path), factory=_RollbackBoom)
+    conn.row_factory = sqlite3.Row
+    ensure_orders_table(conn)
+    conn.commit()
+
+    with caplog.at_level(logging.ERROR, logger="scanner.execution.storage"):
+        # The ORIGINAL ValueError must propagate — NOT the rollback's
+        # OperationalError (rollback failure must not mask the real error).
+        with pytest.raises(ValueError, match="original"):
+            with transaction(conn):
+                raise ValueError("original")
+
+    assert "rollback failed" in caplog.text  # failure logged, not swallowed
+    assert id(conn) not in _TX_DEPTH  # finally cleaned despite rollback fail
+
+
 def test_standalone_maybe_commit_persists(db):
     conn, path = db
     save_order(_order("a"), conn)  # no transaction() → _maybe_commit commits
