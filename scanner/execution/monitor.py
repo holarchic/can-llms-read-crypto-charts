@@ -598,6 +598,23 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
     return send_urgent(config.discord_urgent_webhook_url, message)
 
 
+def _send_urgent_close_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
+    """URGENT when a timeout market-close did NOT confirm (zero/partial/
+    unpriceable/retry-exhausted → `market_close_position` returned None).
+
+    The protective SL is RETAINED — `cancel_remaining_orders` is only reached
+    on a confirmed full close, so the position is NOT naked (distinct from
+    `_send_urgent_sl_alert`'s "running WITHOUT stop loss" condition). The
+    position/remainder is re-attempted next monitor cycle; reconcile from
+    exchange truth.
+    """
+    from .alerts import send_urgent
+    message = (f"@everyone **URGENT**: TIMEOUT close did NOT confirm for {coin} "
+               f"{direction} — position retained WITH its stop loss; remainder "
+               f"re-attempted next monitor cycle. Reconcile from exchange.")
+    return send_urgent(config.discord_urgent_webhook_url, message)
+
+
 def _send_errors_tp_alert(
     coin: str, direction: str, order_type: str, config: ExecutionConfig,
 ) -> bool:
@@ -736,7 +753,10 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
                                 fill_price=fill_price, sl_price=sl_price)
             timed_out += 1
         else:
-            _send_urgent_sl_alert(entry["coin"], entry["direction"], exec_config)
+            # market_close_position returned None: zero/partial/unpriceable/
+            # exhausted. SL was NOT cancelled (that is inside the
+            # `is not None` block) → position retained WITH its SL, not naked.
+            _send_urgent_close_alert(entry["coin"], entry["direction"], exec_config)
 
     if own_conn:
         conn.close()

@@ -254,7 +254,7 @@ def test_timeout_none_keeps_sl_and_alerts():
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
          patch.object(M, "market_close_position", return_value=None), \
-         patch.object(M, "_send_urgent_sl_alert") as urgent, \
+         patch.object(M, "_send_urgent_close_alert") as urgent, \
          patch.object(M, "cancel_remaining_orders") as cancel:
         M.enforce_position_timeouts(cfg, conn)
 
