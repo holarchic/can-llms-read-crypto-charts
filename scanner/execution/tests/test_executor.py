@@ -1583,3 +1583,75 @@ class TestBatchExitOrders:
         assert result.tp2_order_id != ""
         # SL placed sequentially (entry + SL = 2 create_order calls)
         assert mock_exchange.create_order.call_count == 2
+
+
+class TestExecutorAtomicExitCluster:
+    """T-016 C4#6 chunk 2a — the SL+TP exit-write cluster is one atomic
+    transaction after all exchange placement (placement-before-persistence).
+    Backfills the plan's Chunk-2 injected-failure + fallback verification."""
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_exit_cluster_rolls_back_atomically(
+        self, mock_killed, mock_price, mock_balance, mock_auth, mock_discord,
+        conn, exec_config, scanner_config,
+    ):
+        """A failure on the TP1 insert (2nd write in the cluster) rolls back
+        the SL insert too — never a half-written exit set. The entry row
+        (saved standalone BEFORE the cluster) persists, so the position stays
+        recoverable; the SL is on-exchange (create_order ran) → recovery
+        converges to >=1 SL (SPEC #25)."""
+        real_save = save_order
+
+        def _fail_on_tp1(order, c):
+            if order["order_type"] == "tp1":
+                raise RuntimeError("injected mid-cluster failure")
+            return real_save(order, c)
+
+        mock_exchange = MagicMock()
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        with patch("scanner.execution.executor.save_order", side_effect=_fail_on_tp1):
+            with pytest.raises(RuntimeError, match="injected mid-cluster"):
+                execute_trade(_make_request(), exec_config, scanner_config, conn)
+
+        orders = get_orders_for_scan("test123", conn)
+        types = [o["order_type"] for o in orders]
+        assert "entry" in types  # saved standalone before the cluster — persists
+        assert "stop_loss" not in types  # cluster rolled back as one unit
+        assert "tp1" not in types and "tp2" not in types
+
+    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.executor.get_auth_exchange")
+    @patch("scanner.execution.executor.fetch_balance", return_value=10000)
+    @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
+    @patch("scanner.execution.executor.is_killed", return_value=False)
+    def test_sequential_fallback_persists_all_rows(
+        self, mock_killed, mock_price, mock_balance, mock_auth, mock_discord,
+        conn, exec_config, scanner_config,
+    ):
+        """Batch placement fails → sequential _place_stop_loss/_place_take_profit
+        fallback. Placement-before-persistence must still persist entry + SL
+        (+ TP) — the reorder did not break the fallback path."""
+        mock_exchange = MagicMock()
+        mock_exchange.create_orders.side_effect = Exception("batch down")
+        mock_exchange.create_order.return_value = _mock_exchange_success()
+        mock_exchange.amount_to_precision.side_effect = lambda s, q: str(q)
+        mock_auth.return_value = mock_exchange
+        mock_discord.return_value = MagicMock(status_code=204)
+
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
+
+        assert result.executed is True
+        orders = get_orders_for_scan("test123", conn)
+        types = [o["order_type"] for o in orders]
+        assert "entry" in types
+        assert "stop_loss" in types  # SL persisted via sequential fallback
+        sl = next(o for o in orders if o["order_type"] == "stop_loss")
+        assert sl["status"] == "PLACED"
