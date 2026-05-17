@@ -7,8 +7,9 @@ import traceback
 
 from .alerts import COLOR_ERROR, send_ops_log
 from .config import ScannerConfig
+from .db import get_connection
 from .pipeline import run_scan
-from .storage import get_connection, signal_history, signal_stats, stats
+from .storage import signal_history, signal_stats, stats
 
 
 def main():

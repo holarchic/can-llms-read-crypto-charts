@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scanner.config import EXCHANGE_META, ScannerConfig, get_exchange_meta
-from scanner.storage import get_connection, is_duplicate
+from scanner.db import get_connection
+from scanner.storage import is_duplicate
 
 # --- Config / metadata ---
 

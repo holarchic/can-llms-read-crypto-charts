@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import requests
 
 from scanner.config import get_exchange_meta
-from scanner.storage import get_connection
+from scanner.db import get_connection
 
 from .config import ExecutionConfig
 from .exchange import cancel_order, get_auth_exchange, get_exchange_open_orders, get_open_positions, is_rate_limit_error
@@ -1169,7 +1169,7 @@ def attempt_sl_recovery(
         try:
             import json
 
-            from scanner.storage import get_connection as get_scanner_conn
+            from scanner.db import get_connection as get_scanner_conn
             scanner_conn = get_scanner_conn()
             row = scanner_conn.execute(
                 "SELECT machine_block, stop_loss FROM scans WHERE scan_id = ?", (scan_id,),

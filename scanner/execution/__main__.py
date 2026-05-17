@@ -65,7 +65,7 @@ Examples:
 
 def _cmd_pending(config):
     """List active pending conditional entries."""
-    from scanner.storage import get_connection
+    from scanner.db import get_connection
 
     from .storage import get_active_pending_entries
 
@@ -90,7 +90,7 @@ def _cmd_monitor(config, discord_handler=None):
 
     from ccxt.base.errors import ExchangeNotAvailable, NetworkError, RequestTimeout
 
-    from scanner.storage import get_connection
+    from scanner.db import get_connection
 
     from .executor import _send_errors_alert
     from .monitor import check_positions, enforce_position_timeouts, sync_order_status
@@ -222,7 +222,7 @@ def _cmd_positions(config):
 
 
 def _cmd_orders(config, days):
-    from scanner.storage import get_connection
+    from scanner.db import get_connection
 
     conn = get_connection()
     rows = conn.execute(
@@ -263,7 +263,7 @@ def _cmd_report(config, mode, discord):
     """
     import requests as req
 
-    from scanner.storage import get_connection
+    from scanner.db import get_connection
 
     from .analytics import compute_live_metrics
     from .report import build_execution_embeds, format_execution_report
@@ -300,7 +300,7 @@ def _cmd_report(config, mode, discord):
 def _cmd_open_positions(config, discord):
     from datetime import datetime, timezone
 
-    from scanner.storage import get_connection
+    from scanner.db import get_connection
 
     from .monitor import send_open_positions_report
     from .storage import get_open_entry_orders

@@ -16,8 +16,8 @@ import pandas as pd
 import requests
 
 from scanner.config import get_exchange_meta
+from scanner.db import get_connection as get_scanner_connection
 from scanner.indicators import find_swing_points
-from scanner.storage import get_connection as get_scanner_connection
 
 from .config import ExecutionConfig
 from .exchange import get_auth_exchange

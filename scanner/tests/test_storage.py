@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scanner import storage
+from scanner import db as scanner_db
+from scanner.db import get_connection
 from scanner.models import (
     Direction,
     MachineBlock,
@@ -15,7 +16,7 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, stats
+from scanner.storage import daily_cost, is_duplicate, mark_alerted, save_result, save_scan_universe, stats
 
 
 @pytest.fixture
@@ -245,22 +246,24 @@ class TestPromptVersion:
 class TestMigrationCache:
     def setup_method(self):
         """Clear migration cache between tests."""
-        storage._migrated.clear()
+        scanner_db._migrated.clear()
 
     def test_get_connection_migrations_run_once(self, tmp_path):
-        """Second get_connection() with same path skips migrations."""
+        """Second get_connection() with same path skips migrations; the
+        assembly root composes BOTH scanner + execution schema (T-016 2a)."""
         db = tmp_path / "cache_test.db"
         conn1 = get_connection(db)
         conn1.close()
 
         resolved = str(db.resolve())
-        assert resolved in storage._migrated
+        assert resolved in scanner_db._migrated
 
         # Second call — _migrated already contains the path
         conn2 = get_connection(db)
         conn2.close()
 
-        # Verify tables exist (migrations ran on first call)
+        # Fresh close/reopen — verify the composed bootstrap actually ran
+        # from scanner.db (scanner-owned AND execution-owned tables).
         conn3 = get_connection(db)
         tables = {
             row[0] for row in conn3.execute(
@@ -270,6 +273,8 @@ class TestMigrationCache:
         conn3.close()
         assert "scans" in tables
         assert "signals" in tables
+        assert "orders" in tables  # execution schema composed by scanner.db
+        assert "pending_entries" in tables
 
     def test_get_connection_different_paths_both_migrate(self, tmp_path):
         """Two different db paths each get their own migrations."""
@@ -281,5 +286,5 @@ class TestMigrationCache:
         conn2 = get_connection(db2)
         conn2.close()
 
-        assert str(db1.resolve()) in storage._migrated
-        assert str(db2.resolve()) in storage._migrated
+        assert str(db1.resolve()) in scanner_db._migrated
+        assert str(db2.resolve()) in scanner_db._migrated

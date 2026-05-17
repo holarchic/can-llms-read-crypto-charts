@@ -10,7 +10,7 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
-from ..storage import get_connection
+from ..db import get_connection
 from .models import Strategy
 from .store import (
     activate_strategy,

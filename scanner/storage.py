@@ -2,12 +2,9 @@
 
 import json as _json
 import sqlite3
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
-from .config import DB_PATH
 from .models import SETUP_NAMES, ScanResult, SetupSignal
 
 CREATE_TABLE = """
@@ -141,12 +138,23 @@ def _migrate_scans_direction(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-_migrated: set[str] = set()
-_migration_lock = threading.Lock()
+def _default_conn() -> sqlite3.Connection:
+    """Connection for the `conn=None` convenience path. Function-local import
+    of the assembly root (`scanner.db`) — keeps scanner-core free of a
+    module-load dependency on the connection factory / execution schema
+    (T-016 Phase 2a, SPEC #22)."""
+    from .db import get_connection
+
+    return get_connection()
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Run all schema migrations — tables, indexes, columns, execution orders."""
+    """Run scanner-owned schema migrations — tables, indexes, columns.
+
+    Execution-owned tables (`orders`/`pending_entries`) are bootstrapped by
+    the assembly root `scanner.db.get_connection`, NOT here — scanner-core
+    must not import `scanner.execution.storage` (C2#2, SPEC #22).
+    """
     conn.execute(CREATE_TABLE)
     # Migrate scans.direction → screener_direction BEFORE CREATE_INDEX, which
     # references screener_direction. Legacy DBs with the old 'direction' column
@@ -183,32 +191,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "scans", "machine_block", "TEXT", "NULL")
     _ensure_column(conn, "scans", "prompt_version", "TEXT", "NULL")
     conn.execute(CREATE_STRATEGIES_INDEX)
-    # Execution orders table
-    from .execution.storage import ensure_orders_table
-    ensure_orders_table(conn)
     conn.commit()
-
-
-def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """Get a database connection, running migrations once per db path per process."""
-    path = db_path or DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    # busy_timeout: block up to 10s on SQLITE_BUSY so concurrent writers
-    # (scanner + monitor + cron reports) don't silently fail their UPDATEs.
-    conn.execute("PRAGMA busy_timeout=10000")
-    # synchronous=NORMAL is safe with WAL and ~2x faster than FULL on fsync.
-    conn.execute("PRAGMA synchronous=NORMAL")
-
-    resolved = str(path.resolve())
-    if resolved not in _migrated:
-        with _migration_lock:
-            if resolved not in _migrated:
-                _run_migrations(conn)
-                _migrated.add(resolved)
-    return conn
 
 
 def save_result(
@@ -221,7 +204,7 @@ def save_result(
     """Save a scan result to the database."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     parsed = result.parsed_decision or {}
     from .models import SETUP_NAMES
@@ -302,7 +285,7 @@ def is_duplicate(
     """Check if the same setup was already detected within `hours` hours."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     row = conn.execute(
         """SELECT COUNT(*) as cnt FROM scans
@@ -322,7 +305,7 @@ def mark_alerted(scan_id: str, conn: sqlite3.Connection | None = None) -> None:
     """Mark a scan result as alerted."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     conn.execute("UPDATE scans SET alerted = 1 WHERE scan_id = ?", (scan_id,))
     conn.commit()
@@ -335,7 +318,7 @@ def daily_cost(conn: sqlite3.Connection | None = None) -> float:
     """Sum cost_usd for today (UTC)."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     row = conn.execute(
         """SELECT COALESCE(SUM(cost_usd), 0) as total FROM scans
@@ -352,7 +335,7 @@ def stats(conn: sqlite3.Connection | None = None) -> dict:
     """Return scan summary stats."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     total = conn.execute("SELECT COUNT(*) as cnt FROM scans").fetchone()["cnt"]
     confirms = conn.execute("SELECT COUNT(*) as cnt FROM scans WHERE decision = 'CONFIRM'").fetchone()["cnt"]
@@ -401,7 +384,7 @@ def save_signals(
 
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     now = datetime.now(timezone.utc).isoformat()
     total = len(signals)
@@ -507,7 +490,7 @@ def signal_history(
     """Query signal history with optional filters."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     clauses = ["datetime(timestamp) > datetime('now', ?)"]
     params: list = [f"-{days} days"]
@@ -545,7 +528,7 @@ def signal_distribution(
     """Signal counts grouped by setup type and direction for distribution reports."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     clauses = ["datetime(timestamp) > datetime('now', ?)"]
     params: list = [f"-{days} days"]
@@ -598,7 +581,7 @@ def signal_stats(
     """Aggregate signal stats for backtesting review."""
     own_conn = conn is None
     if own_conn:
-        conn = get_connection()
+        conn = _default_conn()
 
     clauses = ["datetime(timestamp) > datetime('now', ?)"]
     params: list = [f"-{days} days"]

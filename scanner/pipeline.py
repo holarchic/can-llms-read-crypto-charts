@@ -11,10 +11,11 @@ from .analysis import PROMPT_VERSION, analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
+from .db import get_connection
 from .indicators import build_context
 from .models import ExecutionRequest, MarketContext, ScanResult, SetupSignal
 from .screener import detect_all_setups
-from .storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
+from .storage import daily_cost, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
 from .strategy.store import get_strategy
 
 

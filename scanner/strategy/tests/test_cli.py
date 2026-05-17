@@ -7,7 +7,7 @@ they're not tested because they no longer exist.
 
 import pytest
 
-from scanner.storage import get_connection
+from scanner.db import get_connection
 from scanner.strategy.cli import build_parser, cmd_activate, cmd_create, cmd_disable, cmd_list
 from scanner.strategy.store import get_strategy, save_strategy
 

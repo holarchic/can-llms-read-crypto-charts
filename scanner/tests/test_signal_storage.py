@@ -3,6 +3,7 @@
 
 import pytest
 
+from scanner.db import get_connection
 from scanner.models import (
     Direction,
     FibLevels,
@@ -11,7 +12,7 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.storage import get_connection, save_signals, signal_history, signal_stats
+from scanner.storage import save_signals, signal_history, signal_stats
 
 
 @pytest.fixture

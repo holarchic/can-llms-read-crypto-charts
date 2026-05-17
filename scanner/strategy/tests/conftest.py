@@ -2,7 +2,7 @@
 
 import pytest
 
-from scanner.storage import get_connection
+from scanner.db import get_connection
 from scanner.strategy.models import Strategy
 
 
