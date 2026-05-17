@@ -355,15 +355,15 @@ class TestComputeLiveMetrics:
             TradeRecord("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert m["count"] == 2
-        assert m["win_rate"] == 0.5
-        assert m["total_pnl"] == 100
+        assert m.count == 2
+        assert m.win_rate == 0.5
+        assert m.total_pnl == 100
 
     def test_no_trades(self):
         m = compute_live_metrics([])
-        assert m["count"] == 0
-        assert m["win_rate"] == 0
-        assert m["expectancy_r"] == 0
+        assert m.count == 0
+        assert m.win_rate == 0
+        assert m.expectancy_r == 0
 
     def test_profit_factor(self):
         trades = [
@@ -371,12 +371,12 @@ class TestComputeLiveMetrics:
             TradeRecord("s2", "ETH", "LONG", 3000, 2900, "SL", -100, -1.0, 100, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert m["profit_factor"] == 3.0  # 300/100
+        assert m.profit_factor == 3.0  # 300/100
 
     def test_fill_rate_default_zero(self):
         """fill_rate is 0 by default (caller populates with CONFIRM context)."""
         m = compute_live_metrics([])
-        assert m["fill_rate"] == 0
+        assert m.fill_rate == 0
 
     def test_drawdown_all_losses(self):
         """All-loss sequence should report non-zero drawdown using total_risk."""
@@ -387,8 +387,8 @@ class TestComputeLiveMetrics:
         ]
         m = compute_live_metrics(trades)
         # total_risk = 600, total loss = 600, max_dd_pct = 600/600*100 = 100
-        assert m["max_drawdown_pct"] > 0
-        assert m["max_drawdown_pct"] == 100.0
+        assert m.max_drawdown_pct > 0
+        assert m.max_drawdown_pct == 100.0
 
     def test_drawdown_loss_then_win(self):
         """Loss then bigger win → peak-based drawdown (regression check)."""
@@ -405,7 +405,7 @@ class TestComputeLiveMetrics:
         # Let's trace: t1: running=-200, peak=0 (not >0), dd=0-(-200)=200, max_dd=200
         #              t2: running=300, peak=300, dd=0
         # peak=300 > 0, so max_dd_pct = 200/300*100 = 66.67
-        assert m["max_drawdown_pct"] == pytest.approx(66.67, abs=0.01)
+        assert m.max_drawdown_pct == pytest.approx(66.67, abs=0.01)
 
     def test_funding_r_normalized_by_total_risk(self):
         """funding_r = total_funding / total_risk (not avg risk)."""
@@ -416,7 +416,7 @@ class TestComputeLiveMetrics:
         m = compute_live_metrics(trades)
         # total_funding = 50, total_risk = 1000
         # correct: 50/1000 = 0.05
-        assert m["total_funding_r"] == pytest.approx(0.05, abs=0.001)
+        assert m.total_funding_r == pytest.approx(0.05, abs=0.001)
 
 
 class TestLlmCostSummary:
@@ -518,7 +518,7 @@ class TestQualityWarnings:
             TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert any("Funding costs not captured" in w for w in m["quality_warnings"])
+        assert any("Funding costs not captured" in w for w in m.quality_warnings)
 
     def test_no_funding_warning_when_clean(self):
         """Trades with funding_paid > 0 → no funding warning."""
@@ -527,8 +527,8 @@ class TestQualityWarnings:
             TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 3.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert not any("Funding costs not captured" in w for w in m["quality_warnings"])
-        assert not any("missing funding" in w for w in m["quality_warnings"])
+        assert not any("Funding costs not captured" in w for w in m.quality_warnings)
+        assert not any("missing funding" in w for w in m.quality_warnings)
 
     def test_flags_missing_fill_prices(self):
         """Trades with entry_fill=0 → warning about missing fill prices."""
@@ -536,23 +536,23 @@ class TestQualityWarnings:
             TradeRecord("s1", "BTC", "LONG", 0, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert any("missing fill prices" in w for w in m["quality_warnings"])
-        assert any("using trigger prices" in w for w in m["quality_warnings"])
+        assert any("missing fill prices" in w for w in m.quality_warnings)
+        assert any("using trigger prices" in w for w in m.quality_warnings)
 
     def test_empty_trades_has_db_note(self):
         """No trades → still has DB-only note."""
         m = compute_live_metrics([])
-        assert any("not reconciled" in w for w in m["quality_warnings"])
+        assert any("not reconciled" in w for w in m.quality_warnings)
 
     def test_metrics_include_data_source(self):
         """Metrics dict always includes data_source=db_only."""
         m = compute_live_metrics([])
-        assert m["data_source"] == "db_only"
+        assert m.data_source == "db_only"
         trades = [
             TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m2 = compute_live_metrics(trades)
-        assert m2["data_source"] == "db_only"
+        assert m2.data_source == "db_only"
 
     def test_quality_warnings_always_include_db_note(self):
         """DB-only note is always the first warning."""
@@ -560,7 +560,7 @@ class TestQualityWarnings:
             TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert m["quality_warnings"][0] == "All metrics estimated from DB — not reconciled with exchange"
+        assert m.quality_warnings[0] == "All metrics estimated from DB — not reconciled with exchange"
 
     def test_quality_warnings_partial_funding(self):
         """Some trades missing funding → partial funding warning."""
@@ -569,7 +569,7 @@ class TestQualityWarnings:
             TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
-        assert any("1/2 trades missing funding data" in w for w in m["quality_warnings"])
+        assert any("1/2 trades missing funding data" in w for w in m.quality_warnings)
 
 
 class TestRollingExpectancy:

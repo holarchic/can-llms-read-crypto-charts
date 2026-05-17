@@ -2,19 +2,19 @@
 read model (T-016 Phase 2a, SPEC #22). No DB access here: `get_closed_trades`
 / `llm_cost_summary` live in `scanner.execution.storage`."""
 
-from scanner.models import TradeRecord
+from scanner.models import MetricsWindow, TradeRecord
 
 
-def compute_live_metrics(trades: list[TradeRecord]) -> dict:
+def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
     """Compute aggregate performance metrics from closed trades."""
     if not trades:
-        return {
-            "count": 0, "win_rate": 0, "expectancy_r": 0, "profit_factor": 0,
-            "total_pnl": 0, "max_drawdown_pct": 0,
-            "avg_holding_hours": 0, "avg_slippage_r": 0, "total_funding_r": 0,
-            "fill_rate": 0, "data_source": "db_only",
-            "quality_warnings": _compute_quality_warnings([]),
-        }
+        return MetricsWindow(
+            count=0, win_rate=0, expectancy_r=0, profit_factor=0,
+            total_pnl=0, max_drawdown_pct=0,
+            avg_holding_hours=0, avg_slippage_r=0, total_funding_r=0,
+            fill_rate=0, data_source="db_only",
+            quality_warnings=_compute_quality_warnings([]),
+        )
 
     wins = [t for t in trades if t.realized_r > 0]
     losses = [t for t in trades if t.realized_r <= 0]
@@ -53,23 +53,23 @@ def compute_live_metrics(trades: list[TradeRecord]) -> dict:
     total_funding = sum(t.funding_paid for t in trades)
     total_funding_r = total_funding / total_risk if total_risk > 0 else 0
 
-    return {
-        "count": len(trades),
-        "win_rate": round(win_rate, 4),
-        "expectancy_r": round(expectancy_r, 4),
-        "profit_factor": round(profit_factor, 4),
-        "total_pnl": round(total_pnl, 2),
-        "max_drawdown_pct": round(max_dd_pct, 2),
-        "avg_holding_hours": round(avg_holding, 1),
-        "avg_slippage_r": round(avg_slippage, 4),
-        "total_funding_r": round(total_funding_r, 4),
-        "fill_rate": 0,  # Populated by caller with CONFIRM count context
-        "data_source": "db_only",
-        "quality_warnings": _compute_quality_warnings(trades),
-    }
+    return MetricsWindow(
+        count=len(trades),
+        win_rate=round(win_rate, 4),
+        expectancy_r=round(expectancy_r, 4),
+        profit_factor=round(profit_factor, 4),
+        total_pnl=round(total_pnl, 2),
+        max_drawdown_pct=round(max_dd_pct, 2),
+        avg_holding_hours=round(avg_holding, 1),
+        avg_slippage_r=round(avg_slippage, 4),
+        total_funding_r=round(total_funding_r, 4),
+        fill_rate=0,  # Placeholder — CONFIRM-context wiring out of Phase-2a scope
+        data_source="db_only",
+        quality_warnings=_compute_quality_warnings(trades),
+    )
 
 
-def _compute_quality_warnings(trades: list[TradeRecord]) -> list[str]:
+def _compute_quality_warnings(trades: list[TradeRecord]) -> tuple[str, ...]:
     """Flag data gaps that affect metric accuracy."""
     warnings = ["All metrics estimated from DB — not reconciled with exchange"]
     if trades:
@@ -81,7 +81,7 @@ def _compute_quality_warnings(trades: list[TradeRecord]) -> list[str]:
         approx_fills = sum(1 for t in trades if t.entry_fill == 0 or t.exit_fill == 0)
         if approx_fills:
             warnings.append(f"{approx_fills} trades with missing fill prices — using trigger prices")
-    return warnings
+    return tuple(warnings)
 
 
 def rolling_expectancy(trades: list[TradeRecord], window: int = 20) -> list[tuple[int, float]]:
