@@ -49,7 +49,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
         with _migration_lock:
             if resolved not in _migrated:
                 # Function-local imports — no module-load cycle (scanner.db ↔
-                # scanner.storage ↔ scanner.execution.storage).
+                # scanner.schema ↔ scanner.execution.storage).
                 from .execution.storage import ensure_orders_table
                 from .schema import _run_migrations
 
