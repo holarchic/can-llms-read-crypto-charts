@@ -6,7 +6,7 @@ import pytest
 
 from scanner.config import EXCHANGE_META, ScannerConfig, get_exchange_meta
 from scanner.db import get_connection
-from scanner.storage import is_duplicate
+from scanner.scan_queries import is_duplicate
 
 # --- Config / metadata ---
 

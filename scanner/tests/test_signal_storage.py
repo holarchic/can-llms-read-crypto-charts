@@ -12,7 +12,8 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.storage import save_signals, signal_history, signal_stats
+from scanner.scan_queries import signal_distribution, signal_history, signal_stats
+from scanner.scan_store import save_signals
 
 
 @pytest.fixture
@@ -243,3 +244,72 @@ class TestSignalStats:
 
         # top_coins
         assert len(s["top_coins"]) == 3
+
+
+class TestSignalDistribution:
+    """Direct coverage for signal_distribution — runtime/test-dead pre the
+    T-016 2b split (no caller, no test); this gates its verbatim move."""
+
+    def test_empty(self, db_conn):
+        d = signal_distribution(conn=db_conn)
+        assert d["total"] == 0
+        assert d["batches"] == 0
+        assert d["by_type"] == []
+        assert d["by_direction"] == []
+
+    def test_grouping(self, db_conn):
+        save_signals([
+            _make_signal(coin="BTC", setup_type=SetupType.A, direction=Direction.LONG),
+            _make_signal(coin="ETH", setup_type=SetupType.A, direction=Direction.SHORT),
+            _make_signal(coin="SOL", setup_type=SetupType.C, direction=Direction.LONG),
+        ], "batch001", 3, db_conn)
+
+        d = signal_distribution(conn=db_conn)
+        assert d["total"] == 3
+        assert d["batches"] == 1
+
+        by_type = {r["setup_type"]: r for r in d["by_type"]}
+        assert by_type["A"]["count"] == 2
+        assert by_type["A"]["long"] == 1
+        assert by_type["A"]["short"] == 1
+        assert by_type["C"]["count"] == 1
+        assert by_type["C"]["long"] == 1
+
+        by_dir = {r["dir"]: r["count"] for r in d["by_direction"]}
+        assert by_dir["LONG"] == 2
+        assert by_dir["SHORT"] == 1
+
+
+def test_storage_split_move_completeness():
+    """T-016 2b move-completeness tripwire (SPEC #23): the union of the new
+    modules' declared public surface must EXACTLY equal the pre-split
+    `scanner/storage.py` public surface — a dropped/renamed/misplaced
+    function during the verbatim split fails closed here. `__all__` (not a
+    dir() scan) so imported names (get_connection, SETUP_NAMES) don't
+    pollute the surface."""
+    import scanner.scan_queries as q
+    import scanner.scan_store as s
+
+    store_all = set(s.__all__)
+    queries_all = set(q.__all__)
+
+    assert store_all == {
+        "save_result", "mark_alerted", "save_signals", "save_scan_universe",
+    }
+    assert queries_all == {
+        "is_duplicate", "daily_cost", "stats",
+        "signal_history", "signal_distribution", "signal_stats",
+    }
+    # disjoint — no function lives in both halves
+    assert store_all.isdisjoint(queries_all)
+    # union == the exact pre-split scanner/storage.py public surface
+    assert store_all | queries_all == {
+        "save_result", "mark_alerted", "save_signals", "save_scan_universe",
+        "is_duplicate", "daily_cost", "stats",
+        "signal_history", "signal_distribution", "signal_stats",
+    }
+    # every declared name is actually present + callable in its module
+    for name in store_all:
+        assert callable(getattr(s, name))
+    for name in queries_all:
+        assert callable(getattr(q, name))

@@ -16,7 +16,8 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.storage import daily_cost, is_duplicate, mark_alerted, save_result, save_scan_universe, stats
+from scanner.scan_queries import daily_cost, is_duplicate, stats
+from scanner.scan_store import mark_alerted, save_result, save_scan_universe
 
 
 @pytest.fixture
