@@ -32,6 +32,7 @@ from .storage import (
     make_cloid,
     new_order_id,
     save_order,
+    transaction,
 )
 
 log = logging.getLogger(__name__)
@@ -521,26 +522,86 @@ def execute_trade(
             cloid=sl_cloid,
         )
 
+    # 11. TP exchange placement (sequential fallback) — done BEFORE any
+    #     persistence so the DB write cluster below spans no exchange call
+    #     (C4#6 placement-before-persistence, SPEC #25). TPs are only placed
+    #     when the position is SL-protected; the SL-FAILED branch returns
+    #     early below, so this matches the prior control flow exactly.
     if sl_resp:
+        if tp1_price and actual_tp1_qty > 0 and tp1_resp is None:
+            tp1_resp = _place_take_profit(
+                exec_config, symbol, exit_side, actual_tp1_qty, tp1_price,
+                cloid=tp1_cloid,
+            )
+        if tp2_price and actual_tp2_qty > 0 and tp2_resp is None:
+            tp2_resp = _place_take_profit(
+                exec_config, symbol, exit_side, actual_tp2_qty, tp2_price,
+                cloid=tp2_cloid,
+            )
+
+    if sl_resp:
+        # Atomic exit-write cluster: SL + any placed TPs commit together or
+        # not at all (C4#6 — never a half-written exit set). No exchange call
+        # inside the txn. A rollback leaves no exit rows; the SL IS on the
+        # exchange, so attempt_sl_recovery converges to >=1 on-exchange SL
+        # (duplicate-on-lost-oid residual = Phase-3b reconcile; SPEC #25/KL#9).
         er.sl_order_id = sl_oid
-        save_order({
-            "order_id": sl_oid,
-            "scan_id": req.scan_id,
-            "coin": req.coin,
-            "direction": er.direction,
-            "order_type": "stop_loss",
-            "exchange_order_id": sl_resp.get("id", ""),
-            "status": "PLACED",
-            "trigger_price": sl_price,
-            "quantity": filled_qty,
-            "exchange": exec_config.exchange,
-            "execution_mode": exec_config.mode,
-            "placed_at": now,
-            "created_at": now,
-        }, conn)
+        with transaction(conn):
+            save_order({
+                "order_id": sl_oid,
+                "scan_id": req.scan_id,
+                "coin": req.coin,
+                "direction": er.direction,
+                "order_type": "stop_loss",
+                "exchange_order_id": sl_resp.get("id", ""),
+                "status": "PLACED",
+                "trigger_price": sl_price,
+                "quantity": filled_qty,
+                "exchange": exec_config.exchange,
+                "execution_mode": exec_config.mode,
+                "placed_at": now,
+                "created_at": now,
+            }, conn)
+            if tp1_price and actual_tp1_qty > 0 and tp1_resp:
+                er.tp1_order_id = tp1_oid
+                save_order({
+                    "order_id": tp1_oid,
+                    "scan_id": req.scan_id,
+                    "coin": req.coin,
+                    "direction": er.direction,
+                    "order_type": "tp1",
+                    "exchange_order_id": tp1_resp.get("id", ""),
+                    "status": "PLACED",
+                    "trigger_price": tp1_price,
+                    "quantity": actual_tp1_qty,
+                    "exchange": exec_config.exchange,
+                    "execution_mode": exec_config.mode,
+                    "placed_at": now,
+                    "created_at": now,
+                }, conn)
+            if tp2_price and actual_tp2_qty > 0 and tp2_resp:
+                er.tp2_order_id = tp2_oid
+                save_order({
+                    "order_id": tp2_oid,
+                    "scan_id": req.scan_id,
+                    "coin": req.coin,
+                    "direction": er.direction,
+                    "order_type": "tp2",
+                    "exchange_order_id": tp2_resp.get("id", ""),
+                    "status": "PLACED",
+                    "trigger_price": tp2_price,
+                    "quantity": actual_tp2_qty,
+                    "exchange": exec_config.exchange,
+                    "execution_mode": exec_config.mode,
+                    "placed_at": now,
+                    "created_at": now,
+                }, conn)
     else:
         er.sl_failed = True
-        # Save FAILED SL so monitor can recover trigger_price later
+        # Save FAILED SL so monitor can recover trigger_price later. Standalone
+        # (outside any transaction) — commits immediately as before; the
+        # emergency-close path is a distinct control flow, not the atomic
+        # exit-write cluster (SPEC #25).
         save_order({
             "order_id": sl_oid,
             "scan_id": req.scan_id,
@@ -576,55 +637,6 @@ def execute_trade(
                 exec_config,
             )
             return er
-
-    # 11. Take profits (non-fatal) — use batch response or fall back to sequential
-    if tp1_price and actual_tp1_qty > 0:
-        if tp1_resp is None:
-            tp1_resp = _place_take_profit(
-                exec_config, symbol, exit_side, actual_tp1_qty, tp1_price,
-                cloid=tp1_cloid,
-            )
-        if tp1_resp:
-            er.tp1_order_id = tp1_oid
-            save_order({
-                "order_id": tp1_oid,
-                "scan_id": req.scan_id,
-                "coin": req.coin,
-                "direction": er.direction,
-                "order_type": "tp1",
-                "exchange_order_id": tp1_resp.get("id", ""),
-                "status": "PLACED",
-                "trigger_price": tp1_price,
-                "quantity": actual_tp1_qty,
-                "exchange": exec_config.exchange,
-                "execution_mode": exec_config.mode,
-                "placed_at": now,
-                "created_at": now,
-            }, conn)
-
-    if tp2_price and actual_tp2_qty > 0:
-        if tp2_resp is None:
-            tp2_resp = _place_take_profit(
-                exec_config, symbol, exit_side, actual_tp2_qty, tp2_price,
-                cloid=tp2_cloid,
-            )
-        if tp2_resp:
-            er.tp2_order_id = tp2_oid
-            save_order({
-                "order_id": tp2_oid,
-                "scan_id": req.scan_id,
-                "coin": req.coin,
-                "direction": er.direction,
-                "order_type": "tp2",
-                "exchange_order_id": tp2_resp.get("id", ""),
-                "status": "PLACED",
-                "trigger_price": tp2_price,
-                "quantity": actual_tp2_qty,
-                "exchange": exec_config.exchange,
-                "execution_mode": exec_config.mode,
-                "placed_at": now,
-                "created_at": now,
-            }, conn)
 
     er.executed = True
     _send_execution_alert(er, exec_config)
