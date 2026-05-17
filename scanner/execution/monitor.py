@@ -38,6 +38,29 @@ def _extract_fill_price(exch_order: dict) -> float | None:
     return None
 
 
+def _resolve_close_fill(src: dict) -> tuple[float | None, float | None, str]:
+    """Resolve (fill_price, filled_qty, status) from a ccxt order / fetch_order dict.
+
+    fill_price: `average` first, then `price` when > 0 — a market close is NOT a
+    trigger order, so `price` is a usable fill reference here (unlike
+    `_extract_fill_price`'s average-only rule, which exists because TP/SL trigger
+    orders report mark price in `price`). filled_qty: `None` when the field is
+    absent — distinct from an explicit `0`: `status=="closed"` with filled
+    absent is a full fill, with explicit `0` an exchange auto-cancel (the
+    existing monitor convention at the `sync_order_status` "closed"/"canceled"
+    branches). status: lowercased ("" when absent).
+    """
+    fill_price = _extract_fill_price(src)
+    if fill_price is None:
+        raw_p = src.get("price")
+        if raw_p is not None and float(raw_p) > 0:
+            fill_price = float(raw_p)
+    filled_raw = src.get("filled")
+    filled = float(filled_raw) if filled_raw is not None else None
+    status = (src.get("status") or "").lower()
+    return fill_price, filled, status
+
+
 def sync_order_status(exec_config: ExecutionConfig, conn=None,
                       exchange_open_orders: list[dict] | None = None) -> int:
     """Poll exchange for order fills, update DB. Cancel counterpart orders on fill.
@@ -744,7 +767,15 @@ def market_close_position(
 ) -> float | None:
     """Place a reduceOnly market order to close a position. 3 retries.
 
-    Returns fill price on success, None on failure.
+    Returns the fill price ONLY on a confirmed FULL priced close (a `FILLED`
+    row is written). Returns `None` on a partial close (a truthful partial
+    `FILLED` row IS written for the actual leg; caller retains the SL and the
+    remainder is re-attempted next monitor cycle), on a zero/unconfirmed/
+    unpriceable result (NO row written — a `FILLED`/NULL-price row would
+    fabricate a close, the 2026-04-17 phantom_sl class), and on retry
+    exhaustion. `create_order` succeeding is not proof of a fill — HL has no
+    native market order; ccxt simulates via limit-IOC which can under/not-fill,
+    so fill state is re-derived from `status`/`filled` (T-014(a), SPEC #24).
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
     with slippage. Requires current price as the base for slippage calc.
@@ -762,27 +793,68 @@ def market_close_position(
                 symbol, "market", exit_side, rounded_qty, price,
                 {"reduceOnly": True, "clientOrderId": cloid},
             )
-            fill_price = _extract_fill_price(resp)
-            save_order({
-                "order_id": order_id,
-                "scan_id": entry["scan_id"],
-                "coin": entry["coin"],
-                "direction": entry["direction"],
-                "order_type": order_type,
-                "exchange_order_id": resp.get("id", ""),
-                "status": "FILLED",
-                "fill_price": fill_price,
-                "quantity": rounded_qty,
-                "exchange": config.exchange,
-                "execution_mode": config.mode,
-                "filled_at": datetime.now(timezone.utc).isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }, conn)
-            log.info(
-                "%s %s %s: qty %s at %s",
-                order_type, entry["coin"], entry["direction"], rounded_qty, fill_price,
+            exch_id = resp.get("id", "")
+            fill_price, filled, status = _resolve_close_fill(resp)
+            # `price` may merely echo the submitted IOC limit, so it is NOT
+            # fill evidence unless the order is `closed`. Re-derive from the
+            # exchange when the create resp is not a confirmed priced close.
+            if (status != "closed" or fill_price is None) and exch_id:
+                try:
+                    fill_price, filled, status = _resolve_close_fill(
+                        exchange.fetch_order(exch_id, symbol)
+                    )
+                except Exception as fexc:
+                    log.warning(
+                        "%s fetch_order(%s) for %s failed: %s",
+                        order_type, exch_id, entry["coin"], fexc,
+                    )
+
+            # Confirmed priced close requires status closed AND a price AND a
+            # non-zero fill (filled absent ≠ explicit 0 — see _resolve_close_fill).
+            confirmed = status == "closed" and fill_price is not None and filled != 0
+            if confirmed:
+                full = filled is None or filled + OPEN_QTY_EPSILON >= rounded_qty
+                recorded_qty = rounded_qty if full else filled
+                save_order({
+                    "order_id": order_id,
+                    "scan_id": entry["scan_id"],
+                    "coin": entry["coin"],
+                    "direction": entry["direction"],
+                    "order_type": order_type,
+                    "exchange_order_id": exch_id,
+                    "status": "FILLED",
+                    "fill_price": fill_price,
+                    "quantity": recorded_qty,
+                    "exchange": config.exchange,
+                    "execution_mode": config.mode,
+                    "filled_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }, conn)
+                if full:
+                    log.info(
+                        "%s %s %s: qty %s at %s",
+                        order_type, entry["coin"], entry["direction"], recorded_qty, fill_price,
+                    )
+                    return fill_price
+                log.warning(
+                    "%s %s %s: PARTIAL close %s/%s at %s — remainder open, "
+                    "retried next monitor cycle",
+                    order_type, entry["coin"], entry["direction"],
+                    recorded_qty, rounded_qty, fill_price,
+                )
+                return None
+
+            # Not a confirmed priced close (status not closed, zero fill, or
+            # unpriceable). Write NO row — a FILLED/NULL-price row fabricates a
+            # close (phantom_sl class). No row to reconcile against, so the
+            # durable exchange id is preserved in the log.
+            log.error(
+                "%s for %s NOT confirmed (status=%s filled=%s price=%s) — no row "
+                "written; order_id=%s cloid=%s exchange_id=%s; reconcile from exchange",
+                order_type, entry["coin"], status, filled, fill_price,
+                order_id, cloid, exch_id,
             )
-            return fill_price if fill_price else 0.0
+            return None
         except Exception as exc:
             log.error(
                 "%s attempt %d/%d for %s failed: %s",

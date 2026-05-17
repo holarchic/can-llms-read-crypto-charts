@@ -1268,7 +1268,8 @@ class TestPositionTimeout:
         save_order(sl, conn)
 
         mock_exchange = MagicMock()
-        mock_exchange.create_order.return_value = {"id": "timeout_exch1", "average": 62500}
+        mock_exchange.create_order.return_value = {
+            "id": "timeout_exch1", "status": "closed", "filled": 0.1, "average": 62500}
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_auth.return_value = mock_exchange
         mock_post.return_value = MagicMock(status_code=204)
@@ -1322,7 +1323,8 @@ class TestPositionTimeout:
         save_order(sl, conn)
 
         mock_exchange = MagicMock()
-        mock_exchange.create_order.return_value = {"id": "timeout_exch1", "average": 63000}
+        mock_exchange.create_order.return_value = {
+            "id": "timeout_exch1", "status": "closed", "filled": 0.05, "average": 63000}
         mock_exchange.amount_to_precision.return_value = "0.05"
         mock_auth.return_value = mock_exchange
         mock_post.return_value = MagicMock(status_code=204)
@@ -1345,7 +1347,7 @@ class TestPositionTimeout:
         mock_exchange = MagicMock()
         mock_exchange.create_order.side_effect = [
             Exception("timeout"), Exception("timeout"),
-            {"id": "timeout_exch1", "average": 62000},
+            {"id": "timeout_exch1", "status": "closed", "filled": 0.1, "average": 62000},
         ]
         mock_exchange.amount_to_precision.return_value = "0.1"
         mock_auth.return_value = mock_exchange
