@@ -51,9 +51,13 @@ _CORPUS = _json.loads(
 
 
 # ---------------------------------------------------------------------------
-# FROZEN verbatim copy of the pre-2a read path (analytics.py @ fcb3620).
-# bare `LIMIT 1` (no ORDER BY) SL lookup + dict-returning compute_live_metrics.
-# This is the immutable baseline — do NOT "fix" it.
+# FROZEN copy of the pre-2a read path (analytics.py @ fcb3620): bare `LIMIT 1`
+# (no ORDER BY) SL lookup + dict-returning compute_live_metrics + the `if days:`
+# close-window branch. Field-output faithful — every value-bearing path is
+# verbatim; the only deviations are non-value-bearing: the missing-exit-price
+# `log.warning(...)` side-effect is omitted (does not affect any TradeRecord
+# field) and records are built from the relocated `scanner.models.TradeRecord`
+# (same shape). This is the immutable baseline — do NOT "fix" it.
 # ---------------------------------------------------------------------------
 
 def _frozen_exit_price(exit_order: dict) -> float | None:
