@@ -8,7 +8,7 @@ import traceback
 from .alerts import COLOR_ERROR, send_ops_log
 from .config import ScannerConfig
 from .pipeline import run_scan
-from .storage import cleanup_old_candles, get_connection, signal_history, signal_stats, stats
+from .storage import get_connection, signal_history, signal_stats, stats
 
 
 def main():
@@ -17,9 +17,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m scanner.cli                                           # Scan HL, HL-only candles (default)
-  python -m scanner.cli --exchange bybit                          # Scan Bybit (requires reachable host)
-  python -m scanner.cli --candle-exchanges hyperliquid bybit binance  # Multi-exchange cache (non-geo-blocked host)
+  python -m scanner.cli                                  # Scan HL (default)
+  python -m scanner.cli --exchange bybit                 # Scan Bybit (requires reachable host)
   python -m scanner.cli --dry-run                        # Stage 1 only, print signals
   python -m scanner.cli --coin BTC                       # Single coin
   python -m scanner.cli --no-discord                     # Skip Discord alerts
@@ -28,8 +27,6 @@ Examples:
     )
     parser.add_argument("--exchange", choices=["hyperliquid", "bybit", "binance"],
                         default="hyperliquid", help="Exchange to scan (default: hyperliquid)")
-    parser.add_argument("--candle-exchanges", nargs="+",
-                        help="Exchanges to collect candles from (default: hyperliquid only)")
     parser.add_argument("--dry-run", action="store_true", help="Run screener only, skip LLM + alerts")
     parser.add_argument("--coin", help="Scan a single coin (e.g. BTC, ETH, SOL)")
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord alerts")
@@ -39,7 +36,6 @@ Examples:
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
     parser.add_argument("--type", dest="setup_type", help="Filter by setup type (A-G)")
     parser.add_argument("--sent-only", action="store_true", help="Only show signals sent to LLM")
-    parser.add_argument("--cleanup-candles", action="store_true", help="Delete old candles per retention policy (15m: 180 days)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output")
 
     # Execution flags
@@ -61,12 +57,6 @@ Examples:
     root.addHandler(handler)
     root.setLevel(logging.WARNING)
     logging.getLogger("scanner.execution").setLevel(logging.INFO)
-
-    if args.cleanup_candles:
-        deleted = cleanup_old_candles()
-        if not args.quiet:
-            print(f"Candle cleanup: {deleted} rows deleted")
-        return
 
     if args.signal_stats:
         conn = get_connection()
@@ -142,8 +132,7 @@ Examples:
                       f"{r['decision'] or 'N/A':>7}  ${r['cost_usd']:.4f}  {r['timestamp'][:16]}")
         return
 
-    candle_exchanges = args.candle_exchanges if args.candle_exchanges is not None else ["hyperliquid"]
-    config = ScannerConfig(exchange=args.exchange, candle_exchanges=candle_exchanges)
+    config = ScannerConfig(exchange=args.exchange)
 
     # Build execution config with CLI overrides
     exec_config = None

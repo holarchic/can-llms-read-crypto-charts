@@ -8,12 +8,11 @@ from uuid import uuid4
 
 from .alerts import COLOR_OK, COLOR_WARN, format_alert_text, send_alert, send_ops_log
 from .analysis import PROMPT_VERSION, analyze_for_scanner
-from .backtest.candles import cache_candles
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
 from .indicators import build_context
-from .models import MarketContext, ScanResult, SetupSignal
+from .models import ExecutionRequest, MarketContext, ScanResult, SetupSignal
 from .screener import detect_all_setups
 from .storage import daily_cost, get_connection, is_duplicate, mark_alerted, save_result, save_scan_universe, save_signals
 from .strategy.store import get_strategy
@@ -53,48 +52,6 @@ def _select_with_diversity(
         type_counts[chosen.setup_type.value] = type_counts.get(chosen.setup_type.value, 0) + 1
 
     return selected + remaining
-
-
-def _collect_candles(
-    coins: list[str],
-    config: ScannerConfig,
-    verbose: bool = True,
-) -> None:
-    """Collect candles across all configured exchanges and timeframes.
-
-    Runs exchanges in parallel via ThreadPoolExecutor — each gets its own
-    DB connection (SQLite WAL supports concurrent writers).
-    Skips (primary exchange, 4H) since that's already fetched and cached by stage1.
-    Errors per exchange are caught and logged — one failing doesn't block the rest.
-    """
-    def _collect_one_exchange(eid: str) -> None:
-        label = get_exchange_meta(eid)["label"]
-        ex_conn = get_connection()
-        for tf in config.collection_timeframes:
-            if eid == config.exchange and tf == "4h":
-                continue
-            count = config.candle_counts.get(tf, 200)
-            if verbose:
-                print(f"Collecting {tf} candles from {label}...")
-            try:
-                tf_map = fetch_candles_batch(
-                    coins, tf, count, config, exchange_id=eid,
-                )
-                tf_cached = 0
-                for coin_name, df in tf_map.items():
-                    if df is not None and not df.empty:
-                        tf_cached += cache_candles(coin_name, tf, df, ex_conn, exchange=eid)
-                if verbose:
-                    print(f"  {label} {tf}: {len(tf_map)} pairs, {tf_cached} rows cached")
-            except Exception as e:
-                if verbose:
-                    print(f"  {label} {tf}: failed — {e}")
-        ex_conn.close()
-
-    if not config.candle_exchanges:
-        return
-    with ThreadPoolExecutor(max_workers=len(config.candle_exchanges)) as executor:
-        list(executor.map(_collect_one_exchange, config.candle_exchanges))
 
 
 def stage1_screen(
@@ -140,18 +97,6 @@ def stage1_screen(
     candle_map = fetch_candles_batch(coins, "4h", config.candle_counts["4h"], config)
     if verbose:
         print(f"Fetched {len(candle_map)}/{len(coins)} pairs")
-
-    # Cache 4H candles for replay (primary exchange — already fetched above)
-    cached = 0
-    for coin, df in candle_map.items():
-        if df is not None and not df.empty:
-            cached += cache_candles(coin, "4h", df, conn, exchange=config.exchange)
-    if verbose and cached:
-        print(f"Cached {cached} 4H candle rows")
-
-    # Collect candles across all configured exchanges and timeframes (data pipeline)
-    if not coin_filter:
-        _collect_candles(coins, config, verbose)
 
     # Build leverage lookup from pairs data
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
@@ -235,13 +180,6 @@ def _analyze_one(
                 candle_sets[tf] = prefetched_candles[signal.coin]
             else:
                 candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
-
-        # Cache all timeframes for experiment replay (4H already cached in stage1)
-        conn = get_connection()
-        for tf in ["1d", "1h"]:
-            if tf in candle_sets:
-                cache_candles(signal.coin, tf, candle_sets[tf], conn, exchange=config.exchange)
-        conn.close()
 
         chart_paths = generate_charts_for_signal(signal, candle_sets)
         result = analyze_for_scanner(signal, chart_paths, config, btc_structure, btc_context)
@@ -383,25 +321,51 @@ def stage4_execute(
             # Route conditional entries to pending if feature enabled
             mb = confirm.machine_block
             if (exec_config.conditional_entry_enabled
-                    and mb
-                    and mb.get("entry_trigger")
-                    and mb.get("entry_trigger_price")
-                    and mb.get("invalidation_price")):
+                    and mb is not None
+                    and mb.entry_trigger
+                    and mb.entry_trigger_price
+                    and mb.invalidation_price):
                 from .execution.entry_monitor import save_conditional_entry
                 saved = save_conditional_entry(confirm, exec_config, conn)
+                direction = mb.direction
                 if saved:
-                    direction = mb.get("direction", "?")
                     print(f"  {confirm.coin} {direction}: PENDING conditional entry "
-                          f"({mb['entry_trigger']} @ {mb['entry_trigger_price']})")
+                          f"({mb.entry_trigger} @ {mb.entry_trigger_price})")
                     results.append(ExecutionResult(
                         scan_id=confirm.scan_id,
                         coin=confirm.coin,
                         direction=direction,
                         skip_reason="conditional_pending",
                     ))
-                    continue
+                else:
+                    # save_conditional_entry returned False (invalid params,
+                    # counter-trend R:R, active-pending/open-position dedupe, or
+                    # price-sanity reject). The LLM asked for a conditional entry
+                    # at a trigger price — falling through to execute_trade() here
+                    # would place an immediate market order that bypasses pending
+                    # dedupe and double-exposes when the existing pending later
+                    # triggers. A rejected conditional entry is a skip, never a
+                    # market fill.
+                    print(f"  {confirm.coin} {direction}: SKIPPED — conditional_rejected")
+                    results.append(ExecutionResult(
+                        scan_id=confirm.scan_id,
+                        coin=confirm.coin,
+                        direction=direction,
+                        skip_reason="conditional_rejected",
+                    ))
+                continue
 
-            er = execute_trade(confirm, exec_config, scanner_config, conn)
+            sig = confirm.setup_signal
+            req = ExecutionRequest(
+                scan_id=confirm.scan_id,
+                coin=confirm.coin,
+                machine_block=confirm.machine_block,
+                screener_direction=sig.direction.value if sig else None,
+                atr=sig.context.atr if sig else 0.0,
+                max_leverage=sig.max_leverage if sig else None,
+                staleness_ref=confirm.detected_at or confirm.timestamp,
+            )
+            er = execute_trade(req, exec_config, scanner_config, conn)
             results.append(er)
             # Always print execution outcomes — critical ops info, never silenced by -q
             if er.executed:
@@ -517,25 +481,25 @@ def run_scan(
         from .execution.sizing import calculate_position
         for c in confirms:
             mb = c.machine_block
-            if not mb:
+            if mb is None:
                 if verbose:
                     print(f"  {c.coin}: SKIPPED — no machine_block")
                 continue
             errors = validate_execution_params(mb)
             if errors:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — {'; '.join(errors)}")
+                    print(f"  {c.coin} {mb.direction}: SKIPPED — {'; '.join(errors)}")
                 continue
-            entry_mid = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
+            entry_mid = (mb.entry_low + mb.entry_high) / 2
             pos = calculate_position(mb, 10000, 1.0)
             if pos:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: WOULD EXECUTE — "
+                    print(f"  {c.coin} {mb.direction}: WOULD EXECUTE — "
                           f"{pos.quantity:.6f} units @ ${entry_mid:,.2f}, "
-                          f"SL ${mb.get('stop_loss',0):,.2f}, TP ${mb.get('tp1',0):,.2f}")
+                          f"SL ${mb.stop_loss:,.2f}, TP ${mb.tp1:,.2f}")
             else:
                 if verbose:
-                    print(f"  {c.coin} {mb.get('direction','?')}: SKIPPED — sizing failed")
+                    print(f"  {c.coin} {mb.direction}: SKIPPED — sizing failed")
 
     elif exec_config and exec_config.enabled and confirms:
         # Always print — execution status is critical ops info

@@ -1,21 +1,19 @@
 """Tests for pipeline helpers (diversity selection, candle collection)."""
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
+    MachineBlock,
     MarketContext,
+    ScanResult,
     SetupSignal,
     SetupType,
     Structure,
 )
-from scanner.pipeline import _collect_candles, _select_with_diversity, stage1_screen
-
-
-def test_collect_candles_empty_exchanges():
-    config = ScannerConfig(candle_exchanges=[])
-    _collect_candles([], config)  # should not raise
+from scanner.pipeline import _select_with_diversity, stage1_screen, stage4_execute
 
 
 def _make_signal(
@@ -190,3 +188,116 @@ class TestTestnetPairFilter:
 
             called_coins = mock_batch.call_args[0][0]
             assert set(called_coins) == {"BTC", "ENA"}
+
+
+def _make_scan_result(coin="BTC"):
+    return ScanResult(
+        scan_id=f"scan-{coin}",
+        coin=coin,
+        timestamp=datetime.now(timezone.utc),
+        setup_signal=_make_signal(coin=coin),
+        decision="CONFIRM",
+        confluence_score=None,
+        analysis_text=None,
+        parsed_decision=None,
+        chart_paths=[],
+        cost_usd=0.0,
+        # T-016 C5: ScanResult.machine_block is a typed MachineBlock. A real
+        # conditional CONFIRM always carries a complete, valid block — build
+        # one through the canonical boundary (LONG: stop below entry, tp
+        # above, inv >= stop).
+        machine_block=MachineBlock.from_raw({
+            "direction": "LONG",
+            "entry_low": 99.0, "entry_high": 101.0,
+            "stop_loss": 89.0, "tp1": 110.0, "tp1_exit_pct": 50,
+            "confidence": 7, "leverage": 5,
+            "entry_trigger": "limit_at",
+            "entry_trigger_price": 95.0,
+            "invalidation_price": 90.0,
+        }),
+    )
+
+
+class TestStage4ConditionalRouting:
+    """A CONFIRM that qualifies as a conditional entry must never fall through
+    to an immediate market order when save_conditional_entry returns False.
+    Falling through bypassed pending dedupe and double-exposed when the
+    existing pending later triggered (Codex audit 2026-05-15, R1)."""
+
+    def _run(self, saved):
+        confirm = _make_scan_result()
+        exec_config = MagicMock(enabled=True, mode="testnet",
+                                conditional_entry_enabled=True)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.execution.entry_monitor.save_conditional_entry",
+                   return_value=saved), \
+             patch("scanner.execution.executor.execute_trade") as mock_exec, \
+             patch("scanner.execution.executor.send_skip_alert"):
+            results = stage4_execute([confirm], ScannerConfig(), exec_config,
+                                     verbose=False)
+        return results, mock_exec
+
+    def test_reject_does_not_market_fill(self):
+        results, mock_exec = self._run(saved=False)
+        mock_exec.assert_not_called()
+        assert len(results) == 1
+        assert results[0].skip_reason == "conditional_rejected"
+
+    def test_saved_records_pending(self):
+        results, mock_exec = self._run(saved=True)
+        mock_exec.assert_not_called()
+        assert len(results) == 1
+        assert results[0].skip_reason == "conditional_pending"
+
+
+class TestStage4StalenessRefAdapter:
+    """The detected_at-or-timestamp staleness fallback moved from execute_trade
+    to the stage4 ExecutionRequest adapter (SPEC #21). Guard it at the layer
+    that now owns it: the request's resolved `staleness_ref` must be
+    `confirm.detected_at` when set, else `confirm.timestamp`."""
+
+    def _plain_confirm(self, detected_at, timestamp):
+        # Non-conditional block (no trigger fields) so stage4 builds the
+        # ExecutionRequest and calls execute_trade rather than routing to
+        # save_conditional_entry.
+        return ScanResult(
+            scan_id="scan-stale",
+            coin="BTC",
+            timestamp=timestamp,
+            setup_signal=_make_signal(coin="BTC"),
+            decision="CONFIRM",
+            confluence_score=None,
+            analysis_text=None,
+            parsed_decision=None,
+            chart_paths=[],
+            cost_usd=0.0,
+            machine_block=MachineBlock.from_raw({
+                "direction": "LONG",
+                "entry_low": 99.0, "entry_high": 101.0,
+                "stop_loss": 89.0, "tp1": 110.0, "tp1_exit_pct": 50,
+                "confidence": 7, "leverage": 5,
+            }),
+            detected_at=detected_at,
+        )
+
+    def _captured_request(self, confirm):
+        exec_config = MagicMock(enabled=True, mode="testnet",
+                                conditional_entry_enabled=True)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.execution.executor.execute_trade") as mock_exec, \
+             patch("scanner.execution.executor.send_skip_alert"):
+            mock_exec.return_value = MagicMock(executed=True, skip_reason="")
+            stage4_execute([confirm], ScannerConfig(), exec_config, verbose=False)
+        mock_exec.assert_called_once()
+        return mock_exec.call_args[0][0]
+
+    def test_detected_at_used_when_present(self):
+        det = datetime(2026, 5, 16, 9, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
+        req = self._captured_request(self._plain_confirm(det, ts))
+        assert req.staleness_ref == det
+
+    def test_falls_back_to_timestamp_when_detected_at_none(self):
+        ts = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
+        req = self._captured_request(self._plain_confirm(None, ts))
+        assert req.staleness_ref == ts

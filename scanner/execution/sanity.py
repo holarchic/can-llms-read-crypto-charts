@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+from scanner.models import MachineBlock
+
 
 @dataclass
 class SanityResult:
@@ -50,7 +52,7 @@ def is_price_in_entry_zone(
 
 
 def check_price_sanity(
-    machine_block: dict,
+    machine_block: MachineBlock,
     current_price: float,
     atr: float,
     config,
@@ -61,12 +63,12 @@ def check_price_sanity(
     """
     errors = []
 
-    entry_low = machine_block.get("entry_low", 0)
-    entry_high = machine_block.get("entry_high", 0)
-    stop_loss = machine_block.get("stop_loss", 0)
-    tp1 = machine_block.get("tp1")
-    tp2 = machine_block.get("tp2")
-    direction = machine_block.get("direction", "").upper()
+    entry_low = machine_block.entry_low
+    entry_high = machine_block.entry_high
+    stop_loss = machine_block.stop_loss
+    tp1 = machine_block.tp1
+    tp2 = machine_block.tp2
+    direction = machine_block.direction.upper()
 
     if not entry_low or not entry_high or not stop_loss:
         errors.append("Missing required price fields (entry_low, entry_high, stop_loss)")

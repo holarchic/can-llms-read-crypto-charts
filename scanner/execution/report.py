@@ -1,82 +1,94 @@
 """Execution reporting — CLI text + Discord embeds."""
 
 
-def format_execution_report(metrics: dict, sim_vs_live: list[dict], mode: str) -> str:
-    """Format execution metrics as CLI text report."""
+def _fmt_pct(v: float) -> str:
+    return f"{v:.1%}"
+
+
+def _row(label: str, v7: str, v28: str) -> str:
+    return f"  {label:<18} {v7:>10} {v28:>10}"
+
+
+def format_execution_report(
+    metrics_7d: dict,
+    metrics_28d: dict,
+    cost_7d: float,
+    cost_28d: float,
+    mode: str,
+) -> str:
+    """Format actual-trade performance for both windows as CLI text."""
     lines = [
         f"\nExecution Report ({mode.upper()})",
         "=" * 50,
-        f"  Data source:      {metrics.get('data_source', 'db_only').upper()}",
-        f"  Closed trades:    {metrics['count']}",
-        f"  Win rate:         {metrics['win_rate']:.1%}",
-        f"  Expectancy:       {metrics['expectancy_r']:+.4f}R",
-        f"  Profit factor:    {metrics['profit_factor']:.2f}",
-        f"  Total PnL:        ${metrics['total_pnl']:+,.2f}",
-        f"  Max drawdown:     {metrics['max_drawdown_pct']:.1f}%",
-        f"  Avg holding:      {metrics['avg_holding_hours']:.1f}h",
-        f"  Avg slippage:     {metrics['avg_slippage_r']:.4f}R",
+        f"  Data source:      {metrics_28d.get('data_source', 'db_only').upper()}",
+        "",
+        f"  {'':<18} {'7d':>10} {'28d':>10}",
+        f"  {'-' * 40}",
+        _row("Closed trades", str(metrics_7d["count"]), str(metrics_28d["count"])),
+        _row("Win rate", _fmt_pct(metrics_7d["win_rate"]), _fmt_pct(metrics_28d["win_rate"])),
+        _row("Expectancy", f"{metrics_7d['expectancy_r']:+.4f}R", f"{metrics_28d['expectancy_r']:+.4f}R"),
+        _row("Profit factor", f"{metrics_7d['profit_factor']:.2f}", f"{metrics_28d['profit_factor']:.2f}"),
+        _row("Total PnL", f"${metrics_7d['total_pnl']:+,.2f}", f"${metrics_28d['total_pnl']:+,.2f}"),
+        _row("Max drawdown", f"{metrics_7d['max_drawdown_pct']:.1f}%", f"{metrics_28d['max_drawdown_pct']:.1f}%"),
+        _row("Avg holding", f"{metrics_7d['avg_holding_hours']:.1f}h", f"{metrics_28d['avg_holding_hours']:.1f}h"),
+        _row("Avg slippage", f"{metrics_7d['avg_slippage_r']:.4f}R", f"{metrics_28d['avg_slippage_r']:.4f}R"),
+        "",
+        "LLM Cost",
+        f"  7d:   ${cost_7d:,.2f}",
+        f"  28d:  ${cost_28d:,.2f}",
     ]
 
-    if metrics.get("quality_warnings"):
-        lines.append("\n  Data quality:")
-        for w in metrics["quality_warnings"]:
+    # Quality warnings come from the broader (28d) window — wider sample is more informative.
+    warnings = metrics_28d.get("quality_warnings") or []
+    if warnings:
+        lines.append("")
+        lines.append("  Data quality:")
+        for w in warnings:
             lines.append(f"    * {w}")
-
-    if sim_vs_live:
-        lines.append(f"\nSim vs Live ({len(sim_vs_live)} trades):")
-        lines.append(f"  {'Coin':>8} {'Sim R':>8} {'Live R':>8} {'Delta':>8} {'Slip':>8}")
-        lines.append("  " + "-" * 44)
-        for c in sim_vs_live[:20]:
-            lines.append(
-                f"  {c['coin']:>8} {c['sim_r']:>+8.4f} {c['live_r']:>+8.4f} "
-                f"{c['delta_r']:>+8.4f} {c['slippage_r']:>8.4f}"
-            )
-        if len(sim_vs_live) > 20:
-            lines.append(f"  ... and {len(sim_vs_live) - 20} more")
-
-        avg_delta = sum(c["delta_r"] for c in sim_vs_live) / len(sim_vs_live)
-        lines.append(f"\n  Avg delta (live - sim): {avg_delta:+.4f}R")
 
     return "\n".join(lines)
 
 
-def build_execution_embeds(metrics: dict, sim_vs_live: list[dict], mode: str) -> list[dict]:
-    """Build Discord embed dicts for execution report."""
+def _window_embed(metrics: dict, cost: float, label: str, mode: str) -> dict:
+    """Single-window Discord embed."""
     color = 0x26A69A if metrics.get("expectancy_r", 0) > 0 else 0xEF5350
+    pf = f"{metrics['profit_factor']:.2f}" if metrics["profit_factor"] != float("inf") else "inf"
 
     fields = [
         {"name": "Trades", "value": str(metrics["count"]), "inline": True},
         {"name": "Win Rate", "value": f"{metrics['win_rate']:.1%}", "inline": True},
         {"name": "Expectancy", "value": f"{metrics['expectancy_r']:+.4f}R", "inline": True},
         {"name": "PnL", "value": f"${metrics['total_pnl']:+,.2f}", "inline": True},
-        {"name": "Profit Factor", "value": f"{metrics['profit_factor']:.2f}", "inline": True},
+        {"name": "Profit Factor", "value": pf, "inline": True},
         {"name": "Max DD", "value": f"{metrics['max_drawdown_pct']:.1f}%", "inline": True},
         {"name": "Avg Holding", "value": f"{metrics['avg_holding_hours']:.1f}h", "inline": True},
         {"name": "Avg Slippage", "value": f"{metrics['avg_slippage_r']:.4f}R", "inline": True},
+        {"name": "LLM Cost", "value": f"${cost:,.2f}", "inline": True},
     ]
+    return {
+        "title": f"Execution Report — {label} ({mode.upper()})",
+        "color": color,
+        "fields": fields,
+    }
 
-    if metrics.get("quality_warnings"):
-        fields.append({
+
+def build_execution_embeds(
+    metrics_7d: dict,
+    metrics_28d: dict,
+    cost_7d: float,
+    cost_28d: float,
+    mode: str,
+) -> list[dict]:
+    """Two embeds: 7d window then 28d window. Quality warnings appended to the 28d embed."""
+    embed_7d = _window_embed(metrics_7d, cost_7d, "7d", mode)
+    embed_28d = _window_embed(metrics_28d, cost_28d, "28d", mode)
+
+    warnings = metrics_28d.get("quality_warnings") or []
+    if warnings:
+        embed_28d["fields"].append({
             "name": "Data Quality",
-            "value": "\n".join(metrics["quality_warnings"]),
+            "value": "\n".join(warnings),
             "inline": False,
         })
 
-    embeds = [{
-        "title": f"Execution Report ({mode.upper()}) [DB-ONLY]",
-        "color": color,
-        "fields": fields,
-    }]
-
-    if sim_vs_live:
-        avg_delta = sum(c["delta_r"] for c in sim_vs_live) / len(sim_vs_live)
-        embeds.append({
-            "title": "Sim vs Live",
-            "color": color,
-            "description": (
-                f"**{len(sim_vs_live)} trades compared**\n"
-                f"Avg delta (live - sim): {avg_delta:+.4f}R"
-            ),
-        })
-
-    return embeds
+    return [embed_7d, embed_28d]

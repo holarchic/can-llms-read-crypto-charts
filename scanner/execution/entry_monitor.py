@@ -15,11 +15,9 @@ import requests
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
-    MarketContext,
+    ExecutionRequest,
+    MachineBlock,
     ScanResult,
-    SetupSignal,
-    SetupType,
-    Structure,
 )
 
 from .config import ExecutionConfig
@@ -116,53 +114,6 @@ def evaluate_limit_at_trigger(
     return (None, "none")
 
 
-def evaluate_deviation_reclaim(
-    entry_trigger_price: float,
-    invalidation_price: float,
-    direction: str,
-    candle_closes: list[float],
-) -> tuple[str | None, str]:
-    """Detect excess + reclaim over a sequence of 1H candle closes.
-
-    Ruleset §4.4 Trigger 3 — two-part pattern:
-    - LONG (failed breakdown): a close BELOW entry_trigger_price (excess), then
-      a subsequent close ABOVE entry_trigger_price (reclaim) → trigger fires.
-    - SHORT (failed breakout): a close ABOVE entry_trigger_price (excess), then
-      a subsequent close BELOW entry_trigger_price (reclaim) → trigger fires.
-
-    Invalidation short-circuits: if any close breaches invalidation_price,
-    return ("invalidated", "kill") immediately. Ordering matches the single-
-    candle evaluator — safety first.
-
-    Returns ("triggered", "execute") / ("invalidated", "kill") / (None, "none").
-    Pass closes in chronological order (oldest → newest).
-    """
-    excess_seen = False
-    for close in candle_closes:
-        # Invalidation check first — overrides everything
-        if direction == "LONG" and close <= invalidation_price:
-            return ("invalidated", "kill")
-        if direction == "SHORT" and close >= invalidation_price:
-            return ("invalidated", "kill")
-
-        if direction == "LONG":
-            if not excess_seen:
-                if close < entry_trigger_price:
-                    excess_seen = True
-            else:
-                if close > entry_trigger_price:
-                    return ("triggered", "execute")
-        else:  # SHORT
-            if not excess_seen:
-                if close > entry_trigger_price:
-                    excess_seen = True
-            else:
-                if close < entry_trigger_price:
-                    return ("triggered", "execute")
-
-    return (None, "none")
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -194,120 +145,57 @@ def _fetch_1h_candle(coin: str) -> dict | None:
         return None
 
 
-def _fetch_1h_candles_since(coin: str, since: datetime, limit: int = 48) -> list[dict]:
-    """Fetch completed 1H candles at or after a given UTC timestamp.
+def _build_execution_request(pending: dict, trigger_close: float) -> ExecutionRequest:
+    """Build the typed `execute_trade` contract from a triggered pending row.
 
-    Returns list of dicts (timestamp, open, high, low, close) oldest first.
-    Drops the in-progress candle. Used by deviation_reclaim where the
-    trigger state depends on the full close sequence since the pending was
-    saved, not just the latest candle.
+    Replaces the prior synthetic-`ScanResult` fabrication
+    (`_reconstruct_scan_result`/`_empty_setup_signal`; T-016 Phase 1b,
+    SPEC #21). Parses the stored block once through the canonical boundary
+    and reanchors purely — SL/TP shift by (trigger_close − original entry-mid)
+    so intended R is preserved across scan→trigger price drift; arithmetic is
+    byte-identical to the prior in-place path (proven by the equivalence
+    battery).
+
+    `screener_direction` coercion is observably identical to the old
+    `_empty_setup_signal` guard: falsy (`None`/`""`) → `None` *silently*;
+    truthy-unknown → `None` + the same `log.warning`; valid → the
+    `Direction` value string the executor's counter-trend check formerly read
+    off `setup_signal.direction.value`. `atr=0.0` / `max_leverage=None`
+    reproduce `_empty_setup_signal`'s context default and `SetupSignal`'s
+    field default. The prior path also set `llm_confidence` from the raw
+    block; `execute_trade` never reads it, so it is intentionally dropped
+    (not part of the execution contract — SPEC #21).
     """
-    try:
-        from scanner.data import fetch_candles
-        df = fetch_candles(coin, "1h", limit + 1)
-        if df is None or len(df) < 2:
-            return []
-        df = df.iloc[:-1]  # drop in-progress
-        records = []
-        for ts, row in df.iterrows():
-            # Normalize tz — fetch_candles returns tz-aware UTC but defend anyway
-            ts_aware = ts if ts.tzinfo else ts.tz_localize("UTC")
-            since_aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
-            if ts_aware < since_aware:
-                continue
-            records.append({
-                "timestamp": ts_aware.isoformat(),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-            })
-        return records
-    except Exception as exc:
-        log.error("Failed to fetch 1H candles since %s for %s: %s", since, coin, exc)
-        return []
+    raw = json.loads(pending["machine_block"])
+    mb = MachineBlock.from_raw(raw)
+    # Defensive only: stored pendings are save-validated
+    # (save_conditional_entry runs validate_execution_params and the block
+    # was parse_machine_block'd), so from_raw cannot fail here in production.
+    # If a corrupted/legacy row ever does, fail safe — a None machine_block
+    # makes execute_trade skip ("no_machine_block") and the trigger flow then
+    # marks the pending TRIGGER_FAILED: the same terminal outcome as the prior
+    # path's invalid_params skip, only the skip_reason label refines.
+    mb_out = mb.reanchored(trigger_close) if mb is not None else None
 
-
-def _empty_setup_signal(coin: str, direction: Direction) -> SetupSignal:
-    """Build a placeholder SetupSignal carrying only the screener direction.
-
-    The reconstructed ScanResult from a triggered pending needs enough of a
-    SetupSignal for executor.counter_trend detection. Context fields are
-    defaulted — ATR sanity checks fall through when atr==0.
-    """
-    ctx = MarketContext(
-        structure=Structure.RANGING,
-        swings=[],
-        sr_levels=[],
-        msbs=[],
-        range_bounds=None,
-        atr=0.0,
-        current_price=0.0,
-        fib_levels=None,
-    )
-    return SetupSignal(
-        coin=coin,
-        setup_type=SetupType.A,
-        direction=direction,
-        confidence=0.0,
-        key_level=0.0,
-        context=ctx,
-        description="conditional-entry trigger fired",
-    )
-
-
-def _reconstruct_scan_result(pending: dict, trigger_close: float) -> ScanResult:
-    """Rebuild a ScanResult from a pending entry for execute_trade.
-
-    Shifts SL/TP by (trigger_close - original_entry_mid) so the intended R is
-    preserved when price has moved between scan time and trigger time, and
-    brackets entry_low/high around the trigger close.
-
-    Restores the screener direction on setup_signal so executor can still
-    flag counter-trend entries (0.5x risk, min_rr=3.0, shorter timeout).
-    """
-    mb = json.loads(pending["machine_block"])
-
-    # Shift SL/TP by the delta between trigger_close and original entry_mid.
-    # Same logic as sizing.reanchor_exit_prices but applied to the saved mb.
-    orig_entry_low = float(mb.get("entry_low", 0))
-    orig_entry_high = float(mb.get("entry_high", 0))
-    orig_entry_mid = (orig_entry_low + orig_entry_high) / 2 if orig_entry_low else trigger_close
-    delta = trigger_close - orig_entry_mid
-    if mb.get("stop_loss") is not None:
-        mb["stop_loss"] = float(mb["stop_loss"]) + delta
-    if mb.get("tp1") is not None:
-        mb["tp1"] = float(mb["tp1"]) + delta
-    if mb.get("tp2") is not None:
-        mb["tp2"] = float(mb["tp2"]) + delta
-
-    # Bracket the trigger close price for the entry zone
-    buffer = trigger_close * 0.005
-    mb["entry_low"] = trigger_close - buffer
-    mb["entry_high"] = trigger_close + buffer
-
-    setup_signal = None
-    screener_dir = pending.get("screener_direction")
-    if screener_dir:
+    coin = pending["coin"]
+    raw_dir = pending.get("screener_direction")
+    if not raw_dir:
+        screener_direction = None
+    else:
         try:
-            setup_signal = _empty_setup_signal(pending["coin"], Direction(screener_dir))
+            screener_direction = Direction(raw_dir).value
         except ValueError:
-            log.warning("Unknown screener_direction %s for %s", screener_dir, pending["coin"])
+            screener_direction = None
+            log.warning("Unknown screener_direction %s for %s", raw_dir, coin)
 
-    return ScanResult(
+    return ExecutionRequest(
         scan_id=pending["scan_id"],
-        coin=pending["coin"],
-        timestamp=datetime.now(timezone.utc),
-        setup_signal=setup_signal,
-        decision="CONFIRM",
-        confluence_score=None,
-        analysis_text=None,
-        parsed_decision=None,
-        chart_paths=[],
-        cost_usd=0.0,
-        machine_block=mb,
-        llm_confidence=mb.get("confidence"),
-        detected_at=datetime.now(timezone.utc),
+        coin=coin,
+        machine_block=mb_out,
+        screener_direction=screener_direction,
+        atr=0.0,
+        max_leverage=None,
+        staleness_ref=datetime.now(timezone.utc),
     )
 
 
@@ -405,11 +293,11 @@ def save_conditional_entry(
     Returns True if saved, False on error or duplicate.
     """
     mb = result.machine_block
-    if not mb:
+    if mb is None:
         return False
 
     coin = result.coin
-    direction = mb.get("direction", "").upper()
+    direction = mb.direction.upper()
 
     # Param validation — same canonical validator the executor runs.
     # Without this backstop, blocks that violate LONG inv>=SL / SHORT inv<=SL
@@ -430,9 +318,9 @@ def save_conditional_entry(
         result.setup_signal.direction.value if result.setup_signal else None
     )
     if screener_direction and screener_direction != direction:
-        entry_mid = (float(mb["entry_low"]) + float(mb["entry_high"])) / 2
-        risk = abs(entry_mid - float(mb["stop_loss"]))
-        tp = float(mb.get("tp1") or 0) or float(mb.get("tp2") or 0)
+        entry_mid = (mb.entry_low + mb.entry_high) / 2
+        risk = abs(entry_mid - mb.stop_loss)
+        tp = (mb.tp1 or 0.0) or (mb.tp2 or 0.0)
         if risk > 0 and tp > 0:
             rr = abs(tp - entry_mid) / risk
             if rr < exec_config.counter_trend_min_rr:
@@ -486,7 +374,10 @@ def save_conditional_entry(
     # creates a DOA pending that expires on its first monitor tick.
     expiry = max(
         1,
-        min(int(mb.get("expiry_candles", 12)), exec_config.conditional_entry_max_expiry),
+        min(
+            int(mb.expiry_candles if mb.expiry_candles is not None else 12),
+            exec_config.conditional_entry_max_expiry,
+        ),
     )
 
     entry = {
@@ -494,10 +385,10 @@ def save_conditional_entry(
         "scan_id": result.scan_id,
         "coin": coin,
         "direction": direction,
-        "machine_block": json.dumps(mb),
-        "entry_trigger": mb["entry_trigger"],
-        "entry_trigger_price": float(mb["entry_trigger_price"]),
-        "invalidation_price": float(mb["invalidation_price"]),
+        "machine_block": json.dumps(mb.to_raw()),
+        "entry_trigger": mb.entry_trigger,
+        "entry_trigger_price": float(mb.entry_trigger_price),
+        "invalidation_price": float(mb.invalidation_price),
         "expiry_candles": expiry,
         "exchange": exec_config.exchange,
         "execution_mode": exec_config.mode,
@@ -508,34 +399,26 @@ def save_conditional_entry(
     try:
         save_pending_entry(entry, conn)
         log.info("Conditional entry saved: %s %s — trigger %s @ %.5f, expiry %dh",
-                 coin, direction, mb["entry_trigger"], entry["entry_trigger_price"], expiry)
+                 coin, direction, mb.entry_trigger, entry["entry_trigger_price"], expiry)
         _send_pending_alert(entry, exec_config)
     except Exception as exc:
         log.error("Failed to save conditional entry for %s: %s", coin, exc)
         return False
 
     # Immediate check — fast path using the spot price already fetched for
-    # save-time sanity. Catches setups where the trigger is already met at
-    # save time, avoiding up to 60min wait. Dispatches by trigger type:
-    # - candle_close_above/below: spot is a reasonable proxy for the next
-    #   1H close (real 1H close check runs at the next boundary regardless)
-    # - limit_at: spot touch semantics apply directly
-    # - deviation_reclaim: needs candle history — no immediate check, the
-    #   first 1H-boundary cycle evaluates it
+    # save-time sanity. limit_at ONLY: its trigger semantics are spot-touch,
+    # so spot IS the real signal and an already-met level should fill now
+    # rather than wait up to 60min. candle_close_above/below is deliberately
+    # excluded: its trigger is a *completed 1H close*, for which spot is not
+    # a proxy — evaluating it off spot here fires an unconfirmed intrabar
+    # market entry, defeating the close-confirmation the trigger exists for.
+    # candle_close_* waits for the 1H-boundary monitor cycle.
     # If save-time fetch failed, skip — next monitor cycle picks it up.
     if current_price is not None:
         try:
             trigger = entry["entry_trigger"]
             if trigger == "limit_at":
                 event, action = evaluate_limit_at_trigger(
-                    entry["entry_trigger_price"],
-                    entry["invalidation_price"],
-                    direction,
-                    current_price,
-                )
-            elif trigger in ("candle_close_above", "candle_close_below"):
-                event, action = evaluate_entry_trigger(
-                    trigger,
                     entry["entry_trigger_price"],
                     entry["invalidation_price"],
                     direction,
@@ -562,7 +445,7 @@ def save_conditional_entry(
 def check_pending_entries(exec_config: ExecutionConfig, conn) -> int:
     """Top-level pending entry check.
 
-    Candle-based triggers (candle_close_above/below, deviation_reclaim) run
+    Candle-based triggers (candle_close_above/below) run
     only at 1H boundaries — their evaluators depend on completed 1H candles.
     Spot-based triggers (limit_at) run every monitor cycle so a fast price
     sweep through the buy/sell level isn't missed by hour-gated polling.
@@ -659,9 +542,7 @@ def _process_pending_entry(
 ) -> int:
     """Process a single pending entry against the latest 1H candle(s).
 
-    Dispatches to the appropriate evaluator based on entry_trigger:
-    - candle_close_above/below → single latest candle
-    - deviation_reclaim → candle history since pending created_at
+    Evaluates the trigger against the latest completed 1H candle.
 
     Returns 1 if acted (triggered/invalidated/expired), 0 otherwise.
     """
@@ -678,42 +559,19 @@ def _process_pending_entry(
 
     trigger = entry["entry_trigger"]
 
-    # Deviation reclaim needs the full close sequence since pending was saved
-    if trigger == "deviation_reclaim":
-        try:
-            since = datetime.fromisoformat(entry["created_at"])
-        except (ValueError, TypeError):
-            since = datetime.now(timezone.utc)
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        candles = _fetch_1h_candles_since(coin, since, limit=48)
-        if not candles:
-            log.warning("No 1H candles since %s for %s — skipping", since.isoformat(), coin)
-            return 0
-        latest = candles[-1]
-        latest_close = latest["close"]
-        closes = [c["close"] for c in candles]
-        event, action = evaluate_deviation_reclaim(
-            float(entry["entry_trigger_price"]),
-            float(entry["invalidation_price"]),
-            direction,
-            closes,
-        )
-    else:
-        # Candle-close triggers use the single latest completed candle
-        single = _fetch_1h_candle(coin)
-        if single is None:
-            log.warning("No 1H candle for %s — skipping this cycle", coin)
-            return 0
-        latest = single
-        latest_close = single["close"]
-        event, action = evaluate_entry_trigger(
-            trigger,
-            float(entry["entry_trigger_price"]),
-            float(entry["invalidation_price"]),
-            direction,
-            latest_close,
-        )
+    single = _fetch_1h_candle(coin)
+    if single is None:
+        log.warning("No 1H candle for %s — skipping this cycle", coin)
+        return 0
+    latest = single
+    latest_close = single["close"]
+    event, action = evaluate_entry_trigger(
+        trigger,
+        float(entry["entry_trigger_price"]),
+        float(entry["invalidation_price"]),
+        direction,
+        latest_close,
+    )
 
     # Stale candle protection — latest candle timestamp should be within 2 hours
     try:
@@ -783,11 +641,11 @@ def _execute_triggered_entry(
     log.info("Trigger fired for %s %s at %.5f — executing", coin, direction, trigger_close)
     _send_trigger_alert(entry, config)
 
-    scan_result = _reconstruct_scan_result(entry, trigger_close)
+    req = _build_execution_request(entry, trigger_close)
     scanner_config = ScannerConfig()
 
     try:
-        er = execute_trade(scan_result, config, scanner_config, conn)
+        er = execute_trade(req, config, scanner_config, conn)
         if er.executed:
             log.info("Conditional entry executed: %s %s (entry=%s, sl=%s)",
                      coin, direction, er.entry_order_id, er.sl_order_id)

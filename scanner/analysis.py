@@ -1,6 +1,6 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.10"
+PROMPT_VERSION = "9.11"
 
 import logging
 import uuid
@@ -128,13 +128,23 @@ def analyze_for_scanner(
 
         "## ENTRY TYPE — pick one\n"
         "Default to CONDITIONAL. Use IMMEDIATE only when the confirming event\n"
-        "is already complete on the last closed candle.\n\n"
+        "is already complete on the last closed candle. **Exceptions** (see\n"
+        "SETUP-SPECIFIC RULES):\n"
+        "- Setup B (breakout): IMMEDIATE on the confirming close OR\n"
+        "  `limit_at` on a retest. No `candle_close_above/below` or\n"
+        "  `deviation_reclaim`.\n"
+        "- Setup F (deviation): IMMEDIATE only on the confirming close. No\n"
+        "  future trigger.\n\n"
 
         "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
-        "must print before entry. The monitor watches 1H closes, enters on\n"
-        "trigger, kills on invalidation, or expires.\n"
-        "- entry_trigger: 'candle_close_above' or 'candle_close_below'\n"
-        "- entry_trigger_price: the 1H close level that confirms entry\n"
+        "must print before entry. The monitor watches 1H closes (or polls\n"
+        "spot price for `limit_at`), enters on trigger, kills on invalidation,\n"
+        "or expires.\n"
+        "- entry_trigger: 'candle_close_above', 'candle_close_below', or\n"
+        "  'limit_at'. (For Setup F: none of these — F is IMMEDIATE-only.\n"
+        "  For Setup B: 'limit_at' on a retest only; no `candle_close_*`.)\n"
+        "- entry_trigger_price: the 1H close level (or limit_at price) that\n"
+        "  confirms entry\n"
         "- invalidation_price: kills the setup before the trigger fires.\n"
         "  Place it between stop_loss and entry — closer to entry than\n"
         "  stop_loss, never past it. Pre-entry must be at least as\n"
@@ -147,10 +157,10 @@ def analyze_for_scanner(
         "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
         "  execution re-brackets at trigger time\n\n"
         "Examples of CONDITIONAL confirming events:\n"
-        "- LONG breakout: 1H close above resistance (price below level now)\n"
-        "- SHORT rejection: 1H close back below resistance after an excess wick\n"
-        "- LONG pullback: 1H close above a broken resistance that is now support\n"
-        "- SHORT breakdown: 1H close below a support level price is testing\n\n"
+        "- LONG pullback (C): 1H close above a broken resistance that is now support\n"
+        "- SHORT pullback (C): 1H close below a broken support that is now resistance\n"
+        "- LONG OTE retrace (D): 1H close inside the 0.618-0.786 zone after bullish MSB\n"
+        "- B retest: `limit_at` at the broken level (no `candle_close_*` trigger)\n\n"
 
         "**IMMEDIATE (exception):** The confirming event already printed on\n"
         "the last closed candle. Name it in Confirming Event.\n"
@@ -167,7 +177,8 @@ def analyze_for_scanner(
         "  expiry_candles\n\n"
 
         "Price at a level without confirmation yet = CONDITIONAL. Specify\n"
-        "the candle close that confirms it.\n\n"
+        "the candle close that confirms it. Setup B and Setup F are\n"
+        "exceptions — see SETUP-SPECIFIC RULES (above).\n\n"
 
         "## INVALIDATION FIELDS (CONFIRM only)\n"
         "- **Expected Hold:** trade duration estimate (e.g. '1-2 days')\n"
@@ -200,9 +211,13 @@ def analyze_for_scanner(
         "## CORE RULES (recap)\n"
         "- Default to CONDITIONAL. IMMEDIATE requires a confirming event on\n"
         "  the last closed candle.\n"
+        "- **Setup B:** IMMEDIATE on the confirming close OR `limit_at` on\n"
+        "  a retest. No `candle_close_above/below` or `deviation_reclaim`.\n"
+        "- **Setup F:** IMMEDIATE only on the confirming close. No future\n"
+        "  trigger at all.\n"
         "- Name the confirming event in every CONFIRM.\n"
         "- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n"
-        "  REJECT.\n"
+        "  REJECT — except for B/F (above).\n"
     )
     user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
     messages = [{"role": "user", "content": user_content}]
@@ -245,8 +260,9 @@ def analyze_for_scanner(
     # Try machine block first (more reliable than regex on free text)
     machine_block = parse_machine_block(analysis_text)
 
-    if machine_block and "confidence" in machine_block:
-        llm_confidence = max(1, min(10, int(machine_block["confidence"])))
+    if machine_block is not None:
+        # confidence is a required MachineBlock field — always present.
+        llm_confidence = max(1, min(10, int(machine_block.confidence)))
     else:
         # Regex fallback — reject values out of 1-10 rather than silently
         # clamping (LLM drift to percent-form like "85/100" otherwise looks

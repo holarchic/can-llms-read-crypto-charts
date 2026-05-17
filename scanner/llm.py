@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .config import STRATEGY_PATH
+from .models import MachineBlock
 
 
 def load_strategy() -> str:
@@ -78,7 +79,19 @@ REJECT when any hold:
 already closed beyond the level. Do not emit B with a future
 `candle_close_above/below` trigger. Per ruleset §3.1, pre-close B is
 unresolved — wait for the close, then it is either B (held, IMMEDIATE
-entry or limit_at retest) or F (failed, enter via deviation_reclaim).
+entry or limit_at retest) or F (failed, enter via F IMMEDIATE on the
+failed close — see below).
+
+**Setup F (deviation): IMMEDIATE-only.** The deviation completes when
+price closes back within the level. F-IMMEDIATE means that close-back
+just printed on the last closed candle (the wick that broke the level
+may be from any of the last 5 candles, but the close-back is the
+last-close confirmation). Do not emit F with any future trigger
+(`candle_close_above/below`, `limit_at`, or `deviation_reclaim`). F is
+event-driven: the rejection candle IS the signal, and its alpha decays
+as it ages out — a pending entry fires hours later into degraded
+geometry at worse R:R. When B is in progress, wait for the failed close
+to print, then emit F IMMEDIATE on that close.
 
 ## OUTPUT FORMAT
 
@@ -171,11 +184,17 @@ def parse_decision_block(text: str) -> dict:
     return result
 
 
-def parse_machine_block(text: str) -> dict | None:
-    """Extract and parse the MACHINE_BLOCK JSON from LLM output.
+def parse_machine_block(text: str) -> MachineBlock | None:
+    """Extract the MACHINE_BLOCK JSON from LLM output and normalize it.
 
     Looks for: <!-- MACHINE_BLOCK\n{json}\nMACHINE_BLOCK -->
-    Returns parsed dict or None if missing/malformed.
+
+    Thin text-extraction boundary only: regex + json.loads, then delegates
+    ALL normalization/validation to the single canonical normalizer
+    `MachineBlock.from_raw` (T-016 Phase 1a, SPEC #20). Returns the typed
+    MachineBlock, or None on exactly the inputs it rejected before (missing
+    block, malformed JSON, structural ∪ business-rule reject — from_raw
+    reproduces the prior contract; proven by the equivalence battery).
     """
     m = re.search(
         r"<!--\s*MACHINE_BLOCK\s*\n(.+?)\nMACHINE_BLOCK\s*-->",
@@ -190,114 +209,31 @@ def parse_machine_block(text: str) -> dict | None:
     except (json.JSONDecodeError, ValueError):
         return None
 
-    if not isinstance(data, dict):
-        return None
-
-    # Required fields and their expected types
-    required = {
-        "entry_low": (int, float),
-        "entry_high": (int, float),
-        "stop_loss": (int, float),
-        "tp1": (int, float),
-        "tp1_exit_pct": (int, float),
-        "direction": str,
-        "confidence": (int, float),
-        "leverage": (int, float),
-    }
-
-    for field, types in required.items():
-        if field not in data:
-            return None
-        if not isinstance(data[field], types):
-            return None
-
-    # Coerce numeric fields to float
-    for field in ("entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
-                  "confidence", "leverage"):
-        data[field] = float(data[field])
-
-    # Coerce optional tp2 fields
-    if "tp2" in data:
-        if not isinstance(data["tp2"], (int, float)):
-            return None
-        data["tp2"] = float(data["tp2"])
-    if "tp2_exit_pct" in data:
-        if not isinstance(data["tp2_exit_pct"], (int, float)):
-            return None
-        data["tp2_exit_pct"] = float(data["tp2_exit_pct"])
-
-    # Coerce optional conditional entry fields
-    _VALID_TRIGGERS = (
-        "candle_close_above", "candle_close_below",
-        "limit_at", "deviation_reclaim",
-    )
-    if "entry_trigger" in data:
-        if data["entry_trigger"] not in _VALID_TRIGGERS:
-            return None
-    for opt_num in ("entry_trigger_price", "invalidation_price"):
-        if opt_num in data:
-            if not isinstance(data[opt_num], (int, float)):
-                return None
-            data[opt_num] = float(data[opt_num])
-    if "expiry_candles" in data:
-        if not isinstance(data["expiry_candles"], (int, float)):
-            return None
-        data["expiry_candles"] = min(int(data["expiry_candles"]), 24)
-
-    # V9.1 observability fields (graceful — missing accepted, invalid rejected).
-    # TODO(2026-04-26): review LLM compliance rate for these fields; if > 95%
-    # populated, flip to required in V9.2 so CONFIRM decisions without them
-    # are rejected rather than logged.
-    _VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
-    if "setup_type" in data:
-        if not isinstance(data["setup_type"], str):
-            return None
-        st = data["setup_type"].strip().upper()
-        if st not in _VALID_SETUP_TYPES:
-            return None
-        data["setup_type"] = st
-    if "confluence_score" in data:
-        if not isinstance(data["confluence_score"], (int, float)):
-            return None
-        score = int(data["confluence_score"])
-        if not 0 <= score <= 15:
-            return None
-        data["confluence_score"] = score
-    if "confirming_event" in data:
-        if not isinstance(data["confirming_event"], str):
-            return None
-        ev = data["confirming_event"].strip()
-        if not 10 <= len(ev) <= 200:
-            return None
-        data["confirming_event"] = ev
-
-    # Business-rule validation — reject blocks with bad geometry/ranges
-    valid, _errors = validate_execution_params(data)
-    if not valid:
-        return None
-
-    return data
+    return MachineBlock.from_raw(data)
 
 
 def validate_execution_params(
-    params: dict, max_leverage: int | None = None,
+    params: MachineBlock, max_leverage: int | None = None,
 ) -> tuple[bool, list[str]]:
     """Validate machine block params for trade execution.
 
-    Returns (valid, errors). Empty errors list = valid.
+    Returns (valid, errors). Empty errors list = valid. Typed access (T-016
+    C3) — behaviour byte-identical to the prior dict version; the required
+    fields are always present so the old .get(...) defaults were dead, the
+    optional tp2/tp2_exit_pct/trigger reads preserve absent==None/0 exactly.
     """
     errors: list[str] = []
-    direction = params.get("direction", "").upper()
+    direction = params.direction.upper()
 
     if direction not in ("LONG", "SHORT"):
-        errors.append(f"invalid direction: {params.get('direction')}")
+        errors.append(f"invalid direction: {params.direction}")
 
-    entry_low = params.get("entry_low", 0)
-    entry_high = params.get("entry_high", 0)
-    stop = params.get("stop_loss", 0)
-    tp1 = params.get("tp1", 0)
-    confidence = params.get("confidence", 0)
-    leverage = params.get("leverage", 0)
+    entry_low = params.entry_low
+    entry_high = params.entry_high
+    stop = params.stop_loss
+    tp1 = params.tp1
+    confidence = params.confidence
+    leverage = params.leverage
 
     # Price sanity
     for name, val in [("entry_low", entry_low), ("entry_high", entry_high),
@@ -321,16 +257,17 @@ def validate_execution_params(
             errors.append(f"SHORT tp1 ({tp1}) must be below entry_low ({entry_low})")
 
     # TP2 ordering
-    tp2 = params.get("tp2")
+    tp2 = params.tp2
     if tp2 is not None and tp1 > 0:
         if direction == "LONG" and tp2 <= tp1:
             errors.append(f"LONG tp2 ({tp2}) must be above tp1 ({tp1})")
         elif direction == "SHORT" and tp2 >= tp1:
             errors.append(f"SHORT tp2 ({tp2}) must be below tp1 ({tp1})")
 
-    # Exit percentages
-    tp1_pct = params.get("tp1_exit_pct", 0)
-    tp2_pct = params.get("tp2_exit_pct", 0)
+    # Exit percentages — tp1_exit_pct required (always present); tp2_exit_pct
+    # optional, absent must read as 0 exactly as the prior .get(...,0) did.
+    tp1_pct = params.tp1_exit_pct
+    tp2_pct = params.tp2_exit_pct if params.tp2_exit_pct is not None else 0
     if tp1_pct is not None and tp1_pct <= 0:
         errors.append(f"tp1_exit_pct must be positive: {tp1_pct}")
     if tp2_pct < 0:
@@ -349,9 +286,9 @@ def validate_execution_params(
         errors.append(f"leverage ({leverage}) exceeds max ({max_leverage})")
 
     # Conditional entry cross-validation (all-or-none for trigger fields)
-    trigger = params.get("entry_trigger")
-    trigger_price = params.get("entry_trigger_price")
-    inv_price = params.get("invalidation_price")
+    trigger = params.entry_trigger
+    trigger_price = params.entry_trigger_price
+    inv_price = params.invalidation_price
     has_any = any(v is not None for v in (trigger, trigger_price, inv_price))
     has_all = all(v is not None for v in (trigger, trigger_price, inv_price))
 

@@ -3,40 +3,47 @@
 import pytest
 
 from scanner.execution.sizing import calculate_position, reanchor_exit_prices
+from scanner.models import MachineBlock
+
+# T-016 C3: sizing now takes a typed MachineBlock. Valid-block fixtures wrap
+# their dict through the canonical from_raw (exactly as production does); an
+# override value of None means "field omitted" (the prior dict-era intent).
+_LONG = {
+    "direction": "LONG", "entry_low": 61800, "entry_high": 62200,
+    "stop_loss": 59800, "tp1": 65000, "tp2": 68000, "leverage": 5,
+    "tp1_exit_pct": 50, "tp2_exit_pct": 50, "confidence": 6,
+}
+_SHORT = {
+    "direction": "SHORT", "entry_low": 61800, "entry_high": 62200,
+    "stop_loss": 64200, "tp1": 59000, "tp2": 56000, "leverage": 5,
+    "tp1_exit_pct": 50, "tp2_exit_pct": 50, "confidence": 6,
+}
 
 
 def _long_block(**overrides):
-    """Standard LONG machine_block for BTC ~62000."""
-    base = {
-        "direction": "LONG",
-        "entry_low": 61800,
-        "entry_high": 62200,
-        "stop_loss": 59800,
-        "tp1": 65000,
-        "tp2": 68000,
-        "leverage": 5,
-        "tp1_exit_pct": 50,
-        "tp2_exit_pct": 50,
-    }
-    base.update(overrides)
-    return base
+    """Valid LONG MachineBlock (None override = field omitted)."""
+    base = {k: v for k, v in {**_LONG, **overrides}.items() if v is not None}
+    return MachineBlock.from_raw(base)
 
 
 def _short_block(**overrides):
-    """Standard SHORT machine_block for BTC ~62000."""
-    base = {
-        "direction": "SHORT",
-        "entry_low": 61800,
-        "entry_high": 62200,
-        "stop_loss": 64200,
-        "tp1": 59000,
-        "tp2": 56000,
-        "leverage": 5,
-        "tp1_exit_pct": 50,
-        "tp2_exit_pct": 50,
-    }
-    base.update(overrides)
-    return base
+    """Valid SHORT MachineBlock (None override = field omitted)."""
+    base = {k: v for k, v in {**_SHORT, **overrides}.items() if v is not None}
+    return MachineBlock.from_raw(base)
+
+
+def _mk(**over):
+    """Direct MachineBlock construction (bypasses from_raw's validate gate) —
+    for exercising defensive sizing guards with geometry the validated
+    boundary would reject (e.g. zero stop distance, absent TP). Those guards
+    stay in real-money sizing code, so they keep a test even though the typed
+    boundary makes them unreachable via the normal path.
+    """
+    f = dict(entry_low=61800.0, entry_high=62200.0, stop_loss=59800.0,
+             tp1=65000.0, tp1_exit_pct=50.0, direction="LONG",
+             confidence=6.0, leverage=5.0, tp2=68000.0, tp2_exit_pct=50.0)
+    f.update(over)
+    return MachineBlock(**f)
 
 
 class TestCalculatePosition:
@@ -84,13 +91,19 @@ class TestCalculatePosition:
         assert result.tp2_quantity == 0
 
     def test_zero_risk_returns_none(self):
-        block = _long_block(stop_loss=62000)  # entry_mid = stop = no risk
+        # entry_mid == stop_loss → zero stop distance. from_raw/validate would
+        # reject this (LONG stop must be below entry_low), so build directly
+        # to exercise calculate_position's stop_distance==0 guard.
+        block = _mk(stop_loss=62000.0)  # entry_mid 62000 == stop
         result = calculate_position(block, balance=10000, risk_pct=1.0)
         assert result is None
 
-    def test_missing_fields_returns_none(self):
-        result = calculate_position({}, balance=10000, risk_pct=1.0)
-        assert result is None
+    def test_missing_fields_rejected_at_boundary(self):
+        # Pre-C3 calculate_position({}) returned None on missing fields. Post
+        # T-016 the rejection moves to the typed boundary: an incomplete block
+        # cannot become a MachineBlock, so calculate_position never sees one in
+        # production. Assert the boundary rejects it.
+        assert MachineBlock.from_raw({}) is None
 
     def test_margin_calculation(self):
         result = calculate_position(_long_block(), balance=10000, risk_pct=1.0)
@@ -119,7 +132,10 @@ class TestCalculatePosition:
         assert abs(result.rr_ratio - 3000 / 2200) < 0.01
 
     def test_no_tp_gives_zero_rr(self):
-        result = calculate_position(_long_block(tp1=None, tp2=None), balance=10000, risk_pct=1.0)
+        # No usable TP → rr_ratio 0. A valid MachineBlock always has tp1>0
+        # (required + validated), so this defensive branch is only reachable
+        # via direct construction.
+        result = calculate_position(_mk(tp1=0.0, tp2=None), balance=10000, risk_pct=1.0)
         assert result is not None
         assert result.rr_ratio == 0
 
@@ -134,9 +150,12 @@ class TestCalculatePosition:
         assert abs(result.tp2_quantity - result.quantity * 30 / 90) < 1e-10
 
     def test_tp_split_normalizes_when_sum_over_100(self):
-        """60+50=110 should normalize to 6/11 and 5/11."""
+        """60+50=110 should normalize to 6/11 and 5/11. validate rejects
+        sum>100, so this is calculate_position's defensive normalization —
+        unit-tested via direct construction (bypassing the validate gate).
+        """
         result = calculate_position(
-            _long_block(tp1_exit_pct=60, tp2_exit_pct=50),
+            _mk(tp1_exit_pct=60.0, tp2_exit_pct=50.0),
             balance=10000, risk_pct=1.0,
         )
         assert result is not None
@@ -144,10 +163,13 @@ class TestCalculatePosition:
         assert abs(result.tp2_quantity - result.quantity * 50 / 110) < 1e-10
 
     def test_tp_split_quantities_sum_to_total(self):
-        """Normalized tp1+tp2 must equal total quantity exactly."""
+        """Normalized tp1+tp2 must equal total quantity exactly across all
+        ratios (incl. sum>100 which validate rejects) — calculate_position
+        split arithmetic, unit-tested via direct construction.
+        """
         for tp1_pct, tp2_pct in [(60, 30), (60, 50), (70, 70), (33, 33)]:
             result = calculate_position(
-                _long_block(tp1_exit_pct=tp1_pct, tp2_exit_pct=tp2_pct),
+                _mk(tp1_exit_pct=float(tp1_pct), tp2_exit_pct=float(tp2_pct)),
                 balance=10000, risk_pct=1.0,
             )
             assert result is not None
@@ -208,10 +230,8 @@ class TestReanchorExitPrices:
         assert "tp2" not in result
         assert result["tp1"] == 65300
 
-    def test_missing_both_tps(self):
-        """No TPs → only stop_loss and delta returned."""
-        mb = _long_block(tp1=None, tp2=None)
-        result = reanchor_exit_prices(mb, fill_price=62300)
-        assert result["stop_loss"] == 60100
-        assert "tp1" not in result
-        assert "tp2" not in result
+    # Removed pre-C3 test_missing_both_tps: a MachineBlock always has tp1
+    # (required, validated > 0), so "no TPs at all" is structurally
+    # impossible under the typed contract — reanchor's `if mb.tp1 is not
+    # None` is now provably-always-true defensive code. The tp2-absent
+    # branch stays covered by test_missing_tp2 above.

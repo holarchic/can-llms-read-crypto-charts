@@ -45,15 +45,6 @@ class TestExchangeMeta:
         cfg = ScannerConfig(exchange="binance")
         assert cfg.exchange == "binance"
 
-    def test_config_default_candle_exchanges(self):
-        cfg = ScannerConfig()
-        # Default is HL-only; bybit/binance are geo-blocked from GCE us-central1.
-        assert cfg.candle_exchanges == ["hyperliquid"]
-
-    def test_config_custom_candle_exchanges(self):
-        cfg = ScannerConfig(candle_exchanges=["hyperliquid", "bybit"])
-        assert cfg.candle_exchanges == ["hyperliquid", "bybit"]
-
 
 # --- Data layer ---
 
@@ -108,31 +99,6 @@ def db_conn(tmp_path):
     conn = get_connection(tmp_path / "test.db")
     yield conn
     conn.close()
-
-
-class TestCandlesMigration:
-    def test_new_db_has_exchange_column(self, db_conn):
-        cols = {r[1] for r in db_conn.execute("PRAGMA table_info(candles)").fetchall()}
-        assert "exchange" in cols
-
-    def test_candles_pk_includes_exchange(self, db_conn):
-        """Same coin/interval/timestamp on different exchanges should be allowed."""
-        db_conn.execute(
-            "INSERT INTO candles (coin, interval, timestamp, open, high, low, close, volume, exchange) "
-            "VALUES ('BTC', '4h', '2026-01-01T00:00:00', 100, 105, 95, 102, 1000, 'hyperliquid')"
-        )
-        db_conn.execute(
-            "INSERT INTO candles (coin, interval, timestamp, open, high, low, close, volume, exchange) "
-            "VALUES ('BTC', '4h', '2026-01-01T00:00:00', 101, 106, 96, 103, 2000, 'bybit')"
-        )
-        db_conn.commit()
-
-        rows = db_conn.execute(
-            "SELECT exchange, close FROM candles WHERE coin='BTC' AND interval='4h'"
-        ).fetchall()
-        assert len(rows) == 2
-        exchanges = {r["exchange"] for r in rows}
-        assert exchanges == {"hyperliquid", "bybit"}
 
 
 class TestExchangeScopedDedup:

@@ -20,14 +20,7 @@ from scanner.execution.executor import (
     validate_execution_params,
 )
 from scanner.execution.storage import ensure_orders_table, get_orders_for_scan, save_order
-from scanner.models import (
-    Direction,
-    MarketContext,
-    ScanResult,
-    SetupSignal,
-    SetupType,
-    Structure,
-)
+from scanner.models import ExecutionRequest, MachineBlock
 
 
 @pytest.fixture
@@ -75,46 +68,48 @@ def _make_machine_block(**overrides):
     return base
 
 
+def _vmb(d: dict) -> MachineBlock:
+    """T-016 C3: validate_execution_params is now typed. These tests probe
+    the validator's OWN geometry/range detection, so they construct the
+    MachineBlock DIRECTLY (bypassing from_raw's validate gate) — in
+    production validate only ever runs on a constructed MachineBlock."""
+    return MachineBlock(**d)
+
+
 _UNSET = object()
 
 
-def _make_scan_result(machine_block=_UNSET, coin="BTC", screener_direction=None, **overrides):
+def _make_request(machine_block=_UNSET, coin="BTC", screener_direction=_UNSET, **overrides):
+    """Build the typed `ExecutionRequest` execute_trade now consumes
+    (T-016 Phase 1b). Effective values mirror the prior synthetic-ScanResult
+    fixture so existing skip_reason/sizing assertions hold byte-identically:
+    atr=500.0 (was MarketContext.atr), max_leverage=20 (was
+    SetupSignal.max_leverage).
+    """
     mb = _make_machine_block() if machine_block is _UNSET else machine_block
-    # Default screener direction matches machine_block to avoid unintended counter-trend
-    if screener_direction is None:
-        mb_dir = mb.get("direction", "LONG").upper() if mb else "LONG"
-        screener_direction = Direction.LONG if mb_dir == "LONG" else Direction.SHORT
-    ctx = MarketContext(
-        structure=Structure.BULLISH,
-        swings=[], sr_levels=[], msbs=[],
-        range_bounds=None, atr=500, current_price=62000,
-        fib_levels=None,
-    )
-    signal = SetupSignal(
-        coin=coin,
-        setup_type=SetupType.A,
-        direction=screener_direction,
-        confidence=0.8,
-        key_level=61800,
-        context=ctx,
-        description="Test signal",
-        max_leverage=20,
-    )
+    # A dict fixture is normalized through the canonical boundary exactly as
+    # the real pipeline does (invalid dict -> None). A MachineBlock passed
+    # directly (e.g. an intentionally validate-invalid one) flows untouched.
+    if isinstance(mb, dict):
+        mb = MachineBlock.from_raw(mb)
+    # Default screener_direction to the mb direction (LONG when mb is None) so
+    # ExecutionResult.direction is byte-identical on the no_machine_block /
+    # early-skip path, exactly as the old synthetic-ScanResult fixture did
+    # (codex plan-review LOW). Pass screener_direction=None explicitly to
+    # exercise the "no counter-trend signal" path.
+    if screener_direction is _UNSET:
+        screener_direction = mb.direction.upper() if mb is not None else "LONG"
     defaults = {
         "scan_id": "test123",
         "coin": coin,
-        "timestamp": datetime.now(timezone.utc),
-        "setup_signal": signal,
-        "decision": "CONFIRM",
-        "confluence_score": "8/10",
-        "analysis_text": "Test analysis",
-        "parsed_decision": {},
-        "chart_paths": [],
-        "cost_usd": 0.09,
         "machine_block": mb,
+        "screener_direction": screener_direction,
+        "atr": 500.0,
+        "max_leverage": 20,
+        "staleness_ref": datetime.now(timezone.utc),
     }
     defaults.update(overrides)
-    return ScanResult(**defaults)
+    return ExecutionRequest(**defaults)
 
 
 def _mock_exchange_success(filled=None):
@@ -132,67 +127,70 @@ def _mock_exchange_success(filled=None):
 
 class TestValidateExecutionParams:
     def test_valid_long(self):
-        assert validate_execution_params(_make_machine_block()) == []
+        assert validate_execution_params(_vmb(_make_machine_block())) == []
 
-    def test_missing_direction(self):
+    def test_missing_direction_rejected_at_boundary(self):
+        # Pre-C3 validate_execution_params flagged a missing direction. Post
+        # T-016 a MachineBlock cannot omit a required field — that rejection
+        # moves to from_raw, so validate never sees a direction-less block in
+        # production.
         mb = _make_machine_block()
         del mb["direction"]
-        errors = validate_execution_params(mb)
-        assert any("direction" in e.lower() for e in errors)
+        assert MachineBlock.from_raw(mb) is None
 
     def test_invalid_direction(self):
-        errors = validate_execution_params(_make_machine_block(direction="UP"))
+        errors = validate_execution_params(_vmb(_make_machine_block(direction="UP")))
         assert any("direction" in e.lower() for e in errors)
 
     def test_invalid_leverage(self):
-        errors = validate_execution_params(_make_machine_block(leverage=-1))
+        errors = validate_execution_params(_vmb(_make_machine_block(leverage=-1)))
         assert any("leverage" in e.lower() for e in errors)
 
     def test_validates_exit_pcts_over_100(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=70, tp2_exit_pct=50))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=70, tp2_exit_pct=50)))
         assert any("exit pcts sum" in e for e in errors)
 
     def test_validates_exit_pct_negative(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=-10))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=-10)))
         assert any("tp1_exit_pct must be positive" in e for e in errors)
 
     def test_validates_tp2_exit_pct_negative(self):
-        errors = validate_execution_params(_make_machine_block(tp2_exit_pct=-5))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp2_exit_pct=-5)))
         assert any("tp2_exit_pct must be non-negative" in e for e in errors)
 
     def test_valid_exit_pcts_no_errors(self):
-        errors = validate_execution_params(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1_exit_pct=60, tp2_exit_pct=40)))
         assert errors == []
 
     def test_long_stop_above_entry(self):
-        errors = validate_execution_params(_make_machine_block(stop_loss=62000))
+        errors = validate_execution_params(_vmb(_make_machine_block(stop_loss=62000)))
         assert any("LONG stop" in e for e in errors)
 
     def test_short_stop_below_entry(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=61000, tp1=59000, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert any("SHORT stop" in e for e in errors)
 
     def test_long_tp1_below_entry(self):
-        errors = validate_execution_params(_make_machine_block(tp1=61000))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp1=61000)))
         assert any("LONG tp1" in e for e in errors)
 
     def test_short_tp1_above_entry(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=62500, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert any("SHORT tp1" in e for e in errors)
 
     def test_entry_low_above_entry_high(self):
-        errors = validate_execution_params(_make_machine_block(entry_low=63000, entry_high=61000))
+        errors = validate_execution_params(_vmb(_make_machine_block(entry_low=63000, entry_high=61000)))
         assert any("entry_low" in e for e in errors)
 
     def test_long_tp2_below_tp1(self):
-        errors = validate_execution_params(_make_machine_block(tp2=64000))
+        errors = validate_execution_params(_vmb(_make_machine_block(tp2=64000)))
         assert any("LONG tp2" in e for e in errors)
 
     def test_valid_short(self):
         mb = _make_machine_block(direction="SHORT", stop_loss=64000, tp1=59000, tp2=56000)
-        errors = validate_execution_params(mb)
+        errors = validate_execution_params(_vmb(mb))
         assert errors == []
 
 
@@ -210,7 +208,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         assert result.entry_order_id != ""
@@ -238,44 +236,51 @@ class TestExecuteTrade:
         mock_discord.return_value = MagicMock(status_code=204)
 
         mb = _make_machine_block(direction="SHORT", stop_loss=64200, tp1=59000, tp2=56000)
-        sr = _make_scan_result(machine_block=mb)
+        sr = _make_request(machine_block=mb)
 
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is True
 
     def test_skip_stale_signal(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        old_detected = datetime.now(timezone.utc) - timedelta(minutes=60)
-        sr = _make_scan_result(detected_at=old_detected)
+        old_ref = datetime.now(timezone.utc) - timedelta(minutes=60)
+        sr = _make_request(staleness_ref=old_ref)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "stale_signal"
 
-    def test_skip_stale_signal_falls_back_to_timestamp(self, conn, exec_config, scanner_config):
-        """When detected_at is None, staleness uses timestamp."""
-        from datetime import timedelta
-        old_timestamp = datetime.now(timezone.utc) - timedelta(minutes=60)
-        sr = _make_scan_result(timestamp=old_timestamp, detected_at=None)
-        result = execute_trade(sr, exec_config, scanner_config, conn)
-        assert result.executed is False
-        assert result.skip_reason == "stale_signal"
+    # The prior "detected_at None → fall back to timestamp" executor test is
+    # retired here: ExecutionRequest carries a single resolved `staleness_ref`
+    # (SPEC #21). The detected_at-or-timestamp fallback now lives in the
+    # pipeline adapter and is guarded by
+    # test_pipeline.TestStage4StalenessRefAdapter.
 
     def test_fresh_signal_passes_staleness(self, conn, exec_config, scanner_config):
         from datetime import timedelta
-        fresh_detected = datetime.now(timezone.utc) - timedelta(minutes=10)
-        sr = _make_scan_result(detected_at=fresh_detected, machine_block=None)
+        fresh_ref = datetime.now(timezone.utc) - timedelta(minutes=10)
+        sr = _make_request(staleness_ref=fresh_ref, machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should pass staleness but fail on no_machine_block (next check)
         assert result.skip_reason == "no_machine_block"
 
     def test_skip_no_machine_block(self, conn, exec_config, scanner_config):
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "no_machine_block"
 
     def test_skip_invalid_params(self, conn, exec_config, scanner_config):
-        sr = _make_scan_result(machine_block={"direction": "INVALID"})
+        # A validate-invalid block can no longer exist as a dict on the
+        # request (from_raw would reject it -> None -> no_machine_block).
+        # Build a MachineBlock directly with bad LONG geometry (stop above
+        # entry_low) so execute_trade's step-2 validate gate still fires and
+        # yields invalid_params — exercising that gate as before.
+        bad = MachineBlock(
+            entry_low=61800.0, entry_high=62200.0, stop_loss=63000.0,
+            tp1=65000.0, tp1_exit_pct=50.0, direction="LONG",
+            confidence=7.0, leverage=5.0,
+        )
+        sr = _make_request(machine_block=bad)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "invalid_params"
@@ -284,7 +289,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_sanity_fail(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         """Price too far from entry zone fails sanity check."""
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "sanity_fail"
 
@@ -294,14 +299,14 @@ class TestExecuteTrade:
         """Price beyond entry zone + direction buffer [61800, 62200] + 2% LONG buffer."""
         # 65000 is well above zone + buffer ceiling (~63440), so should still skip
         exec_config.entry_price_tolerance_pct = 10.0
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "price_outside_zone"
 
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
     @patch("scanner.execution.executor.is_killed", return_value=True)
     def test_skip_kill_switch(self, mock_killed, mock_price, conn, exec_config, scanner_config):
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "kill_switch"
 
@@ -309,7 +314,7 @@ class TestExecuteTrade:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_position_limit(self, mock_killed, mock_price, conn, exec_config, scanner_config):
         exec_config.max_concurrent_positions = 0  # limit is 0
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "position_limit"
 
@@ -329,7 +334,7 @@ class TestExecuteTrade:
         mock_calc.return_value = mock_pos
         mock_auth.return_value = MagicMock()
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "insufficient_margin"
 
@@ -355,7 +360,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_failed is False
         assert result.sl_order_id != ""
@@ -382,7 +387,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_failed is True
         assert result.sl_order_id == ""
@@ -427,7 +432,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.sl_failed is True
 
@@ -473,7 +478,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_failed is True
 
@@ -510,7 +515,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_failed is True
 
@@ -549,7 +554,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.sl_failed is True
 
@@ -579,7 +584,7 @@ class TestExecuteTrade:
 
         # Patch make_cloid to return the matching clientOrderId
         with patch("scanner.execution.executor.make_cloid", return_value="test-cloid"):
-            result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+            result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_order_id != ""
 
@@ -609,7 +614,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False  # SL + emergency close both failed → early return
 
         # URGENT alert — SL ambiguous / emergency close failure
@@ -636,7 +641,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
         assert result.sl_order_id != ""
         assert result.tp1_order_id == ""  # TP failed, non-fatal
@@ -654,7 +659,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert mock_discord.called
 
     @patch("scanner.execution.executor.requests.post")
@@ -671,7 +676,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is False
         assert result.skip_reason == "entry_unfilled"
@@ -705,7 +710,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         orders = get_orders_for_scan("test123", conn)
@@ -743,7 +748,7 @@ class TestExecuteTrade:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         orders = get_orders_for_scan("test123", conn)
@@ -776,7 +781,7 @@ class TestReanchoredExitPrices:
 
         import logging
         with caplog.at_level(logging.INFO, logger="scanner.execution.executor"):
-            result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+            result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         reanchor_logs = [r for r in caplog.records if "reanchored" in r.message]
@@ -802,7 +807,7 @@ class TestReanchoredExitPrices:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
 
         from scanner.execution.storage import get_order
@@ -838,7 +843,7 @@ class TestReanchoredExitPrices:
 
         import logging
         with caplog.at_level(logging.INFO, logger="scanner.execution.executor"):
-            result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+            result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         reanchor_logs = [r for r in caplog.records if "reanchored" in r.message]
@@ -865,7 +870,7 @@ class TestClientOrderId:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         # Entry, SL, TP1, TP2 = 4 create_order calls
         for call in mock_exchange.create_order.call_args_list:
@@ -924,7 +929,7 @@ class TestBtcVolatilityGate:
         """BTC 4H range > 2x ATR → skip with btc_volatility_gate."""
         # ATR ≈ 1000 (all candles have range=1000), last candle range = 2500 (2.5x)
         mock_fetch.return_value = _make_btc_4h_df(last_range=2500, atr_approx=1000)
-        sr = _make_scan_result()
+        sr = _make_request()
         result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "btc_volatility_gate"
@@ -936,7 +941,7 @@ class TestBtcVolatilityGate:
         """Normal BTC volatility (0.5x ATR) → execution continues past gate."""
         # ATR ≈ 1000, last candle range = 500 (0.5x) — should pass
         mock_fetch.return_value = _make_btc_4h_df(last_range=500, atr_approx=1000)
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         # Should pass the gate and fail on next check (no_machine_block)
         assert result.skip_reason == "no_machine_block"
@@ -944,7 +949,7 @@ class TestBtcVolatilityGate:
     @patch("scanner.data.fetch_candles", side_effect=Exception("API timeout"))
     def test_btc_vol_gate_fails_open(self, mock_fetch, conn, vol_gate_config, scanner_config):
         """fetch_candles raises → gate fails open, execution continues."""
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, vol_gate_config, scanner_config, conn)
         # Gate failed open → proceeds to next check
         assert result.skip_reason == "no_machine_block"
@@ -965,7 +970,7 @@ class TestExchangeReconciliation:
             {"coin": "BTC", "direction": "LONG", "size": 0.05, "entry_price": 61000,
              "unrealized_pnl": 100, "leverage": 5},
         ]
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "duplicate_position"
 
@@ -981,7 +986,7 @@ class TestExchangeReconciliation:
             {"coin": "BTC", "direction": "SHORT", "size": 0.05, "entry_price": 63000,
              "unrealized_pnl": -50, "leverage": 5},
         ]
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "duplicate_position"
 
@@ -1000,7 +1005,7 @@ class TestExchangeReconciliation:
             {"coin": "SOL", "direction": "SHORT", "size": 10.0, "entry_price": 150,
              "unrealized_pnl": -20, "leverage": 5},
         ]
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "position_limit"
 
@@ -1011,7 +1016,7 @@ class TestExchangeReconciliation:
                                                        mock_positions, conn, exec_config, scanner_config):
         """API raises → DB checks still run (position_limit from DB with max=0)."""
         exec_config.max_concurrent_positions = 0
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "position_limit"
 
@@ -1024,7 +1029,7 @@ class TestExchangeReconciliation:
              "unrealized_pnl": 50, "leverage": 3},
         ]
         # DB has 0 positions, exchange has 1 — untracked position on exchange
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "position_mismatch"
         assert "DB positions=0 vs exchange=1" in result.error
@@ -1050,7 +1055,7 @@ class TestExchangeReconciliation:
         }, conn)
         # Exchange reports no open positions
         mock_positions.return_value = []
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         # Past the reconciliation gate — downstream reason OK
         assert result.skip_reason != "position_mismatch"
 
@@ -1066,14 +1071,14 @@ class TestFailPolicy:
             wallet_address="0xwallet", risk_pct=1.0,
             btc_vol_gate_enabled=True,
         )
-        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        result = execute_trade(_make_request(), live_config, scanner_config, conn)
         assert result.skip_reason == "btc_vol_gate_error"
 
     @patch("scanner.data.fetch_candles", side_effect=Exception("API timeout"))
     def test_btc_vol_gate_error_passes_testnet(self, mock_fetch, conn, exec_config, scanner_config):
         """BTC vol gate fetch failure in testnet → proceeds past gate."""
         exec_config.btc_vol_gate_enabled = True
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         assert result.skip_reason != "btc_vol_gate_error"
 
@@ -1085,7 +1090,7 @@ class TestFailPolicy:
             wallet_address="0xwallet", risk_pct=1.0,
             btc_vol_gate_enabled=False,
         )
-        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        result = execute_trade(_make_request(), live_config, scanner_config, conn)
         assert result.skip_reason == "reconciliation_error"
 
     @patch("scanner.execution.executor.get_open_positions", side_effect=Exception("API timeout"))
@@ -1095,7 +1100,7 @@ class TestFailPolicy:
                                                   mock_positions, conn, exec_config, scanner_config):
         """Exchange position fetch failure in testnet → proceeds past gate."""
         exec_config.max_concurrent_positions = 0
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         # Hits position_limit from DB checks, not reconciliation_error
         assert result.skip_reason == "position_limit"
 
@@ -1127,7 +1132,7 @@ class TestUnprotectedPositionGuard:
             "created_at": "2026-03-05T00:00:00+00:00",
         }, conn)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "unprotected_position"
 
@@ -1160,7 +1165,7 @@ class TestUnprotectedPositionGuard:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.skip_reason != "unprotected_position"
 
     @patch("scanner.execution.executor.get_open_positions", return_value=[])
@@ -1184,7 +1189,7 @@ class TestUnprotectedPositionGuard:
         }, conn)
 
         # Position is fully closed → should proceed past unprotected guard
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should fail on next check (no_machine_block), not unprotected_position
         assert result.skip_reason == "no_machine_block"
@@ -1199,7 +1204,7 @@ class TestCapitalBounds:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_zero_balance(self, mock_killed, mock_price, mock_balance,
                                 mock_positions, conn, exec_config, scanner_config):
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "zero_balance"
 
@@ -1209,7 +1214,7 @@ class TestCapitalBounds:
     @patch("scanner.execution.executor.is_killed", return_value=False)
     def test_skip_negative_balance(self, mock_killed, mock_price, mock_balance,
                                     mock_positions, conn, exec_config, scanner_config):
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "zero_balance"
 
@@ -1228,7 +1233,7 @@ class TestCapitalBounds:
         mock_pos.notional_value = 6200  # >> 500
         mock_calc.return_value = mock_pos
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "notional_limit"
 
@@ -1249,7 +1254,7 @@ class TestCapitalBounds:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
 
 
@@ -1323,7 +1328,7 @@ class TestOpenOrderCap:
         """200 open orders → skip with open_order_limit."""
         exec_config.max_open_orders = 200
         mock_orders.return_value = [{}] * 200
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is False
         assert result.skip_reason == "open_order_limit"
 
@@ -1346,7 +1351,7 @@ class TestOpenOrderCap:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert result.executed is True
 
     @patch("scanner.execution.executor.get_exchange_open_orders", side_effect=Exception("API timeout"))
@@ -1361,7 +1366,7 @@ class TestOpenOrderCap:
             wallet_address="0xwallet", risk_pct=1.0,
             btc_vol_gate_enabled=False, max_open_orders=200,
         )
-        result = execute_trade(_make_scan_result(), live_config, scanner_config, conn)
+        result = execute_trade(_make_request(), live_config, scanner_config, conn)
         assert result.skip_reason == "order_count_error"
 
     @patch("scanner.execution.executor.get_exchange_open_orders", side_effect=Exception("API timeout"))
@@ -1372,7 +1377,7 @@ class TestOpenOrderCap:
                                                mock_orders, conn, exec_config, scanner_config):
         """API raises in testnet → proceeds past check."""
         exec_config.max_open_orders = 200
-        sr = _make_scan_result(machine_block=None)
+        sr = _make_request(machine_block=None)
         result = execute_trade(sr, exec_config, scanner_config, conn)
         # Should pass the cap check and fail on next (no_machine_block via balance → ...)
         assert result.skip_reason != "order_count_error"
@@ -1504,7 +1509,7 @@ class TestBatchExitOrders:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         assert result.sl_order_id != ""
@@ -1537,7 +1542,7 @@ class TestBatchExitOrders:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         assert result.sl_order_id != ""
@@ -1570,7 +1575,7 @@ class TestBatchExitOrders:
         mock_auth.return_value = mock_exchange
         mock_discord.return_value = MagicMock(status_code=204)
 
-        result = execute_trade(_make_scan_result(), exec_config, scanner_config, conn)
+        result = execute_trade(_make_request(), exec_config, scanner_config, conn)
 
         assert result.executed is True
         assert result.sl_order_id != ""

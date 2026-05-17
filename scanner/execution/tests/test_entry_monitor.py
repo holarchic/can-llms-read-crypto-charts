@@ -1,6 +1,7 @@
 """Tests for conditional entry monitor — trigger evaluation, storage, orchestration."""
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -9,8 +10,7 @@ import pytest
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.entry_monitor import (
-    _reconstruct_scan_result,
-    evaluate_deviation_reclaim,
+    _build_execution_request,
     evaluate_entry_trigger,
     evaluate_limit_at_trigger,
     is_1h_boundary,
@@ -25,6 +25,16 @@ from scanner.execution.storage import (
     update_last_checked_hour,
     update_pending_status,
 )
+from scanner.models import MachineBlock
+
+
+def _mb(d):
+    """T-016 C2: the parse boundary now yields a typed MachineBlock, so
+    save_conditional_entry fixtures wrap their raw dict exactly as the real
+    pipeline does (parse_machine_block -> MachineBlock.from_raw). An invalid
+    block -> None, identical to the production reject path (the equivalence
+    battery proves from_raw rejects iff parse_machine_block did)."""
+    return MachineBlock.from_raw(d)
 
 
 @pytest.fixture
@@ -56,9 +66,16 @@ def _make_pending(coin="BTC", direction="LONG", trigger="candle_close_above",
         "scan_id": f"s_{coin.lower()}",
         "coin": coin,
         "direction": direction,
+        # Direction-valid geometry (T-016 C4: the stored block now passes
+        # through from_raw on reconstruction, which runs validate — a SHORT
+        # block needs stop ABOVE entry and tp BELOW, exactly as
+        # save_conditional_entry would have required at save time). LONG path
+        # unchanged.
         "machine_block": json.dumps({
-            "entry_low": 99.0, "entry_high": 101.0, "stop_loss": 95.0,
-            "tp1": 110.0, "tp1_exit_pct": 50, "direction": direction,
+            "entry_low": 99.0, "entry_high": 101.0,
+            "stop_loss": 105.0 if direction == "SHORT" else 95.0,
+            "tp1": 90.0 if direction == "SHORT" else 110.0,
+            "tp1_exit_pct": 50, "direction": direction,
             "confidence": 7, "leverage": 5,
             "entry_trigger": trigger, "entry_trigger_price": trigger_price,
             "invalidation_price": inv_price, "expiry_candles": expiry,
@@ -168,89 +185,6 @@ class TestEvaluateEntryTrigger:
             "candle_close_above", 100.0, 90.0, "LONG", 97.0)
         assert event is None
         assert action == "none"
-
-
-class TestEvaluateDeviationReclaim:
-    """Ruleset §4.4: excess + reclaim two-part pattern."""
-
-    def test_long_excess_then_reclaim_fires(self):
-        # Price: 100 (at level), 99 (excess below support), 100.5 (reclaim)
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 99.0, 100.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
-
-    def test_long_no_reclaim_yet(self):
-        # Price goes below but never back above
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 99.0, 98.5, 99.5],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_no_excess_yet(self):
-        # Price stayed above support the whole time — no excess, no trigger
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.5, 101.0, 100.2],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_short_excess_then_reclaim_fires(self):
-        # Resistance at 100: price breaks to 101 (excess above), closes back at 99.5
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.0, 101.0, 99.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
-
-    def test_short_no_reclaim_yet(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.5, 101.0, 101.5],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_invalidation_overrides_reclaim(self):
-        # Excess AND invalidation hit simultaneously — invalidation wins
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[100.0, 96.5, 100.2],
-        )
-        assert event == "invalidated"
-        assert action == "kill"
-
-    def test_short_invalidation_overrides_reclaim(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=103.0,
-            direction="SHORT", candle_closes=[100.0, 103.5, 99.0],
-        )
-        assert event == "invalidated"
-        assert action == "kill"
-
-    def test_empty_closes_returns_none(self):
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=97.0,
-            direction="LONG", candle_closes=[],
-        )
-        assert event is None
-        assert action == "none"
-
-    def test_long_excess_extends_then_reclaims(self):
-        # Extended excess before reclaim — should still fire on reclaim
-        event, action = evaluate_deviation_reclaim(
-            entry_trigger_price=100.0, invalidation_price=95.0,
-            direction="LONG",
-            candle_closes=[100.0, 99.0, 98.0, 97.5, 100.5],
-        )
-        assert event == "triggered"
-        assert action == "execute"
 
 
 class TestEvaluateLimitAt:
@@ -531,7 +465,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 2300, "entry_high": 2350, "stop_loss": 2200,
                 "tp1": 2500, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -539,7 +473,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 2350.0,
                 "invalidation_price": 2250.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         saved = save_conditional_entry(result, ce_config, conn)
@@ -556,7 +490,7 @@ class TestSaveConditionalEntry:
     def test_dedup_blocks_second(self, mock_alert, mock_price, mock_pos, ce_config, conn):
         from scanner.models import ScanResult
 
-        mb = {
+        mb = _mb({
             "entry_low": 99, "entry_high": 101, "stop_loss": 95,
             "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
             "confidence": 7, "leverage": 5,
@@ -564,7 +498,7 @@ class TestSaveConditionalEntry:
             "entry_trigger_price": 100.0,
             "invalidation_price": 96.0,
             "expiry_candles": 12,
-        }
+        })
 
         r1 = ScanResult(scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
                         setup_signal=None, decision="CONFIRM", confluence_score=None,
@@ -608,14 +542,14 @@ class TestSaveConditionalEntry:
             scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 105,
                 "tp1": 85, "tp1_exit_pct": 50, "direction": "SHORT",
                 "confidence": 7, "leverage": 5,
                 "entry_trigger": "candle_close_below",
                 "entry_trigger_price": 99.0, "invalidation_price": 102.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         save_conditional_entry(result, ce_config, conn)
@@ -631,7 +565,7 @@ class TestSaveConditionalEntry:
 
         ce_config.conditional_entry_max_expiry = 10
 
-        mb = {
+        mb = _mb({
             "entry_low": 99, "entry_high": 101, "stop_loss": 95,
             "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
             "confidence": 7, "leverage": 5,
@@ -639,7 +573,7 @@ class TestSaveConditionalEntry:
             "entry_trigger_price": 100.0,
             "invalidation_price": 96.0,
             "expiry_candles": 24,
-        }
+        })
 
         result = ScanResult(scan_id="s1", coin="BTC", timestamp=datetime.now(timezone.utc),
                             setup_signal=None, decision="CONFIRM", confluence_score=None,
@@ -666,7 +600,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -674,7 +608,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         positions = [{"coin": "BTC", "direction": "LONG", "size": 0.1,
@@ -701,7 +635,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -709,7 +643,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -736,7 +670,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -744,7 +678,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -755,9 +689,18 @@ class TestSaveConditionalEntry:
         assert has_active_pending("BTC", conn, "hyperliquid", "testnet")
 
     def test_skips_invalid_machine_block(self, ce_config, conn):
-        """Save-time backstop rejects mb's that violate validate_execution_params
-        (LONG inv<SL or SHORT inv>SL). Without this, ZEC/NEAR-shape blocks
-        become pendings that deterministically TRIGGER_FAILED at execute time."""
+        """Save-time backstop (SPEC #17) rejects mb's that violate
+        validate_execution_params (LONG inv<SL or SHORT inv>SL). Without it,
+        ZEC/NEAR-shape blocks become pendings that deterministically
+        TRIGGER_FAILED at execute time.
+
+        Phase-review R4: built via the DIRECT MachineBlock constructor (NOT
+        from_raw) on purpose — from_raw would reject this geometry up front
+        (returning None), which exercises the early `if mb is None` return,
+        not the save-time validator. Direct construction yields a non-None
+        invalid MachineBlock that actually reaches and trips the SPEC #17
+        backstop at save_conditional_entry's validate_execution_params call.
+        """
         from scanner.models import ScanResult
 
         # SHORT with invalidation_price (338) > stop_loss (335) — exact
@@ -768,15 +711,15 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
-                "entry_low": 327, "entry_high": 329, "stop_loss": 335.0,
-                "tp1": 310, "tp1_exit_pct": 50, "direction": "SHORT",
-                "confidence": 7, "leverage": 5,
-                "entry_trigger": "candle_close_below",
-                "entry_trigger_price": 328.0,
-                "invalidation_price": 338.0,
-                "expiry_candles": 12,
-            },
+            machine_block=MachineBlock(
+                entry_low=327.0, entry_high=329.0, stop_loss=335.0,
+                tp1=310.0, tp1_exit_pct=50.0, direction="SHORT",
+                confidence=7.0, leverage=5.0,
+                entry_trigger="candle_close_below",
+                entry_trigger_price=328.0,
+                invalidation_price=338.0,
+                expiry_candles=12,
+            ),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -819,7 +762,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -827,7 +770,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -878,7 +821,7 @@ class TestSaveConditionalEntry:
             timestamp=datetime.now(timezone.utc),
             setup_signal=setup, decision="CONFIRM", confluence_score=None,
             analysis_text=None, parsed_decision=None, chart_paths=[],
-            cost_usd=0.0, machine_block={
+            cost_usd=0.0, machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 108, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -886,7 +829,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         saved = save_conditional_entry(result, ce_config, conn)
@@ -907,7 +850,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 80.45, "entry_high": 80.85, "stop_loss": 78.4,
                 "tp1": 84.8, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -915,7 +858,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 80.55,
                 "invalidation_price": 78.8,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -941,7 +884,7 @@ class TestSaveConditionalEntry:
             setup_signal=None, decision="CONFIRM",
             confluence_score=None, analysis_text=None,
             parsed_decision=None, chart_paths=[], cost_usd=0.0,
-            machine_block={
+            machine_block=_mb({
                 "entry_low": 99, "entry_high": 101, "stop_loss": 95,
                 "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
                 "confidence": 7, "leverage": 5,
@@ -949,7 +892,7 @@ class TestSaveConditionalEntry:
                 "entry_trigger_price": 100.0,
                 "invalidation_price": 96.0,
                 "expiry_candles": 12,
-            },
+            }),
         )
 
         with patch("scanner.execution.entry_monitor.get_open_positions",
@@ -963,12 +906,88 @@ class TestSaveConditionalEntry:
         assert saved is True
         assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
 
+    def test_candle_close_met_at_spot_does_not_immediate_execute(
+        self, ce_config, conn,
+    ):
+        """A candle_close_above pending whose trigger is already met at spot
+        must NOT immediate-execute at save time. The trigger is a *completed
+        1H close*; spot is not a proxy for it. Evaluating off spot fired an
+        unconfirmed intrabar market entry (Codex audit 2026-05-15, R2-1).
+        The pending is saved and waits for the 1H-boundary monitor cycle."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_cc_spot", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block=_mb({
+                "entry_low": 99, "entry_high": 101, "stop_loss": 95,
+                "tp1": 110, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "candle_close_above",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 96.0,
+                "expiry_candles": 12,
+            }),
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=105.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert",
+                   return_value=True), \
+             patch("scanner.execution.entry_monitor._execute_triggered_entry") as mock_exec:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        mock_exec.assert_not_called()
+        assert has_active_pending("ETH", conn, "hyperliquid", "testnet")
+
+    def test_limit_at_met_at_spot_still_immediate_executes(
+        self, ce_config, conn,
+    ):
+        """limit_at retains the spot-touch immediate fast path: an
+        already-reached level fills now rather than waiting up to 60min.
+        Guards against R2-1 over-reach (must not disable limit_at too)."""
+        from scanner.models import ScanResult
+
+        result = ScanResult(
+            scan_id="s_la_spot", coin="ETH",
+            timestamp=datetime.now(timezone.utc),
+            setup_signal=None, decision="CONFIRM", confluence_score=None,
+            analysis_text=None, parsed_decision=None, chart_paths=[],
+            cost_usd=0.0, machine_block=_mb({
+                "entry_low": 99, "entry_high": 101, "stop_loss": 88,
+                "tp1": 120, "tp1_exit_pct": 50, "direction": "LONG",
+                "confidence": 7, "leverage": 5,
+                "entry_trigger": "limit_at",
+                "entry_trigger_price": 100.0,
+                "invalidation_price": 90.0,
+                "expiry_candles": 12,
+            }),
+        )
+
+        with patch("scanner.execution.entry_monitor.get_open_positions",
+                   return_value=[]), \
+             patch("scanner.execution.entry_monitor.fetch_current_price",
+                   return_value=97.0), \
+             patch("scanner.execution.entry_monitor._send_pending_alert",
+                   return_value=True), \
+             patch("scanner.execution.entry_monitor._execute_triggered_entry") as mock_exec:
+            saved = save_conditional_entry(result, ce_config, conn)
+
+        assert saved is True
+        mock_exec.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
-# _reconstruct_scan_result tests — R:R preservation + counter-trend flag
+# _build_execution_request tests — reanchor R:R preservation + screener-dir
+# coercion (T-016 Phase 1b, SPEC #21). Replaces _reconstruct_scan_result.
 # ---------------------------------------------------------------------------
 
-class TestReconstructScanResult:
+class TestBuildExecutionRequest:
 
     def test_reanchors_sl_and_tp_by_trigger_delta(self):
         """When price has moved between scan and trigger, SL/TP shift by the
@@ -988,39 +1007,97 @@ class TestReconstructScanResult:
         pending["machine_block"] = json.dumps(mb)
 
         # Trigger fires at 105 (5 above original mid)
-        result = _reconstruct_scan_result(pending, trigger_close=105.0)
+        req = _build_execution_request(pending, trigger_close=105.0)
 
         # Entry zone rebuilt around trigger
-        new_mb = result.machine_block
-        assert new_mb["entry_low"] == pytest.approx(105.0 * 0.995)
-        assert new_mb["entry_high"] == pytest.approx(105.0 * 1.005)
+        new_mb = req.machine_block
+        assert new_mb.entry_low == pytest.approx(105.0 * 0.995)
+        assert new_mb.entry_high == pytest.approx(105.0 * 1.005)
         # SL/TP shifted by delta=+5 → R still = |105-100| = 5, reward = |115-105| = 10
-        assert new_mb["stop_loss"] == pytest.approx(100.0)
-        assert new_mb["tp1"] == pytest.approx(115.0)
-        assert new_mb["tp2"] == pytest.approx(120.0)
+        assert new_mb.stop_loss == pytest.approx(100.0)
+        assert new_mb.tp1 == pytest.approx(115.0)
+        assert new_mb.tp2 == pytest.approx(120.0)
+        # Conditional-entry defaults reproduce the old _empty_setup_signal
+        # context / SetupSignal field defaults exactly (SPEC #21).
+        assert req.atr == 0.0
+        assert req.max_leverage is None
 
-    def test_setup_signal_carries_screener_direction(self):
-        """Counter-trend detection works after trigger: reconstructed
-        setup_signal.direction matches the stored screener_direction."""
+    def test_valid_screener_direction_preserved_for_counter_trend(self):
+        """Counter-trend detection works after trigger: screener_direction is
+        the Direction value string executor.counter_trend formerly read off
+        setup_signal.direction.value."""
         pending = _make_pending(coin="BTC", direction="SHORT")
         pending["screener_direction"] = "LONG"
 
-        result = _reconstruct_scan_result(pending, trigger_close=99.0)
+        req = _build_execution_request(pending, trigger_close=99.0)
 
-        assert result.setup_signal is not None
-        assert result.setup_signal.direction.value == "LONG"
+        assert req.screener_direction == "LONG"
         # mb direction is still SHORT (LLM decision)
-        assert result.machine_block["direction"] == "SHORT"
+        assert req.machine_block.direction == "SHORT"
 
-    def test_missing_screener_direction_leaves_setup_signal_none(self):
-        """Legacy pending rows without screener_direction still reconstruct
-        (setup_signal=None) — executor falls back to non-counter-trend."""
+    def test_missing_screener_direction_is_none_silently(self, caplog):
+        """None screener_direction → None, NO warning (old code only warned
+        inside `if screener_dir:` — falsy is silent). Executor then sees
+        `req.screener_direction or ""` == "" → no counter-trend."""
         pending = _make_pending(coin="BTC", direction="LONG")
         pending["screener_direction"] = None
 
-        result = _reconstruct_scan_result(pending, trigger_close=100.0)
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
 
-        assert result.setup_signal is None
+        assert req.screener_direction is None
+        assert "screener_direction" not in caplog.text
+
+    def test_empty_screener_direction_is_none_silently(self, caplog):
+        """Empty-string screener_direction is falsy → None, NO warning
+        (byte-identical to the old `if screener_dir:` guard)."""
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = ""
+
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
+
+        assert req.screener_direction is None
+        assert "screener_direction" not in caplog.text
+
+    def test_invalid_truthy_screener_direction_warns_and_nulls(self, caplog):
+        """Truthy-unknown screener_direction → None AND the same
+        `log.warning` the old _empty_setup_signal guard emitted. Without the
+        null-coercion, "BAD" would survive into req.screener_direction and
+        "BAD" != mb.direction → false counter-trend (0.5x risk)."""
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = "BAD"
+
+        with caplog.at_level(logging.WARNING):
+            req = _build_execution_request(pending, trigger_close=100.0)
+
+        assert req.screener_direction is None
+        assert "Unknown screener_direction BAD for BTC" in caplog.text
+
+    def test_invalid_stored_block_fails_safe(self, caplog):
+        """T-016 C4 reconstruction-of-invalid: stored pendings are
+        save-validated so this is unreachable in production, but a
+        corrupted/legacy row whose machine_block fails from_raw must fail
+        SAFE — machine_block=None so execute_trade skips and the trigger
+        flow marks the pending TRIGGER_FAILED (same terminal outcome as the
+        prior path's invalid_params skip; only the skip_reason label
+        refines). No spurious trade.
+        """
+        pending = _make_pending(coin="BTC", direction="LONG")
+        pending["screener_direction"] = "LONG"
+        # Corrupt the stored block: LONG with stop ABOVE entry (validate
+        # rejects) — a state save_conditional_entry could never have
+        # persisted.
+        mb = json.loads(pending["machine_block"])
+        mb["stop_loss"] = 200.0
+        pending["machine_block"] = json.dumps(mb)
+
+        req = _build_execution_request(pending, trigger_close=100.0)
+
+        assert req.machine_block is None
+        # screener_direction resolves independently of machine_block validity
+        # (it drives counter-trend detection regardless).
+        assert req.screener_direction == "LONG"
 
 
 # ---------------------------------------------------------------------------

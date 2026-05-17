@@ -8,6 +8,7 @@ import pytest
 from scanner import storage
 from scanner.models import (
     Direction,
+    MachineBlock,
     MarketContext,
     ScanResult,
     SetupSignal,
@@ -68,6 +69,37 @@ class TestSaveAndRetrieve:
         assert row is not None
         assert row["coin"] == "BTC"
         assert row["decision"] == "CONFIRM"
+
+    def test_save_result_with_typed_machine_block(self, db_conn, sample_result):
+        """T-016 phase-review regression: save_result must persist a CONFIRM
+        carrying a typed MachineBlock. The pre-fix code did
+        result.machine_block.get("direction") which AttributeError'd after
+        the C6 shim removal — the suite stayed green only because no fixture
+        ever set a non-None machine_block here (the coverage gap that let the
+        bug escape). Asserts: no crash, scans.machine_block JSON == to_raw(),
+        llm_direction column == mb.direction.
+        """
+        import json
+
+        mb = MachineBlock.from_raw({
+            "entry_low": 99.0, "entry_high": 101.0, "stop_loss": 95.0,
+            "tp1": 110.0, "tp1_exit_pct": 50, "direction": "LONG",
+            "confidence": 7, "leverage": 5, "tp2": 115.0, "tp2_exit_pct": 50,
+            "setup_type": "C", "confluence_score": 9,
+            "confirming_event": "1H close above flipped resistance level",
+        })
+        assert mb is not None
+        sample_result.machine_block = mb
+
+        save_result(sample_result, db_conn)
+
+        row = db_conn.execute(
+            "SELECT machine_block, llm_direction FROM scans WHERE scan_id = ?",
+            ("test1234",),
+        ).fetchone()
+        assert row is not None
+        assert row["llm_direction"] == "LONG"
+        assert json.loads(row["machine_block"]) == mb.to_raw()
 
     def test_collision_raises_integrity_error(self, db_conn, sample_result):
         """scan_id reuse now raises — caller is expected to use unique IDs.
@@ -238,7 +270,6 @@ class TestMigrationCache:
         conn3.close()
         assert "scans" in tables
         assert "signals" in tables
-        assert "candles" in tables
 
     def test_get_connection_different_paths_both_migrate(self, tmp_path):
         """Two different db paths each get their own migrations."""

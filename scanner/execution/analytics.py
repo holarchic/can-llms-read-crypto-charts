@@ -46,23 +46,40 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
     """Join orders table to build trade-level records for closed positions.
 
     A closed trade = entry FILLED + at least one exit (SL/TP) FILLED.
+
+    The `days` filter is applied to *close time* — the MAX filled_at across
+    a scan's FILLED exits — not entry creation time. COALESCE(filled_at,
+    created_at) keeps manual-close rows (NULL filled_at) inside the window
+    using their insertion timestamp.
     """
     clauses = [
-        "order_type = 'entry'",
-        "status = 'FILLED'",
+        "e.order_type = 'entry'",
+        "e.status = 'FILLED'",
     ]
     params = []
 
     if execution_mode:
-        clauses.append("execution_mode = ?")
+        clauses.append("e.execution_mode = ?")
         params.append(execution_mode)
     if days:
-        clauses.append(f"datetime(created_at) > datetime('now', '-{days} days')")
+        clauses.append(f"""EXISTS (
+            SELECT 1 FROM (
+                SELECT scan_id, execution_mode, exchange,
+                       MAX(datetime(COALESCE(filled_at, created_at))) AS final_exit_at
+                FROM orders
+                WHERE order_type IN {EXIT_ORDER_TYPES_SQL} AND status = 'FILLED'
+                GROUP BY scan_id, execution_mode, exchange
+            ) x
+            WHERE x.scan_id = e.scan_id
+              AND x.execution_mode = e.execution_mode
+              AND x.exchange = e.exchange
+              AND datetime(x.final_exit_at) > datetime('now', '-{days} days')
+        )""")
 
     where = " AND ".join(clauses)
 
     entries = conn.execute(
-        f"SELECT * FROM orders WHERE {where} ORDER BY created_at",
+        f"SELECT e.* FROM orders e WHERE {where} ORDER BY e.created_at",
         params,
     ).fetchall()
 
@@ -75,7 +92,7 @@ def get_closed_trades(conn, execution_mode: str | None = None, days: int | None 
             WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
             AND status = 'FILLED'
             AND execution_mode = ? AND exchange = ?
-            ORDER BY filled_at""",
+            ORDER BY datetime(COALESCE(filled_at, created_at))""",
             (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
         ).fetchall()
 
@@ -297,80 +314,14 @@ def _compute_quality_warnings(trades: list[TradeRecord]) -> list[str]:
     return warnings
 
 
-def compare_sim_vs_live(trades: list[TradeRecord], conn) -> list[dict]:
-    """For each closed trade, compare live R to theoretical (machine_block) R."""
-    comparisons = []
-
-    for trade in trades:
-        scan_row = conn.execute(
-            "SELECT machine_block FROM scans WHERE scan_id = ?",
-            (trade.scan_id,),
-        ).fetchone()
-
-        if not scan_row or not scan_row["machine_block"]:
-            continue
-
-        try:
-            mb = _json.loads(scan_row["machine_block"])
-        except (ValueError, TypeError):
-            continue
-
-        entry_mid = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
-        stop_loss = mb.get("stop_loss", 0)
-        tp_prices = {"TP1": mb.get("tp1", 0), "TP2": mb.get("tp2", 0)}
-
-        if not entry_mid or not stop_loss:
-            continue
-
-        stop_dist = abs(entry_mid - stop_loss)
-        if stop_dist == 0:
-            continue
-
-        # Fetch all filled exits for quantity-weighted sim_r
-        exits = conn.execute(
-            f"""SELECT order_type, quantity FROM orders
-            WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
-            AND status = 'FILLED'
-            AND execution_mode = ? AND exchange = ?""",
-            (trade.scan_id, trade.execution_mode, trade.exchange),
-        ).fetchall()
-
-        if not exits:
-            continue
-
-        total_exit_qty = sum(e["quantity"] for e in exits)
-        if total_exit_qty <= 0:
-            continue
-
-        weighted_sim_r = 0
-        for ex in exits:
-            qty = ex["quantity"]
-            if ex["order_type"] == "stop_loss":
-                leg_r = -1.0
-            else:
-                tp_key = "TP1" if ex["order_type"] == "tp1" else "TP2"
-                tp_price = tp_prices.get(tp_key, 0)
-                if tp_price:
-                    if trade.direction == "LONG":
-                        leg_r = (tp_price - entry_mid) / stop_dist
-                    else:
-                        leg_r = (entry_mid - tp_price) / stop_dist
-                else:
-                    leg_r = 0
-            weighted_sim_r += leg_r * qty
-
-        sim_r = weighted_sim_r / total_exit_qty
-
-        comparisons.append({
-            "scan_id": trade.scan_id,
-            "coin": trade.coin,
-            "sim_r": round(sim_r, 4),
-            "live_r": round(trade.realized_r, 4),
-            "delta_r": round(trade.realized_r - sim_r, 4),
-            "slippage_r": round(trade.slippage_r, 4),
-        })
-
-    return comparisons
+def llm_cost_summary(conn, days: int) -> float:
+    """Sum scans.cost_usd over the last N days (by scan created_at)."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM scans "
+        "WHERE datetime(created_at) > datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()
+    return float(row["total"])
 
 
 def rolling_expectancy(trades: list[TradeRecord], window: int = 20) -> list[tuple[int, float]]:

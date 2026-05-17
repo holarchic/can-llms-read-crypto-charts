@@ -55,10 +55,6 @@ class ScannerConfig:
 
     # Exchange
     exchange: str = "hyperliquid"
-    # HL-only by default: bybit (CloudFront 403) and binance (451 restricted
-    # location) are permanently geo-blocked from GCE us-central1-a. Override
-    # on hosts that can reach them. See b73b126 regression + f8178ff follow-up.
-    candle_exchanges: list = field(default_factory=lambda: ["hyperliquid"])
     min_volume_usd: float = 2_000_000
     max_pairs: int = 80
 
@@ -70,9 +66,6 @@ class ScannerConfig:
         "1h": 120,
         "15m": 200,
     })
-
-    # Timeframes to collect across all candle_exchanges (data pipeline)
-    collection_timeframes: list = field(default_factory=lambda: ["15m", "1h", "4h", "1d"])
 
     # Screener params
     swing_lookback: int = 5
@@ -99,15 +92,9 @@ class ScannerConfig:
     api_sleep_ms: int = 100
 
     def __post_init__(self):
-        """Validate exchange identifiers against EXCHANGE_META."""
+        """Validate exchange identifier against EXCHANGE_META."""
         if self.exchange not in EXCHANGE_META:
             raise ValueError(
                 f"Unknown exchange: '{self.exchange}'. "
                 f"Supported: {', '.join(EXCHANGE_META)}"
             )
-        for ex in self.candle_exchanges:
-            if ex not in EXCHANGE_META:
-                raise ValueError(
-                    f"Unknown candle exchange: '{ex}'. "
-                    f"Supported: {', '.join(EXCHANGE_META)}"
-                )
