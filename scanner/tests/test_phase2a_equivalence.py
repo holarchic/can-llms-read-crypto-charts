@@ -89,6 +89,20 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
     if execution_mode:
         clauses.append("e.execution_mode = ?")
         params.append(execution_mode)
+    if days:  # verbatim pre-2a close-window branch (fcb3620)
+        clauses.append(f"""EXISTS (
+            SELECT 1 FROM (
+                SELECT scan_id, execution_mode, exchange,
+                       MAX(datetime(COALESCE(filled_at, created_at))) AS final_exit_at
+                FROM orders
+                WHERE order_type IN {EXIT_ORDER_TYPES_SQL} AND status = 'FILLED'
+                GROUP BY scan_id, execution_mode, exchange
+            ) x
+            WHERE x.scan_id = e.scan_id
+              AND x.execution_mode = e.execution_mode
+              AND x.exchange = e.exchange
+              AND datetime(x.final_exit_at) > datetime('now', '-{days} days')
+        )""")
     where = " AND ".join(clauses)
     entries = conn.execute(
         f"SELECT e.* FROM orders e WHERE {where} ORDER BY e.created_at", params,
@@ -175,12 +189,27 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
     return trades
 
 
+def _frozen_compute_quality_warnings(trades) -> list:  # verbatim pre-2a (list)
+    warnings = ["All metrics estimated from DB — not reconciled with exchange"]
+    if trades:
+        no_funding = sum(1 for t in trades if t.funding_paid == 0)
+        if 0 < no_funding < len(trades):
+            warnings.append(f"{no_funding}/{len(trades)} trades missing funding data")
+        elif no_funding == len(trades):
+            warnings.append("Funding costs not captured — PnL overstated")
+        approx_fills = sum(1 for t in trades if t.entry_fill == 0 or t.exit_fill == 0)
+        if approx_fills:
+            warnings.append(f"{approx_fills} trades with missing fill prices — using trigger prices")
+    return warnings
+
+
 def _frozen_compute_live_metrics(trades) -> dict:
     if not trades:
         return {"count": 0, "win_rate": 0, "expectancy_r": 0, "profit_factor": 0,
                 "total_pnl": 0, "max_drawdown_pct": 0, "avg_holding_hours": 0,
                 "avg_slippage_r": 0, "total_funding_r": 0, "fill_rate": 0,
-                "data_source": "db_only"}
+                "data_source": "db_only",
+                "quality_warnings": _frozen_compute_quality_warnings([])}
     wins = [t for t in trades if t.realized_r > 0]
     losses = [t for t in trades if t.realized_r <= 0]
     win_rate = len(wins) / len(trades)
@@ -213,7 +242,8 @@ def _frozen_compute_live_metrics(trades) -> dict:
             "total_pnl": round(total_pnl, 2), "max_drawdown_pct": round(max_dd_pct, 2),
             "avg_holding_hours": round(avg_holding, 1), "avg_slippage_r": round(avg_slippage, 4),
             "total_funding_r": round(total_funding_r, 4), "fill_rate": 0,
-            "data_source": "db_only"}
+            "data_source": "db_only",
+            "quality_warnings": _frozen_compute_quality_warnings(trades)}
 
 
 # ---------------------------------------------------------------------------
@@ -289,12 +319,37 @@ def test_faithful_relocation_trade_records():
 
 
 def test_faithful_relocation_metrics():
-    """new MetricsWindow fields == FROZEN-old dict over the full prod corpus."""
+    """new MetricsWindow == FROZEN-old dict over the full prod corpus — EVERY
+    field incl. quality_warnings (old list ↔ new tuple is the only intended
+    representational delta; contents must match)."""
     conn = _load_prod_corpus()
     old = _frozen_compute_live_metrics(_frozen_get_closed_trades(conn))
     new = compute_live_metrics(get_closed_trades(conn))
+    new_fields = {f.name for f in dataclasses.fields(new)}
+    assert set(old.keys()) == new_fields, (set(old.keys()) ^ new_fields)
     for k, v in old.items():
-        assert getattr(new, k) == v, f"{k}: new={getattr(new, k)} old={v}"
+        nv = getattr(new, k)
+        if k == "quality_warnings":
+            assert nv == tuple(v), f"quality_warnings: new={nv} old={v}"
+        else:
+            assert nv == v, f"{k}: new={nv} old={v}"
+
+
+def test_faithful_relocation_days_window():
+    """The pre-2a `if days:` close-window SQL branch was relocated verbatim
+    too — exercise it in BOTH frozen-old and new and assert identical, at
+    days=3650 (corpus age < 10y → all rows) and days=1 (corpus is old →
+    none). Deterministic regardless of wall clock; covers the branch the
+    no-arg oracle never reaches."""
+    conn = _load_prod_corpus()
+    for days in (3650, 1):
+        old = {t.scan_id: t for t in _frozen_get_closed_trades(conn, days=days)}
+        new = {t.scan_id: t for t in get_closed_trades(conn, days=days)}
+        assert old.keys() == new.keys(), f"days={days}"
+        for sid in old:
+            assert dataclasses.asdict(new[sid]) == dataclasses.asdict(old[sid]), (days, sid)
+    # sanity: the two windows are not both empty (3650 must include rows)
+    assert len(get_closed_trades(conn, days=3650)) > 0
 
 
 # ---------------------------------------------------------------------------
