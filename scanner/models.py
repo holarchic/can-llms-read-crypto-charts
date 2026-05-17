@@ -360,3 +360,46 @@ class ExecutionRequest:
     atr: float
     max_leverage: int | None
     staleness_ref: datetime
+
+
+@dataclass(frozen=True)
+class TradeRecord:
+    """One closed trade, built by the storage-owned read model (T-016 Phase 2a,
+    SPEC #22). Frozen: constructed once in `execution/storage.get_closed_trades`,
+    read-only downstream (compute/report)."""
+
+    scan_id: str
+    coin: str
+    direction: str
+    entry_fill: float
+    exit_fill: float
+    exit_type: str  # SL, TP1, TP2, TIMEOUT, EMERGENCY, DRIFT
+    realized_pnl: float
+    realized_r: float
+    risk_amount: float
+    holding_hours: float
+    funding_paid: float
+    slippage_r: float
+    execution_mode: str
+    exchange: str = "hyperliquid"
+
+
+@dataclass(frozen=True)
+class MetricsWindow:
+    """Aggregate performance over a closed-trade window (T-016 Phase 2a, SPEC
+    #22). Replaces the untyped metrics dict crossing the analytics→report seam.
+    `fill_rate` is a placeholder (always 0.0; CONFIRM-context wiring is out of
+    Phase-2a scope). `profit_factor` may be `float('inf')`."""
+
+    count: int
+    win_rate: float
+    expectancy_r: float
+    profit_factor: float
+    total_pnl: float
+    max_drawdown_pct: float
+    avg_holding_hours: float
+    avg_slippage_r: float
+    total_funding_r: float
+    fill_rate: float
+    data_source: str
+    quality_warnings: tuple[str, ...]

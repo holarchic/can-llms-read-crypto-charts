@@ -2,8 +2,9 @@
 
 import json as _json
 import logging
-from dataclasses import dataclass
 from datetime import datetime
+
+from scanner.models import TradeRecord
 
 from .storage import EXIT_ORDER_TYPES_SQL
 
@@ -22,24 +23,6 @@ def _exit_price(exit_order: dict) -> float | None:
         if val is not None:
             return float(val)
     return None
-
-
-@dataclass
-class TradeRecord:
-    scan_id: str
-    coin: str
-    direction: str
-    entry_fill: float
-    exit_fill: float
-    exit_type: str  # SL, TP1, TP2
-    realized_pnl: float
-    realized_r: float
-    risk_amount: float
-    holding_hours: float
-    funding_paid: float
-    slippage_r: float
-    execution_mode: str
-    exchange: str = "hyperliquid"
 
 
 def get_closed_trades(conn, execution_mode: str | None = None, days: int | None = None) -> list[TradeRecord]:

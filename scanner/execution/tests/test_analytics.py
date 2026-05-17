@@ -6,13 +6,13 @@ import sqlite3
 import pytest
 
 from scanner.execution.analytics import (
-    TradeRecord,
     compute_live_metrics,
     get_closed_trades,
     llm_cost_summary,
     rolling_expectancy,
 )
 from scanner.execution.storage import ensure_orders_table, new_order_id, save_order
+from scanner.models import TradeRecord
 
 
 @pytest.fixture
