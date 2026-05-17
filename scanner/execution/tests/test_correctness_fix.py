@@ -12,15 +12,22 @@ zero today — the oracle is the fixture, not prod divergence; LESSONS
   counted as break-even losses.
 """
 
+import importlib.util as _ilu
 import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from scanner.execution import drift as D
 from scanner.execution import monitor as M
+from scanner.execution.analytics import compute_live_metrics
 from scanner.execution.config import ExecutionConfig
-from scanner.execution.storage import ensure_orders_table, original_stop_price
+from scanner.execution.storage import (
+    ensure_orders_table,
+    get_closed_trades,
+    original_stop_price,
+)
 
 # ---------------------------------------------------------------------------
 # Fix 3 — market_close_position: confirmed-fill gating
@@ -64,6 +71,12 @@ def _conn():
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     ensure_orders_table(c)
+    # get_closed_trades → _calculate_slippage_r reads scans.machine_block;
+    # an empty table is fine (no row → slippage_r 0).
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS scans (scan_id TEXT PRIMARY KEY, "
+        "machine_block TEXT, cost_usd REAL, created_at TEXT)"
+    )
     return c
 
 
@@ -323,3 +336,103 @@ def test_drift_close_alert_r_anchored_on_original_sl():
     frozen_old_r = (102.0 - 105.0) / abs(105.0 - 95.0)
     assert frozen_old_r == pytest.approx(-0.3)
     assert captured["r"] != pytest.approx(frozen_old_r)  # anti-vacuity
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — no-usable-risk trades excluded from R-normalized aggregates
+# ---------------------------------------------------------------------------
+
+def _ins(conn, scan_id, otype, status, *, fill=None, trig=None, qty=1.0,
+         created="2026-01-01T00:00:00+00:00", filled="2026-01-01T01:00:00+00:00"):
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, fill_price, trigger_price, entry_price, quantity, exchange,
+        execution_mode, created_at, filled_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (f"{scan_id}_{otype}_{created}", scan_id, "ABC", "LONG", otype, status,
+         fill, trig, fill, qty, "hyperliquid", "testnet", created, filled),
+    )
+
+
+def _fix2_corpus():
+    """sA: no stop_loss row, +pnl. sB: stop_loss row w/ NULL trigger, -pnl.
+    sC: real SL (risked), +pnl. (a)/(b) both → original_stop_price is None."""
+    conn = _conn()
+    # sA — no SL: entry 100 → tp1 110, LONG → +10
+    _ins(conn, "sA", "entry", "FILLED", fill=100.0, qty=1.0)
+    _ins(conn, "sA", "tp1", "FILLED", fill=110.0, qty=1.0)
+    # sB — SL row present but trigger_price NULL: entry 100 → drift_close 95 → -5
+    _ins(conn, "sB", "entry", "FILLED", fill=100.0, qty=1.0)
+    _ins(conn, "sB", "stop_loss", "CANCELLED", trig=None, qty=1.0)
+    _ins(conn, "sB", "drift_close", "FILLED", fill=95.0, qty=1.0)
+    # sC — real original SL 90: entry 100 → tp1 120 → +20, risk |100-90|=10 → R 2
+    _ins(conn, "sC", "entry", "FILLED", fill=100.0, qty=1.0)
+    _ins(conn, "sC", "stop_loss", "CANCELLED", trig=90.0, qty=1.0)
+    _ins(conn, "sC", "tp1", "FILLED", fill=120.0, qty=1.0)
+    conn.commit()
+    return conn
+
+
+def test_fix2_no_sl_trades_get_zero_risk():
+    trades = {t.scan_id: t for t in get_closed_trades(_fix2_corpus())}
+    assert trades["sA"].risk_amount == 0 and trades["sA"].realized_r == 0
+    assert trades["sB"].risk_amount == 0 and trades["sB"].realized_r == 0
+    assert trades["sC"].risk_amount == 10.0 and trades["sC"].realized_r == 2.0
+
+
+def _frozen_old_metrics(trades):
+    """Pre-fix core: W/L + expectancy + PF over ALL trades (no risked filter)."""
+    wins = [t for t in trades if t.realized_r > 0]
+    losses = [t for t in trades if t.realized_r <= 0]
+    wr = len(wins) / len(trades)
+    exp = sum(t.realized_r for t in trades) / len(trades)
+    gp = sum(t.realized_pnl for t in wins)
+    gl = abs(sum(t.realized_pnl for t in losses))
+    pf = gp / gl if gl > 0 else float("inf") if gp > 0 else 0
+    return wr, exp, pf
+
+
+def test_fix2_metrics_exclude_no_risk_and_diverge_from_frozen_old():
+    trades = list(get_closed_trades(_fix2_corpus()))
+    m = compute_live_metrics(trades)
+
+    # NEW: only sC (risked) drives R-metrics; sA/sB stay in count/pnl.
+    assert m.count == 3
+    assert m.total_pnl == pytest.approx(25.0)          # 10 - 5 + 20, all 3
+    assert m.win_rate == pytest.approx(1.0)            # 1/1 risked, a win
+    assert m.expectancy_r == pytest.approx(2.0)        # sC only
+    assert m.profit_factor == float("inf")             # no risked losers
+    assert any("2 trades with no usable risk anchor" in w
+               for w in m.quality_warnings)
+
+    # Frozen-old would fold sA/sB in as break-even losses → divergence.
+    old_wr, old_exp, old_pf = _frozen_old_metrics(trades)
+    assert old_wr == pytest.approx(1 / 3)              # bug: diluted
+    assert old_exp == pytest.approx(2 / 3)             # bug: diluted
+    assert old_pf == pytest.approx(4.0)                # bug: +pnl no-SL in gross_loss
+    assert m.win_rate != pytest.approx(old_wr)         # anti-vacuity
+    assert m.expectancy_r != pytest.approx(old_exp)
+    assert m.profit_factor != old_pf
+
+
+def _load_script():
+    p = Path(__file__).resolve().parents[3] / "scripts" / "execution-log-data.py"
+    spec = _ilu.spec_from_file_location("_elog", p)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_fix2_script_summary_excludes_no_risk_and_guards_empty():
+    elog = _load_script()
+    trades = list(get_closed_trades(_fix2_corpus()))
+    m = compute_live_metrics(trades)
+    out = elog.format_summary([], [], trades, [], m, "2026-01-01")
+    assert "1W / 0L — 100% over 1 risked" in out
+    assert "| Closed trades | 3 (" in out          # total closed shown
+
+    # all-no-risk window → no ZeroDivisionError, explicit N/A
+    no_risk_only = [t for t in trades if t.risk_amount == 0]
+    out2 = elog.format_summary([], [], no_risk_only, [],
+                               compute_live_metrics(no_risk_only), "2026-01-01")
+    assert "0W / 0L — N/A; no usable risk anchor" in out2

@@ -322,21 +322,48 @@ def test_faithful_relocation_trade_records():
         assert dataclasses.asdict(new[sid]) == dataclasses.asdict(old[sid]), sid
 
 
-def test_faithful_relocation_metrics():
-    """new MetricsWindow == FROZEN-old dict over the full prod corpus — EVERY
-    field incl. quality_warnings (old list ↔ new tuple is the only intended
-    representational delta; contents must match)."""
+def test_metrics_relocation_faithful_except_documented_24_exclusion():
+    """T-016 correctness-fix (SPEC #24, KL#2 v) deliberately supersedes Phase
+    2a's "metrics byte-identical" contract: zero-risk trades (risk_amount==0 —
+    no/NULL SL or degenerate entry==SL) are now EXCLUDED from R-normalized
+    metrics instead of being silently counted as break-even losses. On the
+    prod corpus this is NOT a no-op: 5/221 trades have entry_fill == original
+    SL (zero risk distance, R undefined; ~$0 scratches), shifting win_rate
+    0.3303→0.338 and expectancy 0.0551→0.0564.
+
+    This test now pins that the relocated `compute_live_metrics` changed by
+    EXACTLY the documented #24 exclusion and nothing else: NEW == frozen-old
+    logic with R-fields over `risked` and non-R fields over all trades. The
+    pure read-model faithful-relocation guarantee still lives, unweakened, in
+    `test_faithful_relocation_trade_records` (TradeRecords byte-identical)."""
     conn = _load_prod_corpus()
-    old = _frozen_compute_live_metrics(_frozen_get_closed_trades(conn))
+    ft = _frozen_get_closed_trades(conn)
+    risked = [t for t in ft if t.risk_amount > 0]
+    n_zero = sum(1 for t in ft if t.risk_amount == 0)
+    assert n_zero == 5, f"prod corpus zero-risk count drifted: {n_zero}"
+
+    # R-normalized fields: frozen-old logic fed only `risked` reproduces NEW.
+    exp_r = _frozen_compute_live_metrics(risked)
+    # Non-R fields: frozen-old over ALL trades (unchanged by #24).
+    exp_all = _frozen_compute_live_metrics(ft)
     new = compute_live_metrics(get_closed_trades(conn))
-    new_fields = {f.name for f in dataclasses.fields(new)}
-    assert set(old.keys()) == new_fields, (set(old.keys()) ^ new_fields)
-    for k, v in old.items():
-        nv = getattr(new, k)
-        if k == "quality_warnings":
-            assert nv == tuple(v), f"quality_warnings: new={nv} old={v}"
-        else:
-            assert nv == v, f"{k}: new={nv} old={v}"
+
+    for k in ("win_rate", "expectancy_r", "profit_factor",
+              "avg_slippage_r", "total_funding_r"):
+        assert getattr(new, k) == exp_r[k], f"R-field {k}: new={getattr(new,k)} exp={exp_r[k]}"
+    for k in ("count", "total_pnl", "max_drawdown_pct", "avg_holding_hours",
+              "fill_rate", "data_source"):
+        assert getattr(new, k) == exp_all[k], f"non-R {k}: new={getattr(new,k)} exp={exp_all[k]}"
+
+    # quality_warnings: frozen content + the #24 no-usable-risk line.
+    exp_w = tuple(_frozen_compute_quality_warnings(ft)) + (
+        f"{n_zero} trades with no usable risk anchor — excluded from R metrics",
+    )
+    assert new.quality_warnings == exp_w, f"warnings: new={new.quality_warnings} exp={exp_w}"
+
+    # Anti-vacuity: the documented exclusion actually moves prod metrics.
+    assert new.win_rate != exp_all["win_rate"]
+    assert new.expectancy_r != exp_all["expectancy_r"]
 
 
 def test_faithful_relocation_days_window():

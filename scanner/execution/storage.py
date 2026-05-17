@@ -646,9 +646,16 @@ def get_closed_trades(
         # post-drift/trail SL, mis-stating R.
         stop_price = original_stop_price(
             entry["scan_id"], conn, entry["execution_mode"], entry["exchange"],
-        ) or 0
-        stop_distance = abs(entry_fill - stop_price)
-        risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
+        )
+        if stop_price is None:
+            # No usable original SL → risk is UNKNOWN, not full-notional. A
+            # `or 0` here synthesised `risk = entry_fill·qty` → near-zero R.
+            # risk_amount=0 makes realized_r/slippage_r clamp to 0 and the
+            # trade fall out of R-normalized aggregates (SPEC #24, KL#2 v).
+            risk_amount = 0
+        else:
+            stop_distance = abs(entry_fill - stop_price)
+            risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
 
         # Realized R (scaled by risk_mult for counter-trend position-weighted R)
         realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0

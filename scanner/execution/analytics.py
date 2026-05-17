@@ -16,18 +16,25 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
             quality_warnings=_compute_quality_warnings([]),
         )
 
-    wins = [t for t in trades if t.realized_r > 0]
-    losses = [t for t in trades if t.realized_r <= 0]
+    # No-usable-risk trades (risk_amount == 0: missing or degenerate original
+    # SL — SPEC #24, KL#2 v) are EXCLUDED from R-normalized metrics. Counting
+    # them via realized_r==0 would silently classify them as break-even losses
+    # — diluting expectancy, depressing win-rate, and (for a profitable no-SL
+    # trade) contaminating profit factor. They stay in count/total_pnl/
+    # drawdown/holding (non-R).
+    risked = [t for t in trades if t.risk_amount > 0]
+    wins = [t for t in risked if t.realized_r > 0]
+    losses = [t for t in risked if t.realized_r <= 0]
 
-    win_rate = len(wins) / len(trades) if trades else 0
-    expectancy_r = sum(t.realized_r for t in trades) / len(trades)
+    win_rate = len(wins) / len(risked) if risked else 0
+    expectancy_r = sum(t.realized_r for t in risked) / len(risked) if risked else 0
     total_pnl = sum(t.realized_pnl for t in trades)
 
     gross_profit = sum(t.realized_pnl for t in wins)
     gross_loss = abs(sum(t.realized_pnl for t in losses))
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
 
-    total_risk = sum(t.risk_amount for t in trades)
+    total_risk = sum(t.risk_amount for t in risked)
 
     # Max drawdown (simple: track running PnL, find max peak-to-trough)
     running = 0
@@ -49,8 +56,9 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
         max_dd_pct = 0
 
     avg_holding = sum(t.holding_hours for t in trades) / len(trades)
-    avg_slippage = sum(t.slippage_r for t in trades) / len(trades)
-    total_funding = sum(t.funding_paid for t in trades)
+    # avg_slippage_r / total_funding_r are R-normalized → over `risked`.
+    avg_slippage = sum(t.slippage_r for t in risked) / len(risked) if risked else 0
+    total_funding = sum(t.funding_paid for t in risked)
     total_funding_r = total_funding / total_risk if total_risk > 0 else 0
 
     return MetricsWindow(
@@ -81,6 +89,9 @@ def _compute_quality_warnings(trades: list[TradeRecord]) -> tuple[str, ...]:
         approx_fills = sum(1 for t in trades if t.entry_fill == 0 or t.exit_fill == 0)
         if approx_fills:
             warnings.append(f"{approx_fills} trades with missing fill prices — using trigger prices")
+        no_risk = sum(1 for t in trades if t.risk_amount == 0)
+        if no_risk:
+            warnings.append(f"{no_risk} trades with no usable risk anchor — excluded from R metrics")
     return tuple(warnings)
 
 
