@@ -5,13 +5,14 @@ import sqlite3
 
 import pytest
 
-from scanner.execution.analytics import (
-    compute_live_metrics,
+from scanner.execution.analytics import compute_live_metrics, rolling_expectancy
+from scanner.execution.storage import (
+    ensure_orders_table,
     get_closed_trades,
     llm_cost_summary,
-    rolling_expectancy,
+    new_order_id,
+    save_order,
 )
-from scanner.execution.storage import ensure_orders_table, new_order_id, save_order
 from scanner.models import TradeRecord
 
 

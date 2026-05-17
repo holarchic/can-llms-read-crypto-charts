@@ -265,8 +265,9 @@ def _cmd_report(config, mode, discord):
 
     from scanner.storage import get_connection
 
-    from .analytics import compute_live_metrics, get_closed_trades, llm_cost_summary
+    from .analytics import compute_live_metrics
     from .report import build_execution_embeds, format_execution_report
+    from .storage import get_closed_trades, llm_cost_summary
 
     effective_mode = mode or config.mode
 

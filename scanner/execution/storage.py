@@ -1,9 +1,12 @@
 """Orders table — CRUD operations for trade execution tracking."""
 
+import json as _json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from uuid import NAMESPACE_OID, uuid4, uuid5
+
+from scanner.models import TradeRecord
 
 log = logging.getLogger(__name__)
 
@@ -458,6 +461,252 @@ def has_unprotected_positions(
         (exchange, execution_mode),
     ).fetchone()
     return row["cnt"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Closed-trade read model — storage owns the orders/scans read surface
+# (T-016 Phase 2a, SPEC #22). analytics.py is pure compute over these records.
+# ---------------------------------------------------------------------------
+
+def _exit_price(exit_order: dict) -> float | None:
+    """Return an exit fill price or None when both fill_price and trigger_price
+    are missing. Explicit None check — 0 is never a valid crypto perp price,
+    and `dict.get(k) or fallback` would mask a NULL as 0 and produce phantom PnL
+    (see 2026-04-17 DOT incident: manual-close row had no price, silent 0
+    fallback computed a fake +$227.50 win on a SHORT).
+    """
+    for field in ("fill_price", "trigger_price"):
+        val = exit_order.get(field)
+        if val is not None:
+            return float(val)
+    return None
+
+
+def original_stop_price(
+    scan_id: str, conn: sqlite3.Connection,
+    execution_mode: str, exchange: str,
+) -> float | None:
+    """First-placed stop_loss trigger price for a scan — the risk anchor for R.
+
+    Single owner of "the original SL for a scan" (T-016 Phase 2a, SPEC #22 /
+    KL#2 instance ledger). `ORDER BY created_at ASC` makes this the *original*
+    SL: drift `sl_move` and post-TP1 trail insert NEW stop_loss rows (decision
+    #13), so a bare `LIMIT 1` (SQLite's undefined row order) can return a
+    post-drift/trail SL and mis-state `realized_r`. Returns None when no
+    stop_loss row exists (e.g. SL placement failed) — caller clamps to 0.
+    """
+    row = conn.execute(
+        """SELECT trigger_price FROM orders
+        WHERE scan_id = ? AND order_type = 'stop_loss'
+        AND execution_mode = ? AND exchange = ?
+        ORDER BY created_at ASC LIMIT 1""",
+        (scan_id, execution_mode, exchange),
+    ).fetchone()
+    return float(row["trigger_price"]) if row and row["trigger_price"] is not None else None
+
+
+def _calculate_slippage_r(entry, exit_order, entry_fill, exit_fill, risk_amount, conn) -> float:
+    """Calculate slippage in R terms by comparing fills to machine_block expected prices."""
+    if risk_amount <= 0:
+        return 0
+
+    # Get machine_block from scans table
+    scan_row = conn.execute(
+        "SELECT machine_block FROM scans WHERE scan_id = ?",
+        (entry["scan_id"],),
+    ).fetchone()
+
+    if not scan_row or not scan_row["machine_block"]:
+        return 0
+
+    try:
+        mb = _json.loads(scan_row["machine_block"])
+    except (ValueError, TypeError):
+        return 0
+
+    expected_entry = (mb.get("entry_low", 0) + mb.get("entry_high", 0)) / 2
+    if expected_entry <= 0:
+        return 0
+
+    entry_slip = abs(entry_fill - expected_entry) * (entry.get("quantity", 0) or 0)
+    return entry_slip / risk_amount if risk_amount > 0 else 0
+
+
+def get_closed_trades(
+    conn, execution_mode: str | None = None, days: int | None = None,
+) -> list[TradeRecord]:
+    """Join orders table to build trade-level records for closed positions.
+
+    A closed trade = entry FILLED + at least one exit (SL/TP) FILLED.
+
+    The `days` filter is applied to *close time* — the MAX filled_at across
+    a scan's FILLED exits — not entry creation time. COALESCE(filled_at,
+    created_at) keeps manual-close rows (NULL filled_at) inside the window
+    using their insertion timestamp.
+    """
+    clauses = [
+        "e.order_type = 'entry'",
+        "e.status = 'FILLED'",
+    ]
+    params = []
+
+    if execution_mode:
+        clauses.append("e.execution_mode = ?")
+        params.append(execution_mode)
+    if days:
+        clauses.append(f"""EXISTS (
+            SELECT 1 FROM (
+                SELECT scan_id, execution_mode, exchange,
+                       MAX(datetime(COALESCE(filled_at, created_at))) AS final_exit_at
+                FROM orders
+                WHERE order_type IN {EXIT_ORDER_TYPES_SQL} AND status = 'FILLED'
+                GROUP BY scan_id, execution_mode, exchange
+            ) x
+            WHERE x.scan_id = e.scan_id
+              AND x.execution_mode = e.execution_mode
+              AND x.exchange = e.exchange
+              AND datetime(x.final_exit_at) > datetime('now', '-{days} days')
+        )""")
+
+    where = " AND ".join(clauses)
+
+    entries = conn.execute(
+        f"SELECT e.* FROM orders e WHERE {where} ORDER BY e.created_at",
+        params,
+    ).fetchall()
+
+    trades = []
+    for entry in entries:
+        entry = dict(entry)
+        # Find ALL filled exits for this scan
+        exits = conn.execute(
+            f"""SELECT * FROM orders
+            WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
+            AND status = 'FILLED'
+            AND execution_mode = ? AND exchange = ?
+            ORDER BY datetime(COALESCE(filled_at, created_at))""",
+            (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
+        ).fetchall()
+
+        if not exits:
+            continue  # Still open
+
+        exits = [dict(x) for x in exits]
+        entry_fill = entry.get("fill_price") or entry.get("entry_price") or 0
+        entry_qty = entry.get("quantity", 0)
+        filled_exit_qty = sum(x.get("quantity", 0) for x in exits)
+
+        # Skip partially open positions (not fully closed yet)
+        # Use epsilon to handle IEEE 754 artifacts (e.g. 0.043+0.042 = 0.08499...99)
+        if entry_qty - filled_exit_qty > 1e-9:
+            continue
+
+        # Sum PnL across all exit legs. Skip the whole trade if any leg lacks
+        # a price — silent 0-fallback fabricates PnL (e.g. manual-close rows
+        # inserted without a price field).
+        realized_pnl = 0
+        missing_price = False
+        for exit_order in exits:
+            exit_fill = _exit_price(exit_order)
+            if exit_fill is None:
+                log.warning(
+                    "Skipping trade %s %s — %s exit has no fill_price or trigger_price",
+                    entry["coin"], entry["direction"], exit_order.get("order_type"),
+                )
+                missing_price = True
+                break
+            exit_qty = exit_order.get("quantity", 0)
+            if entry["direction"] == "LONG":
+                realized_pnl += (exit_fill - entry_fill) * exit_qty
+            else:
+                realized_pnl += (entry_fill - exit_fill) * exit_qty
+
+        if missing_price:
+            continue
+
+        # Use last exit for labels and holding hours. `continue` above
+        # guarantees every exit has a non-None price, so the assert is a
+        # type-narrowing invariant rather than a runtime guard.
+        last_exit = exits[-1]
+        last_exit_fill = _exit_price(last_exit)
+        assert last_exit_fill is not None
+
+        # Funding paid (sum across all orders for this scan)
+        funding_row = conn.execute(
+            """SELECT COALESCE(SUM(funding_paid), 0) as total FROM orders
+            WHERE scan_id = ? AND execution_mode = ? AND exchange = ?""",
+            (entry["scan_id"], entry["execution_mode"], entry["exchange"]),
+        ).fetchone()
+        funding_paid = float(funding_row["total"])
+
+        # Risk amount: uses full entry quantity (that was the original risk).
+        # The risk anchor is the ORIGINAL (first-by-created_at) SL — see
+        # original_stop_price (T-016 Phase 2a, SPEC #22 / KL#2): a bare
+        # LIMIT 1 relied on SQLite's undefined order and could pick a
+        # post-drift/trail SL, mis-stating R.
+        stop_price = original_stop_price(
+            entry["scan_id"], conn, entry["execution_mode"], entry["exchange"],
+        ) or 0
+        stop_distance = abs(entry_fill - stop_price)
+        risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
+
+        # Realized R (scaled by risk_mult for counter-trend position-weighted R)
+        realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0
+        r_mult = float(entry.get("risk_mult") or 1.0)
+        if r_mult < 1.0 - 1e-9:
+            realized_r *= r_mult
+
+        # Holding hours (entry to last exit)
+        entry_time = entry.get("filled_at") or entry.get("placed_at") or entry.get("created_at")
+        exit_time = last_exit.get("filled_at") or last_exit.get("created_at")
+        holding_hours = 0
+        if entry_time and exit_time:
+            try:
+                t1 = datetime.fromisoformat(entry_time)
+                t2 = datetime.fromisoformat(exit_time)
+                holding_hours = (t2 - t1).total_seconds() / 3600
+            except (ValueError, TypeError):
+                pass
+
+        # Slippage: compare actual fill to machine_block expected
+        slippage_r = _calculate_slippage_r(entry, last_exit, entry_fill, last_exit_fill, risk_amount, conn)
+
+        # Map order_type to exit_type label (last exit determines label)
+        exit_type_map = {
+            "stop_loss": "SL", "tp1": "TP1", "tp2": "TP2",
+            "timeout_close": "TIMEOUT", "emergency_close": "EMERGENCY",
+            "drift_close": "DRIFT",
+        }
+        exit_type = exit_type_map.get(last_exit["order_type"], last_exit["order_type"])
+
+        trades.append(TradeRecord(
+            scan_id=entry["scan_id"],
+            coin=entry["coin"],
+            direction=entry["direction"],
+            entry_fill=entry_fill,
+            exit_fill=last_exit_fill,
+            exit_type=exit_type,
+            realized_pnl=realized_pnl,
+            realized_r=realized_r,
+            risk_amount=risk_amount,
+            holding_hours=holding_hours,
+            funding_paid=funding_paid,
+            slippage_r=slippage_r,
+            execution_mode=entry.get("execution_mode", "testnet"),
+            exchange=entry.get("exchange", "hyperliquid"),
+        ))
+
+    return trades
+
+
+def llm_cost_summary(conn, days: int) -> float:
+    """Sum scans.cost_usd over the last N days (by scan created_at)."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM scans "
+        "WHERE datetime(created_at) > datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()
+    return float(row["total"])
 
 
 # ---------------------------------------------------------------------------
