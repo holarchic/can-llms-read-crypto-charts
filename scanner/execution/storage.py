@@ -3,12 +3,71 @@
 import json as _json
 import logging
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import NAMESPACE_OID, uuid4, uuid5
 
 from scanner.models import TradeRecord
 
 log = logging.getLogger(__name__)
+
+# --- C4#6: transaction-scoped application services -------------------------
+# `get_connection()` uses sqlite3's DEFAULT isolation (an implicit txn opens on
+# the first DML), so `conn.in_transaction` is true after any write and is NOT
+# an ownership signal. Track ownership by `id(conn)` in a module map: an entry
+# exists only while a `transaction()` owns the connection, during which the
+# caller strongly holds the conn object so its id cannot be reused. Standalone
+# helper calls commit exactly as before (`_maybe_commit` commits when
+# unowned); only a manager-owned cluster defers to the single boundary
+# commit/rollback. INVARIANT: never wrap an exchange REST call in a
+# transaction() — a fill cannot be rolled back, and a write region must not
+# span network I/O.
+_TX_DEPTH: dict[int, int] = {}
+
+
+def _owned(conn: sqlite3.Connection) -> bool:
+    return _TX_DEPTH.get(id(conn), 0) > 0
+
+
+def _maybe_commit(conn: sqlite3.Connection) -> None:
+    """Commit unless a `transaction()` context owns this connection's boundary."""
+    if not _owned(conn):
+        conn.commit()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """Own the commit boundary for a multi-write DB cluster: exactly one
+    commit on success, one rollback on `BaseException`. Re-entrant — a nested
+    `transaction()` is a no-op scope; the outermost owns commit/rollback so
+    the whole nested cluster is one rollback unit.
+    """
+    cid = id(conn)
+    depth = _TX_DEPTH.get(cid, 0)
+    if depth > 0:  # re-entrant: an outer transaction() owns the boundary
+        _TX_DEPTH[cid] = depth + 1
+        try:
+            yield
+        finally:
+            _TX_DEPTH[cid] -= 1
+        return
+    # Outermost owner. A foreign uncommitted implicit txn (a writer that did
+    # not go through _maybe_commit) would be flushed by our commit/rollback —
+    # fail fast rather than silently commit or discard its work.
+    if conn.in_transaction:
+        raise RuntimeError(
+            "transaction(): connection has an uncommitted foreign transaction "
+            "— a non-_maybe_commit writer left work pending"
+        )
+    _TX_DEPTH[cid] = 1
+    try:
+        yield
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        del _TX_DEPTH[cid]
 
 # Valid state transitions — reject anything else.
 # FILLED and CANCELLED are terminal. Replacements insert NEW rows instead of
@@ -190,7 +249,7 @@ def save_order(order: dict, conn: sqlite3.Connection) -> None:
             order.get("risk_mult", 1.0),
         ),
     )
-    conn.commit()
+    _maybe_commit(conn)
 
 
 def get_order(order_id: str, conn: sqlite3.Connection) -> dict | None:
@@ -283,7 +342,7 @@ def update_order_status(
 
     params.append(order_id)
     conn.execute(f"UPDATE orders SET {', '.join(updates)} WHERE order_id = ?", params)
-    conn.commit()
+    _maybe_commit(conn)
 
 
 def get_open_entry_orders(
@@ -745,7 +804,7 @@ def save_pending_entry(entry: dict, conn: sqlite3.Connection) -> None:
             entry.get("screener_direction"),
         ),
     )
-    conn.commit()
+    _maybe_commit(conn)
 
 
 def get_active_pending_entries(
@@ -770,7 +829,7 @@ def update_pending_status(
         "UPDATE pending_entries SET status = ?, resolved_at = ? WHERE pending_id = ?",
         (status, now, pending_id),
     )
-    conn.commit()
+    _maybe_commit(conn)
 
 
 def claim_pending(
@@ -788,7 +847,7 @@ def claim_pending(
         "WHERE pending_id = ? AND status = 'ACTIVE'",
         (new_status, now, pending_id),
     )
-    conn.commit()
+    _maybe_commit(conn)
     return cursor.rowcount == 1
 
 
@@ -807,7 +866,7 @@ def increment_candles_checked(
         (pending_id,),
     )
     row = cursor.fetchone()
-    conn.commit()
+    _maybe_commit(conn)
     return int(row["candles_checked"]) if row else 0
 
 
@@ -819,7 +878,7 @@ def update_last_checked_hour(
         "UPDATE pending_entries SET last_checked_hour = ? WHERE pending_id = ?",
         (hour_key, pending_id),
     )
-    conn.commit()
+    _maybe_commit(conn)
 
 
 def has_active_pending(
