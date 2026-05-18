@@ -390,26 +390,8 @@ def stage4_execute(
     return results
 
 
-def run_scan(
-    config: ScannerConfig | None = None,
-    coin: str | None = None,
-    dry_run: bool = False,
-    skip_discord: bool = False,
-    verbose: bool = True,
-    strategy_id: str = "v0",
-    exec_config=None,
-    dry_execute: bool = False,
-) -> dict:
-    """Full 3-stage scan pipeline. Returns summary dict."""
-    cfg = config or ScannerConfig()
-    start = datetime.now(timezone.utc)
-
-    exchange_label = get_exchange_meta(cfg.exchange)["label"]
-    if verbose:
-        print(f"Scanner started at {start.strftime('%Y-%m-%d %H:%M:%S UTC')} [{exchange_label}]")
-        print("=" * 60)
-
-    # Pre-filter: load testnet markets to avoid wasting candle fetches + LLM calls
+def _resolve_testnet_coins(cfg, exec_config, exchange_label, verbose):
+    """Pre-filter: load testnet markets to avoid wasting candle fetches + LLM calls."""
     testnet_coins = None
     if exec_config and exec_config.mode == "testnet":
         try:
@@ -420,6 +402,168 @@ def run_scan(
         except Exception as exc:
             if verbose:
                 print(f"Testnet pair filter failed: {exc} — proceeding unfiltered")
+    return testnet_coins
+
+
+def _report_dry_run(signals, verbose):
+    """Stage-1-only dry run: print detected signals, return the dry-run summary."""
+    if verbose:
+        print(f"\n--- DRY RUN — {len(signals)} signals detected ---")
+        for s in signals:
+            print(f"  {s.coin:>8}  {s.setup_type.value}  {s.direction.value:>5}  "
+                  f"conf={s.confidence:.2f}  level=${s.key_level:,.2f}")
+            print(f"           {s.description[:80]}")
+    return {"signals": len(signals), "dry_run": True}
+
+
+def _empty_summary():
+    """The summary returned when a scan short-circuits with no signals to analyze."""
+    return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
+
+
+def _filter_pending_conditional(signals, exec_config, verbose):
+    """Skip LLM for coins with an active pending conditional entry.
+
+    Connection lifetime is preserved verbatim from the pre-split inline block:
+    `pending_conn` is closed on the success path only — if
+    `get_active_pending_entries` raises it is left open. This is pre-existing
+    behaviour deliberately NOT hardened here (T-016 Phase 4b is a pure
+    relocation, not a resource-handling fix).
+    """
+    from .execution.storage import get_active_pending_entries
+    pending_conn = get_connection()
+    pending = get_active_pending_entries(pending_conn, exec_config.exchange, exec_config.mode)
+    pending_conn.close()
+    pending_coins = {p["coin"] for p in pending}
+    if pending_coins:
+        before = len(signals)
+        signals = [s for s in signals if s.coin not in pending_coins]
+        skipped = before - len(signals)
+        if skipped and verbose:
+            print(f"Skipped {skipped} signal(s) — pending conditional entry: "
+                  f"{', '.join(sorted(pending_coins))}")
+    if not signals:
+        if verbose:
+            print("\nNo signals remaining after pending filter.")
+    return signals
+
+
+def _dry_execute_preview(confirms, verbose):
+    """Dry-execute: preview sizing without exchange connectivity.
+
+    Uses hardcoded balance=$10K, risk=1.0% — intentional for
+    credential-less preview. Skips: price fetch, kill switch,
+    position limits, BTC vol gate, margin guard.
+    """
+    if verbose:
+        print(f"\nStage 4 (dry-execute): {len(confirms)} CONFIRMs")
+    from .execution.executor import validate_execution_params
+    from .execution.sizing import calculate_position
+    for c in confirms:
+        mb = c.machine_block
+        if mb is None:
+            if verbose:
+                print(f"  {c.coin}: SKIPPED — no machine_block")
+            continue
+        errors = validate_execution_params(mb)
+        if errors:
+            if verbose:
+                print(f"  {c.coin} {mb.direction}: SKIPPED — {'; '.join(errors)}")
+            continue
+        entry_mid = (mb.entry_low + mb.entry_high) / 2
+        pos = calculate_position(mb, 10000, 1.0)
+        if pos:
+            if verbose:
+                print(f"  {c.coin} {mb.direction}: WOULD EXECUTE — "
+                      f"{pos.quantity:.6f} units @ ${entry_mid:,.2f}, "
+                      f"SL ${mb.stop_loss:,.2f}, TP ${mb.tp1:,.2f}")
+        else:
+            if verbose:
+                print(f"  {c.coin} {mb.direction}: SKIPPED — sizing failed")
+
+
+def _build_summary(signals, results, exec_results, alerted, elapsed):
+    """Aggregate the scan-outcome summary dict.
+
+    `alerted` (stage3 return) and the raw `elapsed` float are threaded
+    explicitly — they are run_scan locals the pre-split inline block closed
+    over; `elapsed_sec` keeps the rounded form while the verbose print reads
+    the raw `elapsed` (see `_print_summary`).
+    """
+    total_cost = sum(r.cost_usd for r in results)
+    n_executed = sum(1 for er in exec_results if er.executed) if exec_results else 0
+    return {
+        "signals": len(signals),
+        "results": len(results),
+        "confirms": sum(1 for r in results if r.decision == "CONFIRM"),
+        "rejects": sum(1 for r in results if r.decision == "REJECT"),
+        "waits": sum(1 for r in results if r.decision == "WAIT"),
+        "alerted": alerted,
+        "executed": n_executed,
+        "cost_usd": round(total_cost, 4),
+        "elapsed_sec": round(elapsed, 1),
+    }
+
+
+def _print_summary(summary, elapsed):
+    """Verbose scan-complete report.
+
+    Uses the RAW `elapsed` float for the duration line — byte-identical with
+    the pre-split block, since `f"{round(x,1):.0f}"` differs from `f"{x:.0f}"`
+    at rounding boundaries.
+    """
+    print(f"\n{'=' * 60}")
+    print(f"Scan complete in {elapsed:.0f}s")
+    print(f"  Signals: {summary['signals']} | Analyzed: {summary['results']}")
+    print(f"  CONFIRM: {summary['confirms']} | REJECT: {summary['rejects']} | WAIT: {summary['waits']}")
+    print(f"  Alerted: {summary['alerted']} | Cost: ${summary['cost_usd']:.4f}")
+
+
+def _post_scan_ops_log(summary, results, exchange_label, cfg):
+    """Post the scan-complete ops log to Discord."""
+    parse_fails = sum(1 for r in results if not r.decision)
+    warn = summary["signals"] == 0 or parse_fails > 0
+    ops_fields = {
+        "Signals": str(summary["signals"]),
+        "Analyzed": str(summary["results"]),
+        "CONFIRM": str(summary["confirms"]),
+        "REJECT": str(summary["rejects"]),
+        "WAIT": str(summary["waits"]),
+        "Alerted": str(summary["alerted"]),
+        "Cost": f"${summary['cost_usd']:.2f}",
+        "Duration": f"{summary['elapsed_sec']:.0f}s",
+    }
+    if parse_fails:
+        ops_fields["Parse Fails"] = str(parse_fails)
+    send_ops_log(f"Scan Complete [{exchange_label}]", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
+
+
+def run_scan(
+    config: ScannerConfig | None = None,
+    coin: str | None = None,
+    dry_run: bool = False,
+    skip_discord: bool = False,
+    verbose: bool = True,
+    strategy_id: str = "v0",
+    exec_config=None,
+    dry_execute: bool = False,
+) -> dict:
+    """Full 3-stage scan pipeline — thin dispatcher.
+
+    prep → stage1 → guards → (pending filter) → stage2 → stage3 → stage4 →
+    summary. Each step is one call; the accreted stage/policy/presentation
+    bodies live in the `_`-helpers above (T-016 Phase 4b, SPEC #28). Returns
+    the summary dict.
+    """
+    cfg = config or ScannerConfig()
+    start = datetime.now(timezone.utc)
+
+    exchange_label = get_exchange_meta(cfg.exchange)["label"]
+    if verbose:
+        print(f"Scanner started at {start.strftime('%Y-%m-%d %H:%M:%S UTC')} [{exchange_label}]")
+        print("=" * 60)
+
+    testnet_coins = _resolve_testnet_coins(cfg, exec_config, exchange_label, verbose)
 
     # Stage 1
     signals, btc_structure, btc_context, candle_map = stage1_screen(
@@ -428,37 +572,17 @@ def run_scan(
     )
 
     if dry_run:
-        if verbose:
-            print(f"\n--- DRY RUN — {len(signals)} signals detected ---")
-            for s in signals:
-                print(f"  {s.coin:>8}  {s.setup_type.value}  {s.direction.value:>5}  "
-                      f"conf={s.confidence:.2f}  level=${s.key_level:,.2f}")
-                print(f"           {s.description[:80]}")
-        return {"signals": len(signals), "dry_run": True}
+        return _report_dry_run(signals, verbose)
 
     if not signals:
         if verbose:
             print("\nNo signals to analyze.")
-        return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
+        return _empty_summary()
 
-    # Skip LLM for coins with active pending conditional entries
     if exec_config and exec_config.conditional_entry_enabled:
-        from .execution.storage import get_active_pending_entries
-        pending_conn = get_connection()
-        pending = get_active_pending_entries(pending_conn, exec_config.exchange, exec_config.mode)
-        pending_conn.close()
-        pending_coins = {p["coin"] for p in pending}
-        if pending_coins:
-            before = len(signals)
-            signals = [s for s in signals if s.coin not in pending_coins]
-            skipped = before - len(signals)
-            if skipped and verbose:
-                print(f"Skipped {skipped} signal(s) — pending conditional entry: "
-                      f"{', '.join(sorted(pending_coins))}")
+        signals = _filter_pending_conditional(signals, exec_config, verbose)
         if not signals:
-            if verbose:
-                print("\nNo signals remaining after pending filter.")
-            return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
+            return _empty_summary()
 
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
@@ -473,81 +597,19 @@ def run_scan(
     exec_results = []
 
     if dry_execute and confirms:
-        # Dry-execute: preview sizing without exchange connectivity.
-        # Uses hardcoded balance=$10K, risk=1.0% — intentional for
-        # credential-less preview. Skips: price fetch, kill switch,
-        # position limits, BTC vol gate, margin guard.
-        if verbose:
-            print(f"\nStage 4 (dry-execute): {len(confirms)} CONFIRMs")
-        from .execution.executor import validate_execution_params
-        from .execution.sizing import calculate_position
-        for c in confirms:
-            mb = c.machine_block
-            if mb is None:
-                if verbose:
-                    print(f"  {c.coin}: SKIPPED — no machine_block")
-                continue
-            errors = validate_execution_params(mb)
-            if errors:
-                if verbose:
-                    print(f"  {c.coin} {mb.direction}: SKIPPED — {'; '.join(errors)}")
-                continue
-            entry_mid = (mb.entry_low + mb.entry_high) / 2
-            pos = calculate_position(mb, 10000, 1.0)
-            if pos:
-                if verbose:
-                    print(f"  {c.coin} {mb.direction}: WOULD EXECUTE — "
-                          f"{pos.quantity:.6f} units @ ${entry_mid:,.2f}, "
-                          f"SL ${mb.stop_loss:,.2f}, TP ${mb.tp1:,.2f}")
-            else:
-                if verbose:
-                    print(f"  {c.coin} {mb.direction}: SKIPPED — sizing failed")
-
+        _dry_execute_preview(confirms, verbose)
     elif exec_config and exec_config.enabled and confirms:
         # Always print — execution status is critical ops info
         print(f"\nStage 4: Executing {len(confirms)} CONFIRMs")
         exec_results = stage4_execute(confirms, cfg, exec_config, verbose=verbose)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-    total_cost = sum(r.cost_usd for r in results)
-
-    n_executed = sum(1 for er in exec_results if er.executed) if exec_results else 0
-
-    summary = {
-        "signals": len(signals),
-        "results": len(results),
-        "confirms": sum(1 for r in results if r.decision == "CONFIRM"),
-        "rejects": sum(1 for r in results if r.decision == "REJECT"),
-        "waits": sum(1 for r in results if r.decision == "WAIT"),
-        "alerted": alerted,
-        "executed": n_executed,
-        "cost_usd": round(total_cost, 4),
-        "elapsed_sec": round(elapsed, 1),
-    }
+    summary = _build_summary(signals, results, exec_results, alerted, elapsed)
 
     if verbose:
-        print(f"\n{'=' * 60}")
-        print(f"Scan complete in {elapsed:.0f}s")
-        print(f"  Signals: {summary['signals']} | Analyzed: {summary['results']}")
-        print(f"  CONFIRM: {summary['confirms']} | REJECT: {summary['rejects']} | WAIT: {summary['waits']}")
-        print(f"  Alerted: {summary['alerted']} | Cost: ${summary['cost_usd']:.4f}")
+        _print_summary(summary, elapsed)
 
-    # Post ops log to Discord
     if not dry_run and not skip_discord:
-        parse_fails = sum(1 for r in results if not r.decision)
-        warn = summary["signals"] == 0 or parse_fails > 0
-        ops_fields = {
-            "Signals": str(summary["signals"]),
-            "Analyzed": str(summary["results"]),
-            "CONFIRM": str(summary["confirms"]),
-            "REJECT": str(summary["rejects"]),
-            "WAIT": str(summary["waits"]),
-            "Alerted": str(summary["alerted"]),
-            "Cost": f"${summary['cost_usd']:.2f}",
-            "Duration": f"{summary['elapsed_sec']:.0f}s",
-        }
-        if parse_fails:
-            ops_fields["Parse Fails"] = str(parse_fails)
-        send_ops_log(f"Scan Complete [{exchange_label}]", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
+        _post_scan_ops_log(summary, results, exchange_label, cfg)
 
     return summary

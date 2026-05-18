@@ -13,7 +13,17 @@ from scanner.models import (
     SetupType,
     Structure,
 )
-from scanner.pipeline import _select_with_diversity, stage1_screen, stage4_execute
+from scanner.pipeline import (
+    _build_summary,
+    _empty_summary,
+    _filter_pending_conditional,
+    _report_dry_run,
+    _resolve_testnet_coins,
+    _select_with_diversity,
+    run_scan,
+    stage1_screen,
+    stage4_execute,
+)
 
 
 def _make_signal(
@@ -301,3 +311,161 @@ class TestStage4StalenessRefAdapter:
         ts = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
         req = self._captured_request(self._plain_confirm(None, ts))
         assert req.staleness_ref == ts
+
+
+# --- T-016 Phase 4b: run_scan → thin dispatcher (SPEC #28) ---
+# Pure relocation. These pin (a) the one non-verbatim edit — the 2→1
+# empty-summary dedup — and the closed-over-state threading the codex
+# plan-review R1 HIGH flagged (`alerted`, raw vs rounded `elapsed`); and
+# (b) run_scan dispatcher wiring/short-circuits (codex R2 — nothing in-tree
+# exercised run_scan before this phase).
+
+
+class TestPhase4bHelpers:
+    def test_empty_summary_is_the_exact_pre_split_literal(self):
+        # The two pre-split early-return literals (pipeline L442 & L461) were
+        # byte-identical; this is their single owner — value-identical.
+        assert _empty_summary() == {
+            "signals": 0, "results": 0, "confirms": 0, "alerted": 0,
+        }
+
+    def test_report_dry_run_shape(self):
+        sigs = [_make_signal(coin=f"C{i}") for i in range(3)]
+        assert _report_dry_run(sigs, verbose=False) == {
+            "signals": 3, "dry_run": True,
+        }
+        assert _report_dry_run([], verbose=False) == {
+            "signals": 0, "dry_run": True,
+        }
+
+    def test_resolve_testnet_coins_testnet_mode_returns_market_set(self):
+        cfg = ScannerConfig()
+        exec_config = MagicMock(mode="testnet")
+        with patch("scanner.data.get_testnet_coins",
+                   return_value={"BTC", "ETH"}) as gtc:
+            out = _resolve_testnet_coins(cfg, exec_config, "HyperLiquid",
+                                         verbose=False)
+        gtc.assert_called_once_with(cfg.exchange)
+        assert out == {"BTC", "ETH"}
+
+    def test_resolve_testnet_coins_none_when_not_testnet(self):
+        cfg = ScannerConfig()
+        assert _resolve_testnet_coins(cfg, None, "HL", verbose=False) is None
+        assert _resolve_testnet_coins(
+            cfg, MagicMock(mode="live"), "HL", verbose=False) is None
+
+    def test_resolve_testnet_coins_none_when_lookup_raises(self):
+        # Verbatim try/except: a failed testnet lookup → proceed unfiltered.
+        cfg = ScannerConfig()
+        exec_config = MagicMock(mode="testnet")
+        with patch("scanner.data.get_testnet_coins",
+                   side_effect=RuntimeError("boom")):
+            assert _resolve_testnet_coins(
+                cfg, exec_config, "HL", verbose=False) is None
+
+    def test_build_summary_threads_alerted_and_keeps_rounding(self):
+        # codex R1 HIGH regression-pin: `alerted` is a closed-over local the
+        # summary reads, and `elapsed_sec` must stay round(elapsed, 1) while
+        # the raw float is what _print_summary consumes.
+        results = [
+            MagicMock(decision="CONFIRM", cost_usd=0.1),
+            MagicMock(decision="REJECT", cost_usd=0.2),
+            MagicMock(decision="WAIT", cost_usd=0.05),
+            MagicMock(decision=None, cost_usd=0.0),
+        ]
+        exec_results = [MagicMock(executed=True), MagicMock(executed=False)]
+        summary = _build_summary(
+            signals=[1, 2, 3], results=results, exec_results=exec_results,
+            alerted=7, elapsed=123.456,
+        )
+        assert summary == {
+            "signals": 3,
+            "results": 4,
+            "confirms": 1,
+            "rejects": 1,
+            "waits": 1,
+            "alerted": 7,
+            "executed": 1,
+            "cost_usd": round(0.1 + 0.2 + 0.05 + 0.0, 4),
+            "elapsed_sec": round(123.456, 1),
+        }
+
+    def test_filter_pending_conditional_drops_pending_coins(self):
+        sigs = [_make_signal(coin="BTC"), _make_signal(coin="ETH")]
+        exec_config = MagicMock(exchange="hyperliquid", mode="live")
+        with patch("scanner.pipeline.get_connection",
+                   return_value=MagicMock()), \
+             patch("scanner.execution.storage.get_active_pending_entries",
+                   return_value=[{"coin": "BTC"}]):
+            out = _filter_pending_conditional(sigs, exec_config, verbose=False)
+        assert [s.coin for s in out] == ["ETH"]
+
+    def test_filter_pending_conditional_passthrough_when_no_pending(self):
+        sigs = [_make_signal(coin="BTC"), _make_signal(coin="ETH")]
+        exec_config = MagicMock(exchange="hyperliquid", mode="live")
+        with patch("scanner.pipeline.get_connection",
+                   return_value=MagicMock()), \
+             patch("scanner.execution.storage.get_active_pending_entries",
+                   return_value=[]):
+            out = _filter_pending_conditional(sigs, exec_config, verbose=False)
+        assert out == sigs
+
+
+class TestRunScanDispatcher:
+    """run_scan is now a thin dispatcher. Pin the short-circuits and the
+    full-path stage/helper call order + summary handoff (codex R2)."""
+
+    def test_dry_run_short_circuits_before_stage2(self):
+        sig = _make_signal(coin="BTC")
+        with patch("scanner.pipeline.stage1_screen",
+                   return_value=([sig], "BULL", None, {})), \
+             patch("scanner.pipeline.stage2_analyze") as s2, \
+             patch("scanner.pipeline.stage3_alert") as s3, \
+             patch("scanner.pipeline.stage4_execute") as s4:
+            out = run_scan(dry_run=True, verbose=False)
+        assert out == {"signals": 1, "dry_run": True}
+        s2.assert_not_called()
+        s3.assert_not_called()
+        s4.assert_not_called()
+
+    def test_no_signals_short_circuits_to_empty_summary(self):
+        with patch("scanner.pipeline.stage1_screen",
+                   return_value=([], None, None, {})), \
+             patch("scanner.pipeline.stage2_analyze") as s2:
+            out = run_scan(verbose=False, skip_discord=True)
+        assert out == _empty_summary()
+        s2.assert_not_called()
+
+    def test_full_path_call_order_and_summary_handoff(self):
+        sig = _make_signal(coin="BTC")
+        result = _make_scan_result(coin="BTC")  # decision == "CONFIRM"
+        exec_config = MagicMock(conditional_entry_enabled=True, enabled=True,
+                                mode="live", exchange="hyperliquid")
+        sentinel = {"sentinel": "summary"}
+        mgr = MagicMock()
+        mgr.s1.return_value = ([sig], "BULL", None, {})
+        mgr.filt.return_value = [sig]
+        mgr.s2.return_value = [result]
+        mgr.s3.return_value = 2
+        mgr.s4.return_value = []
+        with patch("scanner.pipeline.stage1_screen", mgr.s1), \
+             patch("scanner.pipeline._filter_pending_conditional", mgr.filt), \
+             patch("scanner.pipeline.stage2_analyze", mgr.s2), \
+             patch("scanner.pipeline.stage3_alert", mgr.s3), \
+             patch("scanner.pipeline.stage4_execute", mgr.s4), \
+             patch("scanner.pipeline._build_summary",
+                   return_value=sentinel) as bs, \
+             patch("scanner.pipeline._post_scan_ops_log") as ops:
+            out = run_scan(exec_config=exec_config, verbose=False,
+                           skip_discord=True)
+
+        # Returned summary is exactly _build_summary's output.
+        assert out is sentinel
+        # _build_summary received the stage3 return as `alerted`.
+        assert bs.call_args.args[3] == 2
+        # skip_discord=True ⇒ ops-log suppressed.
+        ops.assert_not_called()
+        # Dispatch order: stage1 → pending-filter → stage2 → stage3 → stage4.
+        ordered = [c[0] for c in mgr.mock_calls if c[0] in
+                   {"s1", "filt", "s2", "s3", "s4"}]
+        assert ordered == ["s1", "filt", "s2", "s3", "s4"]
