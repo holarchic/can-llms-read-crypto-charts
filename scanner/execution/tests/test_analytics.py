@@ -16,6 +16,25 @@ from scanner.execution.storage import (
 from scanner.models import TradeRecord
 
 
+def _tr(
+    scan_id, coin, direction, entry_fill, exit_fill, exit_type,
+    realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
+    slippage_r, execution_mode, exchange="hyperliquid", *, usable_risk=None,
+):
+    """TradeRecord factory mirroring the storage-owned construction: derives
+    `usable_risk = risk_amount > 0` (T-016 Phase 3, SPEC #26 c) unless an
+    explicit override is given (used by the C3 contradictory-fixture anti-
+    vacuity test). Keyword-safe so future frozen-field adds don't break the
+    ~20 positional call sites."""
+    return TradeRecord(
+        scan_id, coin, direction, entry_fill, exit_fill, exit_type,
+        realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
+        slippage_r, execution_mode,
+        usable_risk=(risk_amount > 0) if usable_risk is None else usable_risk,
+        exchange=exchange,
+    )
+
+
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
@@ -351,8 +370,8 @@ class TestGetClosedTrades:
 class TestComputeLiveMetrics:
     def test_basic_metrics(self):
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
+            _tr("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert m.count == 2
@@ -367,8 +386,8 @@ class TestComputeLiveMetrics:
 
     def test_profit_factor(self):
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "LONG", 3000, 2900, "SL", -100, -1.0, 100, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
+            _tr("s2", "ETH", "LONG", 3000, 2900, "SL", -100, -1.0, 100, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert m.profit_factor == 3.0  # 300/100
@@ -381,9 +400,9 @@ class TestComputeLiveMetrics:
     def test_drawdown_all_losses(self):
         """All-loss sequence should report non-zero drawdown using total_risk."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
-            TradeRecord("s3", "SOL", "LONG", 100, 90, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s2", "ETH", "SHORT", 3000, 3200, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s3", "SOL", "LONG", 100, 90, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         # total_risk = 600, total loss = 600, max_dd_pct = 600/600*100 = 100
@@ -393,8 +412,8 @@ class TestComputeLiveMetrics:
     def test_drawdown_loss_then_win(self):
         """Loss then bigger win → peak-based drawdown (regression check)."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "LONG", 3000, 3500, "TP1", 500, 2.5, 200, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 59800, "SL", -200, -1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s2", "ETH", "LONG", 3000, 3500, "TP1", 500, 2.5, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         # After trade 1: running=-200, peak=0, dd=200 (no positive peak yet)
@@ -410,7 +429,7 @@ class TestComputeLiveMetrics:
     def test_funding_r_normalized_by_total_risk(self):
         """funding_r = total_funding / total_risk (not avg risk)."""
         trades = [
-            TradeRecord(f"s{i}", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 100, 24, 5, 0, "testnet")
+            _tr(f"s{i}", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 100, 24, 5, 0, "testnet")
             for i in range(10)
         ]
         m = compute_live_metrics(trades)
@@ -514,8 +533,8 @@ class TestQualityWarnings:
     def test_flags_missing_funding(self):
         """All trades have funding_paid=0 → warning present."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet"),
+            _tr("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert any("Funding costs not captured" in w for w in m.quality_warnings)
@@ -523,8 +542,8 @@ class TestQualityWarnings:
     def test_no_funding_warning_when_clean(self):
         """Trades with funding_paid > 0 → no funding warning."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 3.0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            _tr("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 3.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert not any("Funding costs not captured" in w for w in m.quality_warnings)
@@ -533,7 +552,7 @@ class TestQualityWarnings:
     def test_flags_missing_fill_prices(self):
         """Trades with entry_fill=0 → warning about missing fill prices."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 0, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 0, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert any("missing fill prices" in w for w in m.quality_warnings)
@@ -549,7 +568,7 @@ class TestQualityWarnings:
         m = compute_live_metrics([])
         assert m.data_source == "db_only"
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m2 = compute_live_metrics(trades)
         assert m2.data_source == "db_only"
@@ -557,7 +576,7 @@ class TestQualityWarnings:
     def test_quality_warnings_always_include_db_note(self):
         """DB-only note is always the first warning."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert m.quality_warnings[0] == "All metrics estimated from DB — not reconciled with exchange"
@@ -565,8 +584,8 @@ class TestQualityWarnings:
     def test_quality_warnings_partial_funding(self):
         """Some trades missing funding → partial funding warning."""
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
-            TradeRecord("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 5.0, 0, "testnet"),
+            _tr("s2", "ETH", "LONG", 3000, 3200, "TP1", 200, 1.0, 200, 12, 0, 0, "testnet"),
         ]
         m = compute_live_metrics(trades)
         assert any("1/2 trades missing funding data" in w for w in m.quality_warnings)
@@ -575,7 +594,7 @@ class TestQualityWarnings:
 class TestRollingExpectancy:
     def test_window_calculation(self):
         trades = [
-            TradeRecord(f"s{i}", "BTC", "LONG", 62000, 65000, "TP1",
+            _tr(f"s{i}", "BTC", "LONG", 62000, 65000, "TP1",
                         300 if i % 2 == 0 else -220,
                         1.36 if i % 2 == 0 else -1.0,
                         220, 24, 0, 0, "testnet")
@@ -587,7 +606,7 @@ class TestRollingExpectancy:
 
     def test_too_few_trades(self):
         trades = [
-            TradeRecord("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet")
+            _tr("s1", "BTC", "LONG", 62000, 65000, "TP1", 300, 1.36, 220, 24, 0, 0, "testnet")
         ]
         result = rolling_expectancy(trades, window=20)
         assert len(result) == 0

@@ -89,7 +89,7 @@ def _compute_quality_warnings(trades: list[TradeRecord]) -> tuple[str, ...]:
         approx_fills = sum(1 for t in trades if t.entry_fill == 0 or t.exit_fill == 0)
         if approx_fills:
             warnings.append(f"{approx_fills} trades with missing fill prices — using trigger prices")
-        no_risk = sum(1 for t in trades if t.risk_amount == 0)
+        no_risk = sum(1 for t in trades if not t.usable_risk)
         if no_risk:
             warnings.append(f"{no_risk} trades with no usable risk anchor — excluded from R metrics")
     return tuple(warnings)

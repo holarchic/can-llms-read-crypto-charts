@@ -765,6 +765,7 @@ def get_closed_trades(
             funding_paid=funding_paid,
             slippage_r=slippage_r,
             execution_mode=entry.get("execution_mode", "testnet"),
+            usable_risk=risk_amount > 0,
             exchange=entry.get("exchange", "hyperliquid"),
         ))
 

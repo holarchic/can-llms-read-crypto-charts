@@ -381,6 +381,12 @@ class TradeRecord:
     funding_paid: float
     slippage_r: float
     execution_mode: str
+    # Explicit single-owner of the "no/degenerate original SL" classification
+    # (T-016 Phase 3, SPEC #26 c; KL#9 c). `usable_risk ≡ risk_amount > 0` by
+    # construction — covers both `original_stop_price is None` and degenerate
+    # `entry==SL` (stop_distance==0). Replaces the implicit `risk_amount==0`
+    # sentinel re-derived across analytics/report sites.
+    usable_risk: bool
     exchange: str = "hyperliquid"
 
 
