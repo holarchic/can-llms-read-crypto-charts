@@ -6,6 +6,7 @@ import pytest
 
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.exchange import (
+    PositionParseError,
     cancel_order,
     fetch_balance,
     fetch_current_price,
@@ -228,6 +229,51 @@ class TestSideNormalization:
             positions = get_open_positions(testnet_config)
         assert len(positions) == 0
         assert caplog.text.count("Unknown position side") == 3
+
+
+class TestGetOpenPositionsStrict:
+    """Phase-3b C2 (SPEC #29): strict=True makes a successful-but-lossy
+    snapshot fail-closed so a close-booking path can't read a real open
+    position as 'absent'. Default (strict=False) stays byte-identical."""
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_default_still_skips_unknown_side(self, mock_get_auth, testnet_config):
+        # Byte-identical to the historic behaviour: log+skip, no raise.
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "A/USDC:USDC", "contracts": 1.0, "side": "unknown",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+            {"symbol": "B/USDC:USDC", "contracts": 2.0, "side": "long",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config)  # strict defaults False
+        assert [p["coin"] for p in positions] == ["B"]
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_strict_raises_on_unknown_side_live_position(self, mock_get_auth, testnet_config):
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "A/USDC:USDC", "contracts": 1.0, "side": "weird",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        with pytest.raises(PositionParseError):
+            get_open_positions(testnet_config, strict=True)
+
+    @patch("scanner.execution.exchange.get_auth_exchange")
+    def test_strict_ignores_zero_size_junk(self, mock_get_auth, testnet_config):
+        # A zero-size row with junk side is genuinely flat — never raises.
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_positions.return_value = [
+            {"symbol": "A/USDC:USDC", "contracts": 0, "side": None,
+             "entryPrice": 0, "unrealizedPnl": 0, "leverage": 1},
+            {"symbol": "B/USDC:USDC", "contracts": 3.0, "side": "sell",
+             "entryPrice": 100, "unrealizedPnl": 0, "leverage": 1},
+        ]
+        mock_get_auth.return_value = mock_exchange
+        positions = get_open_positions(testnet_config, strict=True)
+        assert [(p["coin"], p["direction"]) for p in positions] == [("B", "SHORT")]
 
 
 class TestCancelOrder:

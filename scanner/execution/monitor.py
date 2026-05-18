@@ -630,7 +630,12 @@ def attempt_sl_recovery(
     # this lossless was explicitly rejected by the approved design.
     try:
         from .exchange import get_open_positions
-        positions = get_open_positions(config)
+        # strict=True: a lossy snapshot (unparseable live position) must NOT be
+        # read as "flat" and book a false synthetic manual_close. PositionParseError
+        # is caught below → fall through to the usual SL-placement flow (no false
+        # close, SL still placed → never naked). Phase-3b / SPEC #29 end-to-end
+        # strictness: every close-on-position-absent path is fail-closed.
+        positions = get_open_positions(config, strict=True)
         exchange_has_position = any(
             p.get("coin") == coin and p.get("direction") == direction
             and float(p.get("size") or 0) > OPEN_QTY_EPSILON

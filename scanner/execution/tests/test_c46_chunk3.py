@@ -17,6 +17,7 @@ import pytest
 from scanner.execution import entry_monitor as EM
 from scanner.execution import monitor as M
 from scanner.execution.config import ExecutionConfig
+from scanner.execution.exchange import PositionParseError
 from scanner.execution.executor import ExecutionResult
 from scanner.execution.storage import (
     ensure_orders_table,
@@ -256,3 +257,32 @@ def test_sl_recovery_duplicate_residual_is_named_not_idempotent(conn):
     assert e1.cloids[-1] != e2.cloids[-1]
     # DB self-heals to a single owner (old PLACED superseded → CANCELLED).
     assert placed_after_1 != placed_after_2
+
+
+def test_sl_recovery_lossy_snapshot_no_false_close_still_places_sl(conn):
+    """Phase-3b C2 (SPEC #29, codex plan-review R2 HIGH + R3 LOW): the
+    reactive synthetic-close flat-check now reads get_open_positions(strict=
+    True). A lossy snapshot (PositionParseError) must NOT be read as 'flat'
+    and book a false manual_close; control must continue into SL placement
+    so the position is never left naked (capital-safe fallback, pinned
+    positively — not merely absence of the false close)."""
+    _seed_filled_entry_no_sl(conn)
+    issue = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
+             "type": "missing_sl"}
+    exch = _SLExch(fail_times=0)
+    with patch.object(M, "get_auth_exchange", return_value=exch), \
+         patch.object(M, "get_exchange_meta",
+                      return_value={"symbol_template": "{coin}/USDC:USDC"}), \
+         patch("scanner.execution.exchange.get_open_positions",
+               side_effect=PositionParseError("lossy")) as gop:
+        result = M.attempt_sl_recovery(issue, _cfg(), conn)
+
+    assert gop.called, "strict get_open_positions never intercepted — vacuous"
+    # No false synthetic close booked from the lossy snapshot.
+    mc = conn.execute(
+        "SELECT COUNT(*) c FROM orders WHERE order_type='manual_close'"
+    ).fetchone()
+    assert mc["c"] == 0
+    # Positive capital-safe pin: SL placement still ran → not naked.
+    assert result is True
+    assert len(_placed_sls(conn)) >= 1

@@ -11,6 +11,17 @@ log = logging.getLogger(__name__)
 _SIDE_MAP = {"LONG": "LONG", "BUY": "LONG", "SHORT": "SHORT", "SELL": "SHORT"}
 
 
+class PositionParseError(Exception):
+    """A live (non-zero-size) exchange position could not be parsed.
+
+    Raised only by `get_open_positions(..., strict=True)`. The default
+    (`strict=False`) preserves the historic log-and-skip behaviour. Strict
+    mode exists so a *successful-but-lossy* snapshot cannot be mistaken for
+    "position absent" by a close-booking path (Phase-3b / SPEC #29 — the
+    catastrophic false-close failure mode).
+    """
+
+
 class SafeHyperliquid(ccxt.hyperliquid):
     """Guard against ccxt bug: None base symbol in HL spot tokens crashes load_markets."""
 
@@ -78,10 +89,16 @@ def fetch_balance(config) -> float:
     return float(balance.get("USDC", {}).get("free", 0))
 
 
-def get_open_positions(config) -> list[dict]:
+def get_open_positions(config, strict: bool = False) -> list[dict]:
     """Get open positions from exchange.
 
     Returns list of {coin, direction, size, entry_price, unrealized_pnl, leverage}.
+
+    `strict=False` (default, byte-identical to all historic callers): a live
+    position with an unparseable side is logged and skipped. `strict=True`: it
+    **raises `PositionParseError`** instead — so a close-booking path can treat
+    a successful-but-lossy snapshot as fail-closed rather than silently reading
+    a real open position as "absent" (Phase-3b / SPEC #29).
     """
     exchange = get_auth_exchange(config)
     positions = exchange.fetch_positions()
@@ -94,6 +111,11 @@ def get_open_positions(config) -> list[dict]:
         side_upper = pos.get("side", "").upper() if isinstance(pos.get("side"), str) else ""
         direction = _SIDE_MAP.get(side_upper)
         if direction is None:
+            if strict:
+                raise PositionParseError(
+                    f"Unparseable side {pos.get('side')!r} for live position "
+                    f"{coin} (size={size}) — refusing a lossy snapshot"
+                )
             log.error("Unknown position side '%s' for %s — skipping", pos.get("side"), coin)
             continue
         result.append({
