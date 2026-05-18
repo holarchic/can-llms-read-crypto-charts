@@ -116,6 +116,53 @@ def test_sync_full_close_midcluster_failure_rolls_back_keeps_open(db):
     assert id(conn) not in _TX_DEPTH  # ownership cleaned despite the exception
 
 
+class _SyncExch:
+    """fetch_order reports the SL as a confirmed full fill; everything else
+    is a no-op. amount_to_precision passthrough."""
+
+    def amount_to_precision(self, symbol, qty):
+        return qty
+
+    def fetch_order(self, oid, symbol):
+        return {"id": oid, "status": "closed", "filled": 1.0, "average": 99.0}
+
+
+def test_sync_order_status_midcluster_failure_no_counterpart_leak(db):
+    """CALLER-LEVEL regression (R2 finding): a rolled-back close cluster must
+    NOT let sync_order_status keep iterating the stale scan_orders and commit
+    a later counterpart (tp1) CANCELLED OUTSIDE the rolled-back txn. The scan
+    is aborted; SL stays PLACED, tp1 stays PLACED, the position stays open."""
+    conn, path = db
+    _seed_position(conn, sl_exch_oid="SL_OID")
+    save_order({
+        "order_id": "tp1", "scan_id": "s1", "coin": "ABC", "direction": "LONG",
+        "order_type": "tp1", "status": "PLACED", "trigger_price": 110.0,
+        "exchange_order_id": "TP_OID", "quantity": 1.0,
+        "exchange": "hyperliquid", "execution_mode": "testnet",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }, conn)
+    conn.commit()
+    cfg = ExecutionConfig(exchange="hyperliquid", mode="testnet")
+
+    with patch.object(M, "get_auth_exchange", return_value=_SyncExch()), \
+         patch.object(M, "get_exchange_meta",
+                      return_value={"symbol_template": "{coin}/USDC:USDC"}), \
+         patch.object(M, "_send_fill_alert", return_value=True), \
+         patch.object(M, "cancel_order", return_value=True), \
+         patch.object(M, "_mark_counterparts_cancelled",
+                      side_effect=RuntimeError("db boom")):
+        # exchange_open_orders=[] → both SL and tp1 are "disappeared".
+        M.sync_order_status(cfg, conn, exchange_open_orders=[])
+
+    # Cluster rolled back AND the scan aborted before tp1 was reached:
+    rows = {r["order_id"]: r["status"]
+            for r in _probe(path, "SELECT order_id, status FROM orders")}
+    assert rows["sl1"] == "PLACED"   # close rolled back
+    assert rows["tp1"] == "PLACED"   # NOT leaked to CANCELLED outside the txn
+    assert {e["scan_id"] for e in get_open_entry_orders(conn)} == {"s1"}
+    assert id(conn) not in _TX_DEPTH
+
+
 def test_timeout_full_close_midcluster_failure_rolls_back_keeps_open(db):
     conn, path = db
     _seed_position(conn)

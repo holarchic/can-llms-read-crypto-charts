@@ -172,13 +172,29 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                     # counterpart CANCELLED marks (atomic full-close boundary).
                     if is_exit:
                         _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
-                        _handle_exit_fill(
-                            order, entry, scan_orders,
-                            symbol, exchange, exec_config, conn,
-                            fill_price=fill_price,
-                            fill_qty=fill_qty,
-                        )
-                        break  # stale list — re-check next cycle
+                        try:
+                            _handle_exit_fill(
+                                order, entry, scan_orders,
+                                symbol, exchange, exec_config, conn,
+                                fill_price=fill_price,
+                                fill_qty=fill_qty,
+                            )
+                        except Exception as hexc:
+                            # Close cluster rolled back. Do NOT fall to the
+                            # generic per-order handler and keep iterating the
+                            # now-stale scan_orders — that would commit later
+                            # counterpart marks OUTSIDE the rolled-back txn
+                            # (partial-write leak). Abort this scan; the close
+                            # is unrecorded so the position stays open and the
+                            # next cycle retries from fresh DB state.
+                            log.error(
+                                "Exit-fill cluster failed for %s %s (scan %s) — "
+                                "rolled back; position retained, retried next "
+                                "cycle: %s",
+                                entry["coin"], order["order_type"],
+                                entry["scan_id"], hexc,
+                            )
+                        break  # stale list (success OR rolled-back) — re-check next cycle
 
                 elif exch_status == "canceled":
                     partial_fill = float(exch_order.get("filled") or 0)
@@ -207,12 +223,25 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
 
                         if is_exit:
                             _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
-                            _handle_exit_fill(
-                                order, entry, scan_orders,
-                                symbol, exchange, exec_config, conn,
-                                fill_price=fill_price,
-                                fill_qty=partial_fill,
-                            )
+                            try:
+                                _handle_exit_fill(
+                                    order, entry, scan_orders,
+                                    symbol, exchange, exec_config, conn,
+                                    fill_price=fill_price,
+                                    fill_qty=partial_fill,
+                                )
+                            except Exception as hexc:
+                                # See the closed-branch rationale: a rolled-back
+                                # close must abort this scan, not continue
+                                # iterating stale orders and leak counterpart
+                                # writes outside the txn.
+                                log.error(
+                                    "Exit-fill cluster failed for %s %s (scan "
+                                    "%s) — rolled back; position retained, "
+                                    "retried next cycle: %s",
+                                    entry["coin"], order["order_type"],
+                                    entry["scan_id"], hexc,
+                                )
                             break
                     else:
                         update_order_status(order["order_id"], "CANCELLED", conn)
