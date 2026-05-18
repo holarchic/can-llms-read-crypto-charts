@@ -44,6 +44,16 @@ def get_exchange_meta(exchange_id: str) -> dict:
     return EXCHANGE_META[exchange_id]
 
 
+# Screener-param defaults — single source (T-016 Phase 3, SPEC #26 a).
+# The live runtime config (ScannerConfig) owns these; strategy.Strategy
+# mirrors them by reference, not by re-declaring literals. Reversible if the
+# Phase-5 scope call makes an active Strategy the runtime source-of-truth.
+DEFAULT_SWING_LOOKBACK = 5
+DEFAULT_SR_CLUSTER_PCT = 0.015
+DEFAULT_PROXIMITY_ATR_MULT = 1.5
+DEFAULT_MAX_SETUPS_PER_COIN = 3
+
+
 @dataclass
 class ScannerConfig:
     # API keys
@@ -68,10 +78,10 @@ class ScannerConfig:
     })
 
     # Screener params
-    swing_lookback: int = 5
-    sr_cluster_pct: float = 0.015
-    proximity_atr_mult: float = 1.5
-    max_setups_per_coin: int = 3
+    swing_lookback: int = DEFAULT_SWING_LOOKBACK
+    sr_cluster_pct: float = DEFAULT_SR_CLUSTER_PCT
+    proximity_atr_mult: float = DEFAULT_PROXIMITY_ATR_MULT
+    max_setups_per_coin: int = DEFAULT_MAX_SETUPS_PER_COIN
 
     # LLM
     model: str = "claude-opus-4-7"

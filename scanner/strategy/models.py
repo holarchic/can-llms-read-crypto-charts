@@ -2,17 +2,25 @@
 
 from dataclasses import dataclass
 
-from ..config import ScannerConfig
+from ..config import (
+    DEFAULT_MAX_SETUPS_PER_COIN,
+    DEFAULT_PROXIMITY_ATR_MULT,
+    DEFAULT_SR_CLUSTER_PCT,
+    DEFAULT_SWING_LOOKBACK,
+    ScannerConfig,
+)
 
 
 @dataclass
 class Strategy:
     strategy_id: str
     label: str
-    swing_lookback: int = 5
-    sr_cluster_pct: float = 0.015
-    proximity_atr_mult: float = 1.5
-    max_setups_per_coin: int = 3
+    # Screener params mirror scanner.config defaults (T-016 Phase 3, SPEC #26 a
+    # — single source in scanner/config.py, not re-declared literals here).
+    swing_lookback: int = DEFAULT_SWING_LOOKBACK
+    sr_cluster_pct: float = DEFAULT_SR_CLUSTER_PCT
+    proximity_atr_mult: float = DEFAULT_PROXIMITY_ATR_MULT
+    max_setups_per_coin: int = DEFAULT_MAX_SETUPS_PER_COIN
     atr_stop_mult: float = 1.5
     atr_target_mult: float = 3.0
     ruleset_version: str = ""
