@@ -167,7 +167,6 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                     # see the fill state without re-querying.
                     order["status"] = "FILLED"
                     order["quantity"] = original_qty  # keep for residual math
-                    updated += 1
                     log.info(
                         "%s %s %s filled at %s (qty %s)",
                         entry["coin"], order["order_type"], order["direction"], fill_price, fill_qty,
@@ -176,8 +175,15 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                     # Exit fill: _handle_exit_fill OWNS the FILLED DB write so
                     # the full-close route commits it atomically with the
                     # counterpart CANCELLED marks (atomic full-close boundary).
-                    if is_exit:
-                        _send_fill_alert(entry, order, fill_price, exec_config, conn)
+                    # The fill-alert + `updated` count fire only AFTER the
+                    # cluster commits: on a rollback the close is unrecorded and
+                    # the next cycle re-detects the fill, so emitting them first
+                    # would double-alert + over-count (the C4#6-deferred Phase-4
+                    # LOWs). Non-exit fills persisted unconditionally above, so
+                    # they count immediately.
+                    if not is_exit:
+                        updated += 1
+                    else:
                         try:
                             _handle_exit_fill(
                                 order, entry, scan_orders,
@@ -185,6 +191,8 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                                 fill_price=fill_price,
                                 fill_qty=fill_qty,
                             )
+                            _send_fill_alert(entry, order, fill_price, exec_config, conn)
+                            updated += 1
                         except Exception as hexc:
                             # Close cluster rolled back. Do NOT fall to the
                             # generic per-order handler and keep iterating the
@@ -192,7 +200,9 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                             # counterpart marks OUTSIDE the rolled-back txn
                             # (partial-write leak). Abort this scan; the close
                             # is unrecorded so the position stays open and the
-                            # next cycle retries from fresh DB state.
+                            # next cycle retries from fresh DB state. No
+                            # fill-alert, no `updated` (the next cycle emits
+                            # exactly one of each on the successful close).
                             log.error(
                                 "Exit-fill cluster failed for %s %s (scan %s) — "
                                 "rolled back; position retained, retried next "
@@ -225,10 +235,14 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                         # see the fill state without re-querying.
                         order["status"] = "FILLED"
                         order["quantity"] = original_qty  # keep for residual math
-                        updated += 1
 
-                        if is_exit:
-                            _send_fill_alert(entry, order, fill_price, exec_config, conn)
+                        # Same fill-alert/`updated`-after-commit ordering as
+                        # the closed branch (C4#6-deferred Phase-4 LOWs):
+                        # non-exit persisted above → counts now; exit counts +
+                        # alerts only after the cluster commits.
+                        if not is_exit:
+                            updated += 1
+                        else:
                             try:
                                 _handle_exit_fill(
                                     order, entry, scan_orders,
@@ -236,11 +250,14 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                                     fill_price=fill_price,
                                     fill_qty=partial_fill,
                                 )
+                                _send_fill_alert(entry, order, fill_price, exec_config, conn)
+                                updated += 1
                             except Exception as hexc:
                                 # See the closed-branch rationale: a rolled-back
                                 # close must abort this scan, not continue
                                 # iterating stale orders and leak counterpart
-                                # writes outside the txn.
+                                # writes outside the txn. No alert, no count —
+                                # the next cycle emits exactly one of each.
                                 log.error(
                                     "Exit-fill cluster failed for %s %s (scan "
                                     "%s) — rolled back; position retained, "
