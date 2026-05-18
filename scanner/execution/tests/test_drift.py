@@ -444,9 +444,9 @@ class TestForceClose:
     @patch("scanner.execution.drift._send_drift_close_alert", return_value=True)
     def test_force_close_calls_market_close(self, mock_alert, mock_close, mock_exch_cancel, mock_db_cancel, drift_config, conn):
         from scanner.execution.drift import _execute_force_close
-        from scanner.execution.monitor import MarketCloseResult
+        from scanner.execution.monitor import CloseResult
 
-        mock_close.return_value = MarketCloseResult(
+        mock_close.return_value = CloseResult(
             "full",
             {"order_id": "c1", "scan_id": "test1", "coin": "BTC",
              "direction": "SHORT", "order_type": "drift_close", "status": "FILLED",

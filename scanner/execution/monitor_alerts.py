@@ -154,7 +154,7 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
 
 def _send_urgent_close_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
     """URGENT when a timeout market-close did NOT confirm (zero/partial/
-    unpriceable/retry-exhausted → `MarketCloseResult.kind` in {partial,none}).
+    unpriceable/retry-exhausted → `CloseResult.kind` in {partial,none}).
 
     The protective SL is RETAINED — counterpart cancels run only on a
     confirmed full close (`kind=="full"`), so the position is NOT naked

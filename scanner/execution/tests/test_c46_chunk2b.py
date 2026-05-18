@@ -75,7 +75,7 @@ def _probe(path, sql, params=()):
 
 
 def _full_result(order_type):
-    return M.MarketCloseResult(
+    return M.CloseResult(
         "full",
         {"order_id": "c1", "scan_id": "s1", "coin": "ABC", "direction": "LONG",
          "order_type": order_type, "status": "FILLED", "fill_price": 99.0,

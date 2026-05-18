@@ -91,7 +91,7 @@ def _rows(conn):
 
 
 # C4#6 Chunk 2b re-contracted `market_close_position` → typed
-# `MarketCloseResult`; persistence moved to the caller (atomic full-close
+# `CloseResult`; persistence moved to the caller (atomic full-close
 # boundary). The Fix-3 confirmed-fill GATING is preserved verbatim — these
 # retargeted tests assert (1) the kind/payload mapping per case, (2) that
 # market_close_position itself NEVER writes a row, and (3) the caller persists
@@ -311,7 +311,7 @@ def test_drift_force_close_none_keeps_sl_and_alerts():
              "quantity": 1.0, "fill_price": 100.0}
 
     with patch.object(D, "market_close_position",
-                      return_value=M.MarketCloseResult("none", None, None)), \
+                      return_value=M.CloseResult("none", None, None)), \
          patch.object(D, "_send_urgent_alert") as urgent, \
          patch.object(D, "_cancel_counterparts_on_exchange") as exch_cancel, \
          patch.object(D, "_mark_counterparts_cancelled") as db_cancel:
@@ -353,7 +353,7 @@ def test_timeout_none_keeps_sl_and_alerts():
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
          patch.object(M, "market_close_position",
-                      return_value=M.MarketCloseResult("none", None, None)), \
+                      return_value=M.CloseResult("none", None, None)), \
          patch.object(M, "_send_urgent_close_alert") as urgent, \
          patch.object(M, "_cancel_counterparts_on_exchange") as exch_cancel:
         M.enforce_position_timeouts(cfg, conn)
@@ -425,7 +425,7 @@ def test_drift_close_alert_r_anchored_on_original_sl():
         captured["r"] = r_val
 
     with patch.object(D, "market_close_position",
-                      return_value=M.MarketCloseResult(
+                      return_value=M.CloseResult(
                           "full",
                           {"order_id": "c1", "scan_id": "s1", "coin": "ABC",
                            "direction": "LONG", "order_type": "drift_close",
