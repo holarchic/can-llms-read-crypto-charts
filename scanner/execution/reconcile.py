@@ -127,6 +127,16 @@ def _resolve_stranded_pendings(positions: list[dict], conn, exchange: str, mode:
                 "skipping (conservative)", p["pending_id"], resolved_at,
             )
             continue
+        # claim_pending writes a tz-aware UTC isoformat; a tz-naive value is
+        # anomalous (manual edit / legacy / foreign writer). Treat it as bad
+        # data and skip — `aware - naive` would raise TypeError and a parse
+        # quirk must NEVER abort the monitor cycle or false-flip a pending.
+        if claimed.tzinfo is None:
+            log.warning(
+                "reconcile: pending %s resolved_at=%r is tz-naive — "
+                "skipping (conservative)", p["pending_id"], resolved_at,
+            )
+            continue
         if (now - claimed).total_seconds() < RECONCILE_STRANDED_MIN_AGE_S:
             continue
 

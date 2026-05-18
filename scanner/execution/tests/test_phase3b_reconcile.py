@@ -156,6 +156,21 @@ class TestWindowCStrandedPending:
         assert n == 0
         assert _pending_status(conn, "p1") == "TRIGGERED"
 
+    def test_tz_naive_resolved_at_skipped_not_crash(self, conn):
+        # codex phase-review (correctness MEDIUM): a parseable-but-tz-naive
+        # resolved_at must be a conservative SKIP, not an uncaught TypeError
+        # on aware-naive subtraction that aborts the whole monitor cycle.
+        _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ", age_s=99999)
+        conn.execute(
+            "UPDATE pending_entries SET resolved_at=? WHERE pending_id='p1'",
+            ("2026-01-01T00:00:00",),  # parseable, NO tz offset
+        )
+        conn.commit()
+        with _patch_positions([]):
+            n = reconcile_positions(_cfg(), conn)  # must not raise
+        assert n == 0
+        assert _pending_status(conn, "p1") == "TRIGGERED"
+
     def test_recent_claim_not_flipped(self, conn):
         # Younger than the age gate → an in-flight execute_trade may be running.
         _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ",
