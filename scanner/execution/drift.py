@@ -607,7 +607,7 @@ def _execute_force_close(
     exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
     result = market_close_position(
-        entry, symbol, exit_side, remaining_qty, exchange, config, conn,
+        entry, symbol, exit_side, remaining_qty, exchange, config,
         order_type="drift_close",
     )
 

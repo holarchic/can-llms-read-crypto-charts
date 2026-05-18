@@ -104,7 +104,7 @@ def _close(create_resp, fetch_resp=None, fetch_raises=False, qty=1.0):
     conn = _conn()
     ex = FakeExchange(create_resp, fetch_resp, fetch_raises)
     result = M.market_close_position(
-        _entry(), "ABC/USDC:USDC", "sell", qty, ex, _cfg(), conn,
+        _entry(), "ABC/USDC:USDC", "sell", qty, ex, _cfg(),
         order_type="drift_close",
     )
     return result, _rows(conn), ex

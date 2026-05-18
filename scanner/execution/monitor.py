@@ -335,39 +335,40 @@ def _handle_exit_fill(
 ) -> None:
     """Route an exit fill and OWN its FILLED DB write.
 
-    The filled-exit FILLED mark is written HERE, not by the caller, so the
-    full-close route can commit it atomically with the counterpart-CANCELLED
-    marks (the atomic full-close boundary, C4#6). A close-state write committed
-    before its counterpart cancels would strand PLACED counterparts on a
-    position `get_open_entry_orders()` no longer returns — the phantom_sl
-    family this exists to kill. The exchange-cancel pass runs OUTSIDE the
-    transaction (invariant: no exchange REST call inside a DB txn). TP1 /
-    partial routes keep the standalone FILLED commit then their existing
-    exchange-interleaved replacement saga (out of C4#6 scope) — unchanged.
+    The filled-exit FILLED mark is OWNED by the route terminal, never written
+    here, so EVERY full-close outcome — SL/tp2 direct, full-size tp1, and a
+    partial that the live-qty check resolves to zero residual — commits the
+    FILLED row atomically with the counterpart-CANCELLED marks (the atomic
+    full-close boundary, C4#6). A close-state write committed before its
+    counterpart cancels would strand PLACED counterparts on a position
+    `get_open_entry_orders()` no longer returns — the phantom_sl family this
+    exists to kill. The full-vs-partial decision for tp1/partial needs a live
+    `_get_live_position_qty` exchange call, so it is made INSIDE those
+    handlers; they own the FILLED write per terminal (atomic when it resolves
+    to a full close, standalone when the position stays open with a
+    replacement order — the exchange-interleaved replacement saga is out of
+    C4#6 scope). The exchange-cancel pass always runs OUTSIDE the transaction
+    (invariant: no exchange REST call inside a DB txn).
     """
     oid = filled_order["order_id"]
     if filled_order["order_type"] == "tp1":
-        update_order_status(oid, "FILLED", conn,
-                            fill_price=fill_price, filled_quantity=fill_qty)
         _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn,
-                         fill_qty=fill_qty)
+                         fill_price=fill_price, fill_qty=fill_qty)
         return
     # Check for partial fill — residual position needs protection
     order_qty = filled_order.get("quantity", 0)
     actual_fill = fill_qty if fill_qty is not None else order_qty
     if actual_fill < order_qty and order_qty > 0:
-        update_order_status(oid, "FILLED", conn,
-                            fill_price=fill_price, filled_quantity=fill_qty)
         _handle_partial_exit_fill(
             filled_order, entry, scan_orders,
             symbol, exchange, config, conn,
-            fill_qty=actual_fill,
+            fill_qty=actual_fill, fill_price=fill_price,
         )
         return
-    # Full close — atomic boundary: exchange-cancel pass first (outside the
-    # txn), then the exit FILLED mark + counterpart CANCELLED marks commit as
-    # ONE unit. A rollback leaves the close unrecorded so the position stays
-    # in the open set and the next cycle retries (self-healing, DB scoped).
+    # SL/tp2 direct full close — atomic boundary: exchange-cancel pass first
+    # (outside the txn), then the exit FILLED mark + counterpart CANCELLED
+    # marks commit as ONE unit. A rollback leaves the close unrecorded so the
+    # position stays in the open set and the next cycle retries.
     targets = _cancel_counterparts_on_exchange(
         entry["scan_id"], oid, symbol, config, conn,
     )
@@ -437,28 +438,45 @@ def _position_closed_on_exchange(coin: str, direction: str, exchange) -> bool:
 def _handle_partial_exit_fill(
     filled_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
-    fill_qty: float,
+    fill_qty: float, fill_price: float | None = None,
 ) -> None:
     """SL or TP2 partially filled: protect residual with new SL, re-place TP2.
 
-    Placement order: new SL first → cancel counterpart TPs → new TP2.
-    This keeps an SL active on the exchange through the whole transition.
+    Owns the exit FILLED DB write (C4#6): if the live-qty check resolves to
+    zero residual this is actually a FULL close, so the FILLED mark + the
+    counterpart CANCELLED marks commit in ONE transaction after the exchange
+    cancel pass (no stranded counterpart on a closed position). Otherwise the
+    position stays open with a replacement SL — FILLED commits standalone,
+    then the existing exchange-interleaved saga (out of C4#6 scope).
+
+    Placement order (residual path): new SL first → cancel counterpart TPs →
+    new TP2. This keeps an SL active on the exchange through the transition.
     """
+    oid = filled_order["order_id"]
     residual_qty = filled_order["quantity"] - fill_qty
     residual_qty = _get_live_position_qty(
         entry["coin"], entry["direction"], residual_qty, config,
     )
     if residual_qty <= 0:
-        # No residual — treat as full close. The filled exit's FILLED row was
-        # already committed (tp1/partial route owns it standalone); group the
-        # counterpart cancels atomically (exchange pass before the txn).
+        # Zero residual → actually a FULL close. Exchange-cancel pass OUTSIDE
+        # the txn, then exit FILLED + counterpart CANCELLED as ONE unit — a
+        # rollback leaves the close unrecorded so the position stays open and
+        # the next cycle retries (no PLACED counterpart stranded).
         targets = _cancel_counterparts_on_exchange(
-            entry["scan_id"], filled_order["order_id"], symbol, config, conn,
+            entry["scan_id"], oid, symbol, config, conn,
         )
         with transaction(conn):
+            update_order_status(oid, "FILLED", conn,
+                                fill_price=fill_price, filled_quantity=fill_qty)
             _mark_counterparts_cancelled(targets, conn)
         return
 
+    # Residual remains → position stays open. Commit the exit FILLED
+    # standalone (a partial fill never strands: SUM(filled exit qty) < entry
+    # qty so the position correctly stays in get_open_entry_orders), then the
+    # replacement saga.
+    update_order_status(oid, "FILLED", conn,
+                        fill_price=fill_price, filled_quantity=fill_qty)
     filled_type = filled_order["order_type"]
 
     # Step 1: Protect the residual with a fresh SL BEFORE cancelling counterparts.
@@ -634,14 +652,23 @@ def _place_replacement_exit_order(
 def _handle_tp1_fill(
     tp1_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
+    fill_price: float | None = None,
     fill_qty: float | None = None,
 ) -> None:
     """TP1 filled: place replacement SL at remaining quantity, then cancel old SL.
+
+    Owns the TP1 FILLED DB write (C4#6): a full-size TP1 (zero remaining after
+    the live-qty check — live on counter-trend single-TP trades) is a FULL
+    close, so the FILLED mark + counterpart CANCELLED marks commit in ONE
+    transaction after the exchange-cancel pass — never FILLED-then-strand.
+    Otherwise the position stays open with a replacement SL: FILLED commits
+    standalone, then the saga.
 
     Placement order is critical: new SL goes on the exchange FIRST so the
     position is never naked across the swap. reduceOnly guarantees at most one
     fills when the trigger hits.
     """
+    oid = tp1_order["order_id"]
     tp1_qty = fill_qty if fill_qty is not None else tp1_order.get("quantity", 0)
     remaining_qty = entry.get("quantity", 0) - tp1_qty
     remaining_qty = _get_live_position_qty(
@@ -649,15 +676,24 @@ def _handle_tp1_fill(
     )
 
     if remaining_qty <= 0:
-        # TP1 was full size — treat as full close. The TP1 FILLED row was
-        # already committed (tp1 route owns it standalone); group the
-        # counterpart cancels atomically (exchange pass before the txn).
+        # Full-size TP1 → FULL close. Exchange-cancel pass OUTSIDE the txn,
+        # then TP1 FILLED + counterpart CANCELLED as ONE unit — a rollback
+        # leaves the close unrecorded so the position stays open and the next
+        # cycle retries (no PLACED counterpart stranded on a closed position).
         targets = _cancel_counterparts_on_exchange(
-            entry["scan_id"], tp1_order["order_id"], symbol, config, conn,
+            entry["scan_id"], oid, symbol, config, conn,
         )
         with transaction(conn):
+            update_order_status(oid, "FILLED", conn,
+                                fill_price=fill_price, filled_quantity=fill_qty)
             _mark_counterparts_cancelled(targets, conn)
         return
+
+    # Partial TP1 → position stays open. Commit TP1 FILLED standalone (a
+    # partial never strands: SUM(filled exit qty) < entry qty), then the
+    # replacement-SL saga (exchange-interleaved, out of C4#6 scope).
+    update_order_status(oid, "FILLED", conn,
+                        fill_price=fill_price, filled_quantity=fill_qty)
 
     # Find the current SL order
     sl_order = next(
@@ -822,7 +858,7 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
         result = market_close_position(
-            entry, symbol, exit_side, remaining_qty, exchange, exec_config, conn,
+            entry, symbol, exit_side, remaining_qty, exchange, exec_config,
         )
 
         if result.kind == "full":
@@ -914,7 +950,7 @@ _CLOSE_NONE = MarketCloseResult("none", None, None)
 
 def market_close_position(
     entry: dict, symbol: str, exit_side: str, qty: float,
-    exchange, config: ExecutionConfig, conn,
+    exchange, config: ExecutionConfig,
     order_type: str = "timeout_close",
 ) -> MarketCloseResult:
     """Place a reduceOnly market order to close a position. 3 retries.

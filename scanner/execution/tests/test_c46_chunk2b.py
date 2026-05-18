@@ -163,6 +163,75 @@ def test_sync_order_status_midcluster_failure_no_counterpart_leak(db):
     assert id(conn) not in _TX_DEPTH
 
 
+def _seed_tp1(conn, qty=1.0):
+    save_order({
+        "order_id": "tp1", "scan_id": "s1", "coin": "ABC", "direction": "LONG",
+        "order_type": "tp1", "status": "PLACED", "trigger_price": 110.0,
+        "exchange_order_id": "", "quantity": qty,
+        "exchange": "hyperliquid", "execution_mode": "testnet",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }, conn)
+    conn.commit()
+
+
+def test_full_size_tp1_close_midcluster_failure_rolls_back_keeps_open(db):
+    """R2-arch HIGH: a full-size TP1 (zero remaining) is a FULL close. The TP1
+    FILLED mark MUST commit atomically with the counterpart cancels — a
+    mid-cluster failure rolls the FILLED back so the position is NOT silently
+    closed with a stranded PLACED SL (the live counter-trend single-TP path)."""
+    conn, path = db
+    _seed_position(conn, sl_exch_oid="")          # SL counterpart, no exch oid
+    _seed_tp1(conn, qty=1.0)                       # full-size TP1 = entry qty
+    tp1 = {"order_id": "tp1", "scan_id": "s1", "coin": "ABC",
+           "direction": "LONG", "order_type": "tp1", "quantity": 1.0,
+           "status": "PLACED", "trigger_price": 110.0}
+    entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG", "quantity": 1.0}
+
+    with patch.object(M, "_get_live_position_qty", return_value=0.0), \
+         patch.object(M, "_mark_counterparts_cancelled",
+                      side_effect=RuntimeError("db boom")):
+        with pytest.raises(RuntimeError, match="db boom"):
+            M._handle_exit_fill(tp1, entry, [tp1], "ABC/USDC:USDC",
+                                object(), _cfg(), conn,
+                                fill_price=110.0, fill_qty=1.0)
+
+    rows = {r["order_id"]: r["status"]
+            for r in _probe(path, "SELECT order_id, status FROM orders")}
+    assert rows["tp1"] == "PLACED"   # FILLED rolled back — NOT a silent close
+    assert rows["sl1"] == "PLACED"   # counterpart not stranded on a closed pos
+    assert {e["scan_id"] for e in get_open_entry_orders(conn)} == {"s1"}
+    assert id(conn) not in _TX_DEPTH
+
+
+def test_partial_becomes_full_close_midcluster_failure_rolls_back(db):
+    """R2-arch HIGH (sibling): a partial SL fill whose live-qty check resolves
+    to zero residual is a FULL close — same atomic guarantee as full-size TP1."""
+    conn, path = db
+    _seed_position(conn, sl_exch_oid="")           # SL is the filled order
+    _seed_tp1(conn, qty=1.0)                        # tp1 counterpart
+    sl = {"order_id": "sl1", "scan_id": "s1", "coin": "ABC",
+          "direction": "LONG", "order_type": "stop_loss", "quantity": 1.0,
+          "status": "PLACED", "trigger_price": 95.0}
+    entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG", "quantity": 1.0}
+
+    with patch.object(M, "_get_live_position_qty", return_value=0.0), \
+         patch.object(M, "_mark_counterparts_cancelled",
+                      side_effect=RuntimeError("db boom")):
+        with pytest.raises(RuntimeError, match="db boom"):
+            # fill_qty 0.4 < order qty 1.0 → partial route → residual 0.6 →
+            # _get_live_position_qty patched to 0 → resolves to FULL close.
+            M._handle_exit_fill(sl, entry, [sl], "ABC/USDC:USDC",
+                                object(), _cfg(), conn,
+                                fill_price=95.0, fill_qty=0.4)
+
+    rows = {r["order_id"]: r["status"]
+            for r in _probe(path, "SELECT order_id, status FROM orders")}
+    assert rows["sl1"] == "PLACED"   # FILLED rolled back
+    assert rows["tp1"] == "PLACED"   # counterpart not stranded
+    assert {e["scan_id"] for e in get_open_entry_orders(conn)} == {"s1"}
+    assert id(conn) not in _TX_DEPTH
+
+
 def test_timeout_full_close_midcluster_failure_rolls_back_keeps_open(db):
     conn, path = db
     _seed_position(conn)

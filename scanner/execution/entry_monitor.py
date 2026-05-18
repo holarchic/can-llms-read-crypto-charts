@@ -437,7 +437,12 @@ def save_conditional_entry(
                 update_pending_status(entry["pending_id"], "INVALIDATED", conn)
                 _send_resolution_alert(entry, "invalidated", exec_config)
         except Exception as exc:
-            log.warning("Immediate trigger check failed for %s — will retry at next cycle: %s", coin, exc)
+            # _execute_triggered_entry now resolves terminally and re-raises
+            # on skip/execute errors — a triggered-then-failed pending is
+            # TRIGGER_FAILED and will NOT retry. Only a pre-trigger failure
+            # (still ACTIVE) is retried next cycle.
+            log.warning("Immediate trigger check failed for %s — retried next "
+                        "cycle only if the pending is still ACTIVE: %s", coin, exc)
 
     return True
 
