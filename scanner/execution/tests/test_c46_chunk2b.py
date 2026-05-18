@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from scanner.execution import drift as D
+from scanner.execution import exit_fills as EF
 from scanner.execution import monitor as M
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.storage import (
@@ -101,8 +102,8 @@ def test_sync_full_close_midcluster_failure_rolls_back_keeps_open(db):
           "status": "PLACED", "trigger_price": 95.0}
     entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG", "quantity": 1.0}
 
-    with patch.object(M, "_cancel_counterparts_on_exchange", return_value=[]), \
-         patch.object(M, "_mark_counterparts_cancelled",
+    with patch.object(EF, "_cancel_counterparts_on_exchange", return_value=[]), \
+         patch.object(EF, "_mark_counterparts_cancelled",
                       side_effect=RuntimeError("db boom")):
         with pytest.raises(RuntimeError, match="db boom"):
             M._handle_exit_fill(sl, entry, [sl], "ABC/USDC:USDC",
@@ -148,8 +149,8 @@ def test_sync_order_status_midcluster_failure_no_counterpart_leak(db):
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
          patch.object(M, "_send_fill_alert", return_value=True), \
-         patch.object(M, "cancel_order", return_value=True), \
-         patch.object(M, "_mark_counterparts_cancelled",
+         patch.object(EF, "cancel_order", return_value=True), \
+         patch.object(EF, "_mark_counterparts_cancelled",
                       side_effect=RuntimeError("db boom")):
         # exchange_open_orders=[] → both SL and tp1 are "disappeared".
         M.sync_order_status(cfg, conn, exchange_open_orders=[])
@@ -187,8 +188,8 @@ def test_full_size_tp1_close_midcluster_failure_rolls_back_keeps_open(db):
            "status": "PLACED", "trigger_price": 110.0}
     entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG", "quantity": 1.0}
 
-    with patch.object(M, "_get_live_position_qty", return_value=0.0), \
-         patch.object(M, "_mark_counterparts_cancelled",
+    with patch.object(EF, "_get_live_position_qty", return_value=0.0), \
+         patch.object(EF, "_mark_counterparts_cancelled",
                       side_effect=RuntimeError("db boom")):
         with pytest.raises(RuntimeError, match="db boom"):
             M._handle_exit_fill(tp1, entry, [tp1], "ABC/USDC:USDC",
@@ -214,8 +215,8 @@ def test_partial_becomes_full_close_midcluster_failure_rolls_back(db):
           "status": "PLACED", "trigger_price": 95.0}
     entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG", "quantity": 1.0}
 
-    with patch.object(M, "_get_live_position_qty", return_value=0.0), \
-         patch.object(M, "_mark_counterparts_cancelled",
+    with patch.object(EF, "_get_live_position_qty", return_value=0.0), \
+         patch.object(EF, "_mark_counterparts_cancelled",
                       side_effect=RuntimeError("db boom")):
         with pytest.raises(RuntimeError, match="db boom"):
             # fill_qty 0.4 < order qty 1.0 → partial route → residual 0.6 →

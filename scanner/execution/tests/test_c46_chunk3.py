@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from scanner.execution import entry_monitor as EM
+from scanner.execution import exit_fills as EF
 from scanner.execution import monitor as M
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import ExecutionResult
@@ -207,7 +208,7 @@ def _recover(conn, exch):
     with patch.object(M, "get_auth_exchange", return_value=exch), \
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
-         patch.object(M, "get_open_positions",
+         patch.object(EF, "get_open_positions",
                       return_value=[{"coin": "ABC", "direction": "LONG",
                                      "size": 1.0}]):
         return M.attempt_sl_recovery(issue, _cfg(), conn)

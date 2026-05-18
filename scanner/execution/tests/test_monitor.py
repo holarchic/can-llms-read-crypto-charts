@@ -170,7 +170,7 @@ class TestSyncOrderStatus:
         assert order["error_message"] == "Closed with zero fill"
         assert order["fill_price"] is None  # no phantom fill recorded
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_cancels_remaining_on_fill(self, mock_auth, mock_cancel, config, conn):
         """When SL fills, cancel TP orders."""
@@ -287,7 +287,7 @@ class TestPhantomSLDetection:
         assert len(issues) == 0
 
     @patch("scanner.execution.monitor.get_auth_exchange")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_exchange_open_orders", return_value=[])
     def test_missing_from_open_orders_reclassifies_fill_not_phantom(
         self, mock_orders, mock_cancel, mock_auth, config, conn,
@@ -407,7 +407,7 @@ class TestBatchFetchOptimization:
 class TestStaleListSafety:
     """Exit fill breaks the inner loop to avoid stale-list corruption."""
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_fill_does_not_reprocess_stale_sl(self, mock_auth, mock_cancel, config, conn):
         """After TP1 fills and replaces SL, the old SL must not be checked in same cycle."""
@@ -448,7 +448,7 @@ class TestStaleListSafety:
 
 
 class TestPartialExitHandling:
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_fill_adjusts_sl_keeps_tp2(self, mock_auth, mock_cancel, config, conn):
         """TP1 fills → SL cancelled + replaced at reduced qty, TP2 stays PLACED."""
@@ -498,7 +498,7 @@ class TestPartialExitHandling:
         # Old SL should have been cancelled on exchange
         mock_cancel.assert_called_once()
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_sl_replacement_has_cloid(self, mock_auth, mock_cancel, config, conn):
         """SL replacement create_order includes clientOrderId in params."""
@@ -529,7 +529,7 @@ class TestPartialExitHandling:
         assert "clientOrderId" in params
         assert params["clientOrderId"].startswith("0x")
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp2_fill_cancels_sl(self, mock_auth, mock_cancel, config, conn):
         """TP2 fills → SL cancelled (fully closed)."""
@@ -563,7 +563,7 @@ class TestPartialExitHandling:
         sl_result = get_order(sl["order_id"], conn)
         assert sl_result["status"] == "CANCELLED"
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_closed_exit_uses_actual_fill_qty(self, mock_auth, mock_cancel, config, conn):
         """TP1 quantity=0.05 but exchange filled=0.03 → SL replacement uses entry - 0.03."""
@@ -599,7 +599,7 @@ class TestPartialExitHandling:
         assert new_sl["quantity"] == 0.07
         assert new_sl["exchange_order_id"] == "sl_exch2"
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_canceled_with_partial_fill_treated_as_fill(self, mock_auth, mock_cancel, config, conn):
         """SL canceled with filled=0.08/0.10 → DB shows FILLED qty=0.08, TPs cancelled."""
@@ -662,7 +662,7 @@ class TestPartialExitHandling:
         assert new_sl["exchange_order_id"] == "sl_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_sl_replacement_retries_on_failure(self, mock_auth, mock_cancel, mock_sleep,
                                                     config, conn):
@@ -700,7 +700,7 @@ class TestPartialExitHandling:
 
     @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_sl_replacement_exhausted_sends_urgent(self, mock_auth, mock_cancel,
                                                         mock_sleep, mock_post, config, conn):
@@ -745,7 +745,7 @@ class TestPartialExitHandling:
         assert "BTC" in call_body
 
     @patch("scanner.execution.alerts.requests.post")
-    @patch("scanner.execution.monitor.cancel_order", return_value=False)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=False)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_cancel_failure_replaces_silently(
         self, mock_auth, mock_cancel, mock_post, config, conn,
@@ -874,7 +874,7 @@ class TestPartialSLTP2Fill:
     """Partial SL/TP2 fills should re-place orders at residual quantity."""
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_sl_partial_fill_replaces_sl_and_tp2(self, mock_auth, mock_cancel, mock_sleep,
                                                   config, conn):
@@ -923,7 +923,7 @@ class TestPartialSLTP2Fill:
         assert new_tp2["exchange_order_id"] == "tp2_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp2_partial_fill_replaces_tp2_and_sl(self, mock_auth, mock_cancel, mock_sleep,
                                                    config, conn):
@@ -973,7 +973,7 @@ class TestPartialSLTP2Fill:
         assert new_tp2["exchange_order_id"] == "tp2_exch2"
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_sl_partial_fill_no_active_tp2(self, mock_auth, mock_cancel, mock_sleep,
                                             config, conn):
@@ -1006,7 +1006,7 @@ class TestPartialSLTP2Fill:
 
     @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_sl_partial_fill_replacement_fails_sends_alert(self, mock_auth, mock_cancel,
                                                             mock_sleep, mock_post, config, conn):
@@ -1035,7 +1035,7 @@ class TestPartialSLTP2Fill:
         assert "URGENT" in call_body
         assert "BTC" in call_body
 
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_full_sl_fill_still_cancels_remaining(self, mock_auth, mock_cancel, config, conn):
         """Full SL fill (no partial) still takes the existing full-close path — no regression."""
@@ -1073,9 +1073,9 @@ class TestPartialSLTP2Fill:
 class TestLivePositionQtyCrossCheck:
     """Replacement orders cross-check qty against exchange position."""
 
-    @patch("scanner.execution.monitor.get_open_positions")
+    @patch("scanner.execution.exit_fills.get_open_positions")
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_replacement_uses_exchange_qty_on_mismatch(self, mock_auth, mock_cancel,
                                                         mock_sleep, mock_positions, config, conn):
@@ -1107,9 +1107,9 @@ class TestLivePositionQtyCrossCheck:
         assert new_sl is not None
         assert new_sl["quantity"] == pytest.approx(0.03)
 
-    @patch("scanner.execution.monitor.get_open_positions", side_effect=Exception("API timeout"))
+    @patch("scanner.execution.exit_fills.get_open_positions", side_effect=Exception("API timeout"))
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_replacement_falls_back_to_db_on_error(self, mock_auth, mock_cancel,
                                                      mock_sleep, mock_positions, config, conn):
@@ -1135,9 +1135,9 @@ class TestLivePositionQtyCrossCheck:
         assert new_sl is not None
         assert new_sl["quantity"] == pytest.approx(0.04)
 
-    @patch("scanner.execution.monitor.get_open_positions")
+    @patch("scanner.execution.exit_fills.get_open_positions")
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_replacement_logs_mismatch(self, mock_auth, mock_cancel, mock_sleep,
                                         mock_positions, config, conn, caplog):
@@ -1256,7 +1256,7 @@ class TestPositionTimeout:
         return entry
 
     @patch("scanner.execution.alerts.requests.post")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_happy_path_times_out_old_position(self, mock_auth, mock_cancel, mock_post, config, conn):
         """Entry filled 80h ago (timeout=72) → market close + timeout_close saved + SL cancelled + alert."""
@@ -1310,7 +1310,7 @@ class TestPositionTimeout:
         mock_exchange.create_order.assert_not_called()
 
     @patch("scanner.execution.alerts.requests.post")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_remaining_qty_after_tp1(self, mock_auth, mock_cancel, mock_post, config, conn):
         """Entry 0.1, TP1 filled 0.05 → timeout closes remaining 0.05."""
@@ -1337,7 +1337,7 @@ class TestPositionTimeout:
         assert call_args[0][3] == 0.05  # qty argument
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_retry_success(self, mock_auth, mock_cancel, mock_sleep, config, conn):
         """Market close fails twice, succeeds third → order saved."""
@@ -1552,7 +1552,7 @@ class TestReplacementOrderTypes:
     """Replacement orders (TP1 fill, partial fill) use type='market'."""
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_sl_replacement_uses_market_type(self, mock_auth, mock_cancel, mock_sleep,
                                                    config, conn):
@@ -1583,7 +1583,7 @@ class TestReplacementOrderTypes:
         assert call_args[0][5]["stopLossPrice"] == 59800
 
     @patch("scanner.execution.monitor.time.sleep")
-    @patch("scanner.execution.monitor.cancel_order", return_value=True)
+    @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_partial_sl_replacement_uses_market_type(self, mock_auth, mock_cancel, mock_sleep,
                                                        config, conn):

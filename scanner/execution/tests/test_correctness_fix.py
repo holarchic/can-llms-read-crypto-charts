@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from scanner.execution import drift as D
+from scanner.execution import exit_fills as EF
 from scanner.execution import monitor as M
 from scanner.execution.analytics import compute_live_metrics
 from scanner.execution.config import ExecutionConfig
@@ -214,7 +215,7 @@ def test_full_caller_persists_row_and_cloid_identical_to_baseline():
     ex = FakeExchange({"id": "EXCH7", "status": "closed", "filled": 1.0, "average": 99.0})
 
     with patch.object(D, "_send_drift_close_alert"), \
-         patch.object(M, "cancel_order", return_value=True):
+         patch.object(EF, "cancel_order", return_value=True):
         rc = D._execute_force_close(
             entry, "reversal", {}, "ABC/USDC:USDC", ex, _cfg(), conn,
         )

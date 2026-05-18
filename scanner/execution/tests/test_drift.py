@@ -348,7 +348,7 @@ class TestSlMove:
         mock_exchange.amount_to_precision.return_value = "1.0"
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
-        with patch("scanner.execution.monitor.cancel_order", return_value=True):
+        with patch("scanner.execution.exit_fills.cancel_order", return_value=True):
             result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
@@ -386,7 +386,7 @@ class TestSlMove:
         mock_exchange.amount_to_precision.return_value = "1.0"
         mock_exchange.create_order.return_value = {"id": "new_sl_id"}
 
-        with patch("scanner.execution.monitor.cancel_order", return_value=True):
+        with patch("scanner.execution.exit_fills.cancel_order", return_value=True):
             result = _move_sl_to_price(entry, sl_order, 100.0, "BTC/USDT:USDT", mock_exchange, drift_config, conn)
 
         assert result is True
