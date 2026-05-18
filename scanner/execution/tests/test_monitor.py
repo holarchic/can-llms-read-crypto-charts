@@ -698,7 +698,7 @@ class TestPartialExitHandling:
         assert mock_exchange.create_order.call_count == 3
         assert mock_sleep.call_count == 2  # backoff between retries
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
@@ -744,7 +744,7 @@ class TestPartialExitHandling:
         assert "URGENT" in call_body
         assert "BTC" in call_body
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.cancel_order", return_value=False)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_cancel_failure_replaces_silently(
@@ -1004,7 +1004,7 @@ class TestPartialSLTP2Fill:
         # Only one create_order call (SL only, no TP2)
         assert mock_exchange.create_order.call_count == 1
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
@@ -1255,7 +1255,7 @@ class TestPositionTimeout:
         save_order(entry, conn)
         return entry
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_happy_path_times_out_old_position(self, mock_auth, mock_cancel, mock_post, config, conn):
@@ -1309,7 +1309,7 @@ class TestPositionTimeout:
         assert result == 0
         mock_exchange.create_order.assert_not_called()
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_remaining_qty_after_tp1(self, mock_auth, mock_cancel, mock_post, config, conn):
@@ -1357,7 +1357,7 @@ class TestPositionTimeout:
         assert mock_exchange.create_order.call_count == 3
         assert mock_sleep.call_count == 2
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_all_retries_fail_sends_urgent(self, mock_auth, mock_sleep, mock_post, config, conn):
@@ -1442,7 +1442,7 @@ class TestCalcR:
 class TestFillAlert:
     """SL/TP fill Discord embed notifications."""
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_fill_alert_sl(self, mock_post):
         """SL fill → red embed, SL FILLED title, R value field."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1461,7 +1461,7 @@ class TestFillAlert:
         assert "59,800.00" in field_values["Fill Price"]
         assert "-1.00R" in field_values["R Value"]
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_fill_alert_tp(self, mock_post):
         """TP1 fill → green embed, TP1 FILLED title, R value from scan_orders SL."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1480,7 +1480,7 @@ class TestFillAlert:
         field_values = {f["name"]: f["value"] for f in embed["fields"]}
         assert "+2.00R" in field_values["R Value"]
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_fill_alert_tp_no_scan_orders(self, mock_post):
         """TP fill without scan_orders → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1496,7 +1496,7 @@ class TestFillAlert:
         field_names = [f["name"] for f in embed["fields"]]
         assert "R Value" not in field_names
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_fill_alert_sl_drift_flatten_uses_original_sl(self, mock_post):
         """Drift-flatten case: SL was moved to entry, then filled at entry.
         Without using the original SL as risk anchor, risk = 0 → R=None →
@@ -1522,7 +1522,7 @@ class TestFillAlert:
         assert "R Value" in field_values
         assert "+0.00R" in field_values["R Value"]
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_fill_alert_no_entry_price(self, mock_post):
         """No entry_price on entry dict → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1648,7 +1648,7 @@ class TestRejectedExitOrderReplacement:
         call_args = mock_exchange.create_order.call_args
         assert call_args[0][5]["stopLossPrice"] == 59800.0
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_rejected_tp1_not_replaced(self, mock_auth, mock_sleep, mock_post, config, conn):
@@ -1671,7 +1671,7 @@ class TestRejectedExitOrderReplacement:
         assert tp1_result["status"] == "CANCELLED"
         mock_exchange.create_order.assert_not_called()
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_expired_tp2_not_replaced(self, mock_auth, mock_sleep, mock_post, config, conn):
@@ -1721,7 +1721,7 @@ class TestRejectedExitOrderReplacement:
         assert new_sl is not None
         assert new_sl["exchange_order_id"] == "sl_exch2"
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_rejected_sl_replacement_fails_sends_urgent(self, mock_auth, mock_sleep,
@@ -1750,7 +1750,7 @@ class TestRejectedExitOrderReplacement:
         assert "URGENT" in call_body
         assert "BTC" in call_body
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_rejected_tp_sends_errors_alert(self, mock_auth, mock_sleep,
@@ -1834,7 +1834,7 @@ class TestRejectedExitOrderReplacement:
         # fetch_order never called — entry excluded from open_entries
         mock_exchange.fetch_order.assert_not_called()
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp_cancel_after_sl_fill_skips_alert(self, mock_auth, mock_sleep,
@@ -2094,7 +2094,7 @@ class TestAttemptSlRecovery:
 class TestRateLimitInReplacement:
     """Rate limit errors abort retries immediately to conserve API budget."""
 
-    @patch("scanner.execution.monitor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_sl_replacement_rate_limited_breaks_and_alerts(self, mock_auth, mock_sleep,

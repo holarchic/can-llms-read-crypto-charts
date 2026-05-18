@@ -13,7 +13,6 @@ import logging
 from datetime import datetime, timezone
 
 import pandas as pd
-import requests
 
 from scanner.config import get_exchange_meta
 from scanner.db import get_connection as get_scanner_connection
@@ -291,12 +290,9 @@ def _send_drift_sl_alert(
         ],
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Drift SL alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Drift SL alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 def _send_drift_close_alert(
@@ -320,12 +316,9 @@ def _send_drift_close_alert(
         "fields": fields,
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Drift close alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Drift close alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
@@ -357,12 +350,9 @@ def _send_trailing_sl_alert(
         ],
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Trailing SL alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Trailing SL alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 # ---------------------------------------------------------------------------

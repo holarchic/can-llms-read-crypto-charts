@@ -5,8 +5,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import requests
-
 from scanner.config import get_exchange_meta
 from scanner.db import get_connection
 
@@ -750,12 +748,9 @@ def _send_errors_tp_alert(
     label = order_type.upper()
     message = (f"**{label} rejected by exchange** for {coin} {direction} "
                f"— profit target not placed")
-    try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("TP errors alert send failed: %s", exc)
-        return False
+    from .alerts import post_content
+    return post_content(webhook, message, "TP errors alert send",
+                        failure_logger=log, failure_level=logging.ERROR)
 
 
 def _attempt_exit_order_replacement(
@@ -1151,12 +1146,8 @@ def _send_fill_alert(
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
 
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.warning("Fill alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Fill alert", failure_logger=log)
 
 
 def _send_timeout_alert(
@@ -1188,12 +1179,9 @@ def _send_timeout_alert(
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
 
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Timeout alert send failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Timeout alert send",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 def _reclassify_missing_sl(
@@ -1600,9 +1588,6 @@ def send_open_positions_report(exec_config: ExecutionConfig, conn=None) -> bool:
     if own_conn:
         conn.close()
 
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Open positions report failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Open positions report",
+                      failure_logger=log, failure_level=logging.ERROR)

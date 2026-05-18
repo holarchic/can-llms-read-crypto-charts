@@ -10,8 +10,6 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import requests
-
 from scanner.config import ScannerConfig
 from scanner.models import (
     Direction,
@@ -220,12 +218,9 @@ def _send_pending_alert(pending: dict, config: ExecutionConfig) -> bool:
         ],
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Pending alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Pending alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 def _send_trigger_alert(pending: dict, config: ExecutionConfig) -> bool:
@@ -244,12 +239,9 @@ def _send_trigger_alert(pending: dict, config: ExecutionConfig) -> bool:
         ],
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Trigger alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Trigger alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 def _send_resolution_alert(
@@ -269,12 +261,9 @@ def _send_resolution_alert(
         ],
         "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
     }
-    try:
-        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.error("Resolution alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(webhook, embed, "Resolution alert",
+                      failure_logger=log, failure_level=logging.ERROR)
 
 
 # ---------------------------------------------------------------------------

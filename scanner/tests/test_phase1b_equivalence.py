@@ -148,7 +148,7 @@ def _run_execute(req: ExecutionRequest) -> dict:
          patch("scanner.execution.executor.is_killed", return_value=False), \
          patch("scanner.execution.executor.new_order_id", return_value="OID"), \
          patch("scanner.execution.executor.make_cloid", return_value="CLOID"), \
-         patch("scanner.execution.executor.requests.post",
+         patch("scanner.execution.alerts.requests.post",
                return_value=MagicMock(status_code=204)):
         edt.now.return_value = _FROZEN_NOW
         try:

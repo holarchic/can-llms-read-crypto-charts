@@ -195,7 +195,7 @@ class TestValidateExecutionParams:
 
 
 class TestExecuteTrade:
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -222,7 +222,7 @@ class TestExecuteTrade:
         entry_order = next(o for o in orders if o["order_type"] == "entry")
         assert entry_order["entry_price"] == 62050  # from mock average, not (61800+62200)/2
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -319,7 +319,7 @@ class TestExecuteTrade:
         assert result.skip_reason == "position_limit"
 
     @patch("scanner.execution.executor.calculate_position")
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -338,7 +338,7 @@ class TestExecuteTrade:
         assert result.executed is False
         assert result.skip_reason == "insufficient_margin"
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -365,7 +365,7 @@ class TestExecuteTrade:
         assert result.sl_failed is False
         assert result.sl_order_id != ""
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -408,7 +408,7 @@ class TestExecuteTrade:
         tp_orders = [o for o in orders if o["order_type"] in ("tp1", "tp2")]
         assert len(tp_orders) == 0
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -454,7 +454,7 @@ class TestExecuteTrade:
         assert len(urgent_calls) > 0
 
     @patch("scanner.execution.executor.time.sleep")
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -495,7 +495,7 @@ class TestExecuteTrade:
         assert len(urgent_failed_calls) == 0
 
     @patch("scanner.execution.executor.time.sleep")
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -531,7 +531,7 @@ class TestExecuteTrade:
         assert ec_orders[0]["status"] == "FILLED"
 
     @patch("scanner.execution.executor.time.sleep")
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -562,7 +562,7 @@ class TestExecuteTrade:
         sleep_calls = [c[0][0] for c in mock_sleep.call_args_list]
         assert 20 in sleep_calls
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -593,7 +593,7 @@ class TestExecuteTrade:
                        if "URGENT" in str(c)]
         assert len(urgent_calls) == 0
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -622,7 +622,7 @@ class TestExecuteTrade:
                        if "URGENT" in str(c)]
         assert len(urgent_calls) >= 1
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -646,7 +646,7 @@ class TestExecuteTrade:
         assert result.sl_order_id != ""
         assert result.tp1_order_id == ""  # TP failed, non-fatal
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -662,7 +662,7 @@ class TestExecuteTrade:
         execute_trade(_make_request(), exec_config, scanner_config, conn)
         assert mock_discord.called
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -688,7 +688,7 @@ class TestExecuteTrade:
         assert orders[0]["status"] == "CANCELLED"
         assert orders[0]["quantity"] == 0
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -731,7 +731,7 @@ class TestExecuteTrade:
                      if "Partial fill" in str(c)]
         assert len(ops_calls) > 0
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -760,7 +760,7 @@ class TestExecuteTrade:
 
 
 class TestReanchoredExitPrices:
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -789,7 +789,7 @@ class TestReanchoredExitPrices:
         # delta = 62300 - 62000 = +300
         assert "+300" in reanchor_logs[0].message
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -823,7 +823,7 @@ class TestReanchoredExitPrices:
         tp2 = get_order(result.tp2_order_id, conn)
         assert float(tp2["trigger_price"]) == 68300
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -855,7 +855,7 @@ class TestReanchoredExitPrices:
 
 
 class TestClientOrderId:
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -1136,7 +1136,7 @@ class TestUnprotectedPositionGuard:
         assert result.executed is False
         assert result.skip_reason == "unprotected_position"
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_open_positions", return_value=[])
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
@@ -1237,7 +1237,7 @@ class TestCapitalBounds:
         assert result.executed is False
         assert result.skip_reason == "notional_limit"
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_open_positions", return_value=[])
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
@@ -1332,7 +1332,7 @@ class TestOpenOrderCap:
         assert result.executed is False
         assert result.skip_reason == "open_order_limit"
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_exchange_open_orders")
     @patch("scanner.execution.executor.get_open_positions", return_value=[])
     @patch("scanner.execution.executor.get_auth_exchange")
@@ -1386,7 +1386,7 @@ class TestOpenOrderCap:
 class TestSkipAlertSeverity:
     """Critical vs routine skip alert formatting."""
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_skip_alert_critical_includes_everyone(self, mock_post, exec_config):
         """position_mismatch → @everyone + BLOCKED."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1398,7 +1398,7 @@ class TestSkipAlertSeverity:
         assert "@everyone" in body["content"]
         assert "BLOCKED" in body["content"]
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_skip_alert_routine_embed(self, mock_post, exec_config):
         """position_limit → embed with SKIPPED title, no @everyone."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1414,7 +1414,7 @@ class TestSkipAlertSeverity:
         field_values = {f["name"]: f["value"] for f in embed["fields"]}
         assert field_values["Reason"] == "position_limit"
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     def test_skip_alert_routine_with_detail(self, mock_post, exec_config):
         """Routine skip with error detail → Detail field in embed."""
         mock_post.return_value = MagicMock(status_code=204)
@@ -1488,7 +1488,7 @@ class TestOrderTypeMarket:
 class TestBatchExitOrders:
     """Tests for batch exit order placement (SL + TP1 + TP2 in one API call)."""
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -1525,7 +1525,7 @@ class TestBatchExitOrders:
         order_types = {o["order_type"] for o in orders}
         assert {"entry", "stop_loss", "tp1", "tp2"} == order_types
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -1549,7 +1549,7 @@ class TestBatchExitOrders:
         # Sequential used: entry + SL + TP1 + TP2 = 4 create_order calls
         assert mock_exchange.create_order.call_count == 4
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -1590,7 +1590,7 @@ class TestExecutorAtomicExitCluster:
     transaction after all exchange placement (placement-before-persistence).
     Backfills the plan's Chunk-2 injected-failure + fallback verification."""
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)
@@ -1627,7 +1627,7 @@ class TestExecutorAtomicExitCluster:
         assert "stop_loss" not in types  # cluster rolled back as one unit
         assert "tp1" not in types and "tp2" not in types
 
-    @patch("scanner.execution.executor.requests.post")
+    @patch("scanner.execution.alerts.requests.post")
     @patch("scanner.execution.executor.get_auth_exchange")
     @patch("scanner.execution.executor.fetch_balance", return_value=10000)
     @patch("scanner.execution.executor.fetch_current_price", return_value=62000)

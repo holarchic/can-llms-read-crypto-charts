@@ -58,3 +58,44 @@ def send_urgent(webhook: str, content: str, max_retries: int = 3) -> bool:
             time.sleep(2 ** (attempt - 1))  # 1s, 2s
     log.error("URGENT alert exhausted — see urgent-alerts.log for content")
     return False
+
+
+def post_embed(
+    webhook: str | None, embed: dict, label: str, *,
+    failure_logger: logging.Logger, failure_level: int = logging.WARNING,
+) -> bool:
+    """Single owner of the Discord webhook delivery + 204-interpretation
+    decision for embed alerts (T-016 Phase 3, SPEC #26 e). Returns True on a
+    204 ack, False on no-webhook / non-204 / exception.
+
+    The send failure is logged THROUGH the caller's logger
+    (`failure_logger`) at the caller's level (`failure_level`) so the buffered
+    `LogRecord.name`, level, and message stem stay byte-identical — the
+    `discord_logging` ERROR-buffer keys its operational embed on
+    `record.name`, so centralising the log call here would mis-attribute it.
+    """
+    if not webhook:
+        return False
+    try:
+        resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        failure_logger.log(failure_level, "%s failed: %s", label, exc)
+        return False
+
+
+def post_content(
+    webhook: str | None, content: str, label: str, *,
+    failure_logger: logging.Logger, failure_level: int = logging.WARNING,
+) -> bool:
+    """Single owner of the Discord webhook delivery + 204-interpretation
+    decision for plain-content alerts (T-016 Phase 3, SPEC #26 e). Failure
+    logging semantics identical to `post_embed`."""
+    if not webhook:
+        return False
+    try:
+        resp = requests.post(webhook, json={"content": content}, timeout=10)
+        return resp.status_code == 204
+    except Exception as exc:
+        failure_logger.log(failure_level, "%s failed: %s", label, exc)
+        return False

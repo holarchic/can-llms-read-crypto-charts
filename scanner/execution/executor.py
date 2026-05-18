@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import requests
 from ccxt.base.errors import DuplicateOrderId
 
 from scanner.config import get_exchange_meta
@@ -950,16 +949,9 @@ def _send_execution_alert(exec_result: ExecutionResult, config: ExecutionConfig)
         embed["title"] += " [NO SL]"
         embed["fields"].append({"name": "Stop Loss", "value": "FAILED — position unprotected", "inline": False})
 
-    try:
-        resp = requests.post(
-            config.discord_ops_webhook_url,
-            json={"embeds": [embed]},
-            timeout=10,
-        )
-        return resp.status_code == 204
-    except Exception as exc:
-        log.warning("Discord execution alert failed: %s", exc)
-        return False
+    from .alerts import post_embed
+    return post_embed(config.discord_ops_webhook_url, embed,
+                      "Discord execution alert", failure_logger=log)
 
 
 def _send_urgent_alert(message: str, config: ExecutionConfig) -> bool:
@@ -981,12 +973,8 @@ def _send_ops_alert(message: str, config: ExecutionConfig) -> bool:
     if not webhook:
         return False
 
-    try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.warning("Ops alert failed: %s", exc)
-        return False
+    from .alerts import post_content
+    return post_content(webhook, message, "Ops alert", failure_logger=log)
 
 
 def _send_errors_alert(message: str, config: ExecutionConfig) -> bool:
@@ -995,12 +983,8 @@ def _send_errors_alert(message: str, config: ExecutionConfig) -> bool:
     if not webhook:
         return False
 
-    try:
-        resp = requests.post(webhook, json={"content": message}, timeout=10)
-        return resp.status_code == 204
-    except Exception as exc:
-        log.warning("Errors alert failed: %s", exc)
-        return False
+    from .alerts import post_content
+    return post_content(webhook, message, "Errors alert", failure_logger=log)
 
 
 def preflight_check(exec_config: ExecutionConfig) -> list[str]:
@@ -1044,15 +1028,9 @@ def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
     detail = f" ({er.error})" if er.error else ""
     if er.skip_reason in _CRITICAL_SKIP_REASONS:
         message = f"@everyone **BLOCKED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
-        webhook = config.discord_urgent_webhook_url
-        if not webhook:
-            return False
-        try:
-            resp = requests.post(webhook, json={"content": message}, timeout=10)
-            return resp.status_code == 204
-        except Exception as exc:
-            log.warning("Critical skip alert failed: %s", exc)
-            return False
+        from .alerts import post_content
+        return post_content(config.discord_urgent_webhook_url, message,
+                            "Critical skip alert", failure_logger=log)
     elif er.skip_reason in _ERROR_SKIP_REASONS:
         message = f"**SKIPPED** {er.coin} {er.direction}: {er.skip_reason}{detail}"
         return _send_errors_alert(message, config)
@@ -1069,9 +1047,5 @@ def send_skip_alert(er: ExecutionResult, config: ExecutionConfig) -> bool:
             "fields": fields,
             "footer": {"text": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")},
         }
-        try:
-            resp = requests.post(webhook, json={"embeds": [embed]}, timeout=10)
-            return resp.status_code == 204
-        except Exception as exc:
-            log.warning("Skip alert failed: %s", exc)
-            return False
+        from .alerts import post_embed
+        return post_embed(webhook, embed, "Skip alert", failure_logger=log)
