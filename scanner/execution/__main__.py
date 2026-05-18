@@ -168,6 +168,19 @@ def _cmd_monitor(config, discord_handler=None):
         except _TRANSIENT as exc:
             print(f"enforce_position_timeouts skipped (transient): {exc}")
 
+        # Proactive exchange-truth-vs-DB reconcile (KL#0 / SPEC #29) — runs
+        # before the SL-path health check so a missed external close is
+        # surfaced (manual_close booked) and a stranded TRIGGERED pending
+        # resolved this cycle, independent of attempt_sl_recovery. Internally
+        # fail-closed on absent/lossy exchange truth (mutates nothing).
+        try:
+            from .reconcile import reconcile_positions
+            reconciled = reconcile_positions(config, conn)
+            if reconciled:
+                print(f"Reconciled: {reconciled}")
+        except _TRANSIENT as exc:
+            print(f"reconcile_positions skipped (transient): {exc}")
+
         try:
             issues = check_positions(config, conn,
                                      exchange_open_orders=exchange_open_orders)
