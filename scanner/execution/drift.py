@@ -20,14 +20,18 @@ from scanner.indicators import find_swing_points
 
 from .config import ExecutionConfig
 from .exchange import get_auth_exchange
-from .monitor import (
-    _calc_r,
+
+# T-016 Phase 4a (SPEC #27): re-pointed at the true owners — the audit-named
+# drift→monitor private reach-in is eliminated (drift depends on the typed
+# leaf modules directly, not the monitor coordinator's re-export).
+from .exit_fills import (
     _cancel_counterparts_on_exchange,
     _get_remaining_qty,
     _mark_counterparts_cancelled,
     _place_replacement_exit_order,
-    market_close_position,
 )
+from .monitor_alerts import _calc_r
+from .position_close import market_close_position
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
