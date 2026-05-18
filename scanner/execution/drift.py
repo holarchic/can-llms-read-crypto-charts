@@ -627,8 +627,13 @@ def _execute_force_close(
 
         # Atomic full-close boundary: exchange-cancel pass first (outside the
         # txn), then the close row + counterpart CANCELLED marks commit as ONE
-        # unit — a rollback leaves the close unrecorded so the position stays
-        # in the open set and the next cycle retries (self-healing, DB scoped).
+        # unit. NOTE: the market close already executed on the exchange
+        # (irreversible). A DB rollback here does NOT cleanly "retry" — the
+        # exchange is flat but DB shows the position open, the confirmed-close
+        # payload is lost, and next-cycle recovery can degrade to a synthetic
+        # manual_close at entry price. This exchange-closed/DB-open window is
+        # the EXPLICITLY NAMED Phase-3b reconcile residual (SPEC #25; a
+        # saga/outbox journal was explicitly rejected by the approved design).
         targets = _cancel_counterparts_on_exchange(
             entry["scan_id"], "", symbol, config, conn,
         )

@@ -874,8 +874,17 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
 
             # Atomic full-close boundary: exchange-cancel pass first (outside
             # the txn), then the close row + counterpart CANCELLED marks commit
-            # as ONE unit. A rollback leaves the close unrecorded so the
-            # position stays in the open set and the next cycle retries.
+            # as ONE unit. NOTE: the market close already executed on the
+            # exchange (irreversible). A DB rollback here does NOT cleanly
+            # "retry" — the exchange is flat but DB shows the position open,
+            # the confirmed-close payload is lost, and next-cycle recovery can
+            # degrade to a synthetic manual_close at entry price. This
+            # exchange-closed/DB-open window is the EXPLICITLY NAMED Phase-3b
+            # reconcile residual (SPEC #25 self-healing scope: DB-cluster
+            # failure with no exchange call interleaved is retryable; a
+            # confirmed-exchange-close-then-DB-rollback is NOT, by design — a
+            # saga/outbox journal was explicitly rejected). DB-cluster failure
+            # on local WAL SQLite is rare; the reconcile pass owns truth-vs-DB.
             targets = _cancel_counterparts_on_exchange(
                 entry["scan_id"], "", symbol, exec_config, conn,
             )
@@ -1394,6 +1403,16 @@ def attempt_sl_recovery(
     # has no matching position, placing a reduceOnly SL is guaranteed to
     # reject ("no position to reduce"). Rather than trigger 3-retry + urgent
     # alert + next-cycle repeat, record the closure as manual_close and bail.
+    #
+    # NAMED Phase-3b reconcile residual (SPEC #25): this synthetic
+    # manual_close is booked at the ENTRY price. It is the correct fabrication
+    # for a genuinely external close (liquidation/manual), but it is ALSO the
+    # degraded outcome when a confirmed timeout_close/drift_close DB cluster
+    # rolled back (exchange flat, DB still open) — the real fill price/PnL is
+    # then mis-recorded as a synthetic breakeven. C4#6 owns DB-atomicity, NOT
+    # exchange-truth-vs-DB reconstruction post-rollback; the reconcile pass
+    # (Phase-3b) owns replaying the true close. A saga/outbox journal to make
+    # this lossless was explicitly rejected by the approved design.
     try:
         from .exchange import get_open_positions
         positions = get_open_positions(config)
