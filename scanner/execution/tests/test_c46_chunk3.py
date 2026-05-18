@@ -15,7 +15,6 @@ from unittest.mock import patch
 import pytest
 
 from scanner.execution import entry_monitor as EM
-from scanner.execution import exit_fills as EF
 from scanner.execution import monitor as M
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.executor import ExecutionResult
@@ -205,13 +204,22 @@ def _placed_sls(conn):
 def _recover(conn, exch):
     issue = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
              "type": "missing_sl"}
+    # attempt_sl_recovery does a FUNCTION-LOCAL `from .exchange import
+    # get_open_positions` (monitor.py), so the patch must target the
+    # scanner.execution.exchange resolution site — NOT monitor/exit_fills
+    # (a module-global patch there is a no-op; both the pre-Phase-4a M.* and
+    # the C-C EF.* targets were vacuous — phase-review arch-pass catch).
     with patch.object(M, "get_auth_exchange", return_value=exch), \
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
-         patch.object(EF, "get_open_positions",
-                      return_value=[{"coin": "ABC", "direction": "LONG",
-                                     "size": 1.0}]):
-        return M.attempt_sl_recovery(issue, _cfg(), conn)
+         patch("scanner.execution.exchange.get_open_positions",
+               return_value=[{"coin": "ABC", "direction": "LONG",
+                              "size": 1.0}]) as gop:
+        result = M.attempt_sl_recovery(issue, _cfg(), conn)
+    # Non-vacuity: the recovery guard calls get_open_positions before any
+    # placement, every cycle — a wrong-namespace patch would never intercept.
+    assert gop.called, "get_open_positions patch never intercepted — vacuous"
+    return result
 
 
 def test_sl_recovery_converges_to_at_least_one_sl(conn):
