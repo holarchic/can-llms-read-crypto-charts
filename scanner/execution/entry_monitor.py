@@ -617,13 +617,26 @@ def _process_pending_entry(
 def _execute_triggered_entry(
     entry: dict, trigger_close: float, config: ExecutionConfig, conn,
 ) -> int:
-    """Execute a trade after the entry trigger fires.
+    """Owned application-service saga: claim → execute → resolve a pending.
 
-    Atomically claims the pending (ACTIVE -> TRIGGERED) before touching the
-    exchange. If another process (scanner immediate-check vs monitor cycle)
-    already claimed it, bail out to avoid double entry. On execute_trade
-    failure or skip, flip status to TRIGGER_FAILED so the audit trail shows
-    the trigger happened but the trade did not.
+    INVARIANT (C4#6 Chunk 3, named + injected-failure-tested orphan window):
+    a *won* `claim_pending` ALWAYS resolves the pending IN-PROCESS. The atomic
+    `claim_pending` sets ACTIVE→TRIGGERED — TRIGGERED is the resolved-success
+    terminal (a placed trade; `attempt_sl_recovery` then owns entry→SL). Every
+    other in-process exit — skip, `Exception`, OR unexpected `BaseException`
+    (KeyboardInterrupt/SystemExit) — flips the pending to TRIGGER_FAILED before
+    control leaves this function, so a claimed pending is never stranded
+    `TRIGGERED` with no trade. The TRIGGER_FAILED resolution write is itself
+    guarded: if it raises it cannot mask the original error (bare `raise`
+    re-raises the in-flight exception; the resolution failure is logged +
+    chained as __context__) and is named as the only residual.
+
+    Lost race (another process claimed it) → bail, no double entry.
+
+    NAMED BOUNDARY (NOT closed here): a cross-process crash AFTER the claim
+    commits but BEFORE the in-process resolution leaves a stranded TRIGGERED —
+    recovered by the KL#0/Phase-3b `reconcile_positions` pass, the same
+    accepted-residual precedent as the exchange-closed/DB-open close window.
     """
     from .executor import execute_trade
 
@@ -652,9 +665,29 @@ def _execute_triggered_entry(
         else:
             log.warning("Conditional entry skipped after trigger: %s %s — %s",
                         coin, direction, er.skip_reason or "unknown")
-            update_pending_status(pending_id, "TRIGGER_FAILED", conn)
-    except Exception as exc:
+            _resolve_trigger_failed(pending_id, conn)
+    except BaseException as exc:
+        # Resolve on EVERY in-process exit incl. BaseException, then re-raise
+        # so the original error still propagates (caller loop logs it; a
+        # BaseException correctly aborts the cycle — but the pending is no
+        # longer stranded TRIGGERED).
         log.error("execute_trade failed for triggered %s %s: %s", coin, direction, exc)
-        update_pending_status(pending_id, "TRIGGER_FAILED", conn)
+        _resolve_trigger_failed(pending_id, conn)
+        raise
 
     return 1
+
+
+def _resolve_trigger_failed(pending_id: str, conn) -> None:
+    """Flip a claimed pending to TRIGGER_FAILED. Guarded: a failure of this
+    resolution write must NOT mask the in-flight exception nor abort the
+    caller — log it (the pending stays TRIGGERED → KL#0/Phase-3b reconcile)
+    and return; the caller's bare `raise` preserves the original error."""
+    try:
+        update_pending_status(pending_id, "TRIGGER_FAILED", conn)
+    except Exception:
+        log.exception(
+            "TRIGGER_FAILED resolution write failed for %s — pending may be "
+            "stranded TRIGGERED (KL#0/Phase-3b reconcile boundary)",
+            pending_id,
+        )

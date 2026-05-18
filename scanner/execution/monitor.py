@@ -1281,13 +1281,29 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
 def attempt_sl_recovery(
     issue: dict, config: ExecutionConfig, conn,
 ) -> bool:
-    """Try to place a missing or phantom SL for an unprotected position.
+    """Owned recovery contract for the entry-`FILLED`→SL orphan window
+    (C4#6 Chunk 3 named + injected-failure-tested invariant; SPEC #25).
+
+    A `FILLED` entry whose SL write/placement did not durably land converges
+    to **≥1 on-exchange SL** here: the monitor health check re-detects the
+    unprotected position every cycle and re-drives this until an SL is live
+    (cloid idempotency + reclassify-before-recovery keep the retries safe).
+    No mechanism change — this docstring NAMES the already-present saga as the
+    owned contract rather than an emergent one.
 
     For missing_sl: no PLACED SL exists; reads trigger_price from the last
     SL row (FAILED/CANCELLED) or falls back to scan machine_block.
     For phantom_sl: a PLACED SL row exists but the exchange has no matching
     open order; marks that row CANCELLED and places a fresh one.
     Returns True if SL successfully placed.
+
+    NAMED RESIDUAL (NOT closed here): if a *random* `new_order_id` is lost on
+    a crash AFTER exchange placement but BEFORE the SL row is saved, the next
+    cycle mints a FRESH cloid and HL does not dedupe → a transient duplicate
+    reduceOnly SL (at most one fills). Converges to ≥1 (never zero — no naked
+    position); the duplicate is the KL#0/Phase-3b `reconcile_positions`
+    boundary. Stable-keyed cloids (scan_id+role) would make this fully
+    idempotent but are a mechanism redesign out of C4#6 scope.
     """
     scan_id = issue["scan_id"]
     coin = issue["coin"]
