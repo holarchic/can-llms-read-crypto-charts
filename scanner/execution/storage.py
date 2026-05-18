@@ -827,6 +827,25 @@ def get_active_pending_entries(
     return [dict(r) for r in rows]
 
 
+def get_triggered_pending_entries(
+    conn: sqlite3.Connection, exchange: str, mode: str,
+) -> list[dict]:
+    """Fetch all TRIGGERED pending entries for a given exchange/mode.
+
+    TRIGGERED is the claimed-success terminal (`claim_pending` ACTIVE→TRIGGERED).
+    A row stuck here with no resulting trade is the Phase-3b reconcile
+    stranded-pending window (KL#0; SPEC #29) — the reconcile pass owns the
+    truth-vs-DB decision, so this read does NOT filter on staleness.
+    """
+    rows = conn.execute(
+        """SELECT * FROM pending_entries
+        WHERE status = 'TRIGGERED' AND exchange = ? AND execution_mode = ?
+        ORDER BY created_at""",
+        (exchange, mode),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_pending_status(
     pending_id: str, status: str, conn: sqlite3.Connection,
 ) -> None:

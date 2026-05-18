@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from scanner.execution.storage import (
+    claim_pending,
     count_open_longs,
     count_open_positions,
     ensure_orders_table,
@@ -12,11 +13,13 @@ from scanner.execution.storage import (
     get_open_position_coins,
     get_order,
     get_orders_for_scan,
+    get_triggered_pending_entries,
     has_open_position,
     has_unprotected_positions,
     make_cloid,
     new_order_id,
     save_order,
+    save_pending_entry,
     sum_open_notional,
     update_order_status,
 )
@@ -415,3 +418,44 @@ class TestFloatingPointPrecision:
         assert count_open_positions(conn) == 1
         assert len(get_open_entry_orders(conn)) == 1
         assert len(get_open_position_coins(conn)) == 1
+
+
+def _make_pending(scan_id, coin="BTC", exchange="hyperliquid", mode="testnet"):
+    return {
+        "pending_id": new_order_id(),
+        "scan_id": scan_id,
+        "coin": coin,
+        "direction": "LONG",
+        "machine_block": "{}",
+        "entry_trigger": "limit_at",
+        "entry_trigger_price": 100.0,
+        "invalidation_price": 90.0,
+        "expiry_candles": 4,
+        "exchange": exchange,
+        "execution_mode": mode,
+        "created_at": "2026-02-24T00:00:00+00:00",
+    }
+
+
+class TestGetTriggeredPendingEntries:
+    """Phase-3b C1 (SPEC #29): the storage-owned read for the stranded-pending
+    reconcile window — TRIGGERED only, scoped by exchange/mode."""
+
+    def test_returns_only_triggered_for_scope(self, conn):
+        # ACTIVE (untouched), TRIGGERED in-scope, TRIGGERED out-of-scope.
+        active = _make_pending("s_active")
+        in_scope = _make_pending("s_trig")
+        other_mode = _make_pending("s_trig_live", mode="live")
+        for p in (active, in_scope, other_mode):
+            save_pending_entry(p, conn)
+        assert claim_pending(in_scope["pending_id"], "TRIGGERED", conn) is True
+        assert claim_pending(other_mode["pending_id"], "TRIGGERED", conn) is True
+
+        rows = get_triggered_pending_entries(conn, "hyperliquid", "testnet")
+
+        assert [r["scan_id"] for r in rows] == ["s_trig"]
+        assert rows[0]["status"] == "TRIGGERED"
+
+    def test_empty_when_none_triggered(self, conn):
+        save_pending_entry(_make_pending("s1"), conn)  # stays ACTIVE
+        assert get_triggered_pending_entries(conn, "hyperliquid", "testnet") == []
