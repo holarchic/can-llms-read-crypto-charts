@@ -940,7 +940,8 @@ def market_close_position(
             if confirmed:
                 full = filled is None or filled + OPEN_QTY_EPSILON >= rounded_qty
                 recorded_qty = rounded_qty if full else filled
-                now = datetime.now(timezone.utc).isoformat()
+                # Two separate now() calls — byte-identical to the pre-recontract
+                # save_order payload (only the persistence boundary moved).
                 payload = {
                     "order_id": order_id,
                     "scan_id": entry["scan_id"],
@@ -953,8 +954,8 @@ def market_close_position(
                     "quantity": recorded_qty,
                     "exchange": config.exchange,
                     "execution_mode": config.mode,
-                    "filled_at": now,
-                    "created_at": now,
+                    "filled_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 if full:
                     log.info(

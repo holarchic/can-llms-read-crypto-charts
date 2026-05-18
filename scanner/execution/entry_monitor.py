@@ -665,13 +665,20 @@ def _execute_triggered_entry(
         else:
             log.warning("Conditional entry skipped after trigger: %s %s — %s",
                         coin, direction, er.skip_reason or "unknown")
-            _resolve_trigger_failed(pending_id, conn)
+            # UNguarded on the skip path: there is no in-flight exception to
+            # preserve, so a resolution-write failure must NOT be swallowed
+            # into a false `return 1` (silent stranded TRIGGERED). Let it
+            # raise → the `except BaseException` retries once then re-raises,
+            # so a skipped pending is never silently left unresolved.
+            update_pending_status(pending_id, "TRIGGER_FAILED", conn)
     except BaseException as exc:
-        # Resolve on EVERY in-process exit incl. BaseException, then re-raise
-        # so the original error still propagates (caller loop logs it; a
-        # BaseException correctly aborts the cycle — but the pending is no
-        # longer stranded TRIGGERED).
-        log.error("execute_trade failed for triggered %s %s: %s", coin, direction, exc)
+        # Every in-process error exit (execute_trade raised, OR a skip-path
+        # resolution write raised): retry the resolution once via the guarded
+        # helper, then re-raise so the original error still propagates (caller
+        # loop logs it; a BaseException correctly aborts the cycle — but the
+        # pending is no longer silently stranded TRIGGERED).
+        log.error("Triggered-entry resolve/execute error for %s %s: %s",
+                  coin, direction, exc)
         _resolve_trigger_failed(pending_id, conn)
         raise
 
@@ -679,15 +686,18 @@ def _execute_triggered_entry(
 
 
 def _resolve_trigger_failed(pending_id: str, conn) -> None:
-    """Flip a claimed pending to TRIGGER_FAILED. Guarded: a failure of this
-    resolution write must NOT mask the in-flight exception nor abort the
-    caller — log it (the pending stays TRIGGERED → KL#0/Phase-3b reconcile)
-    and return; the caller's bare `raise` preserves the original error."""
+    """Guarded TRIGGER_FAILED retry — used ONLY from the `except` handler,
+    where an error is already in flight. A failure of this retry must NOT
+    mask the original exception nor abort the caller: log it (the pending
+    stays TRIGGERED → KL#0/Phase-3b reconcile boundary) and return; the
+    caller's bare `raise` then preserves and propagates the original error.
+    The skip path does NOT use this — it writes unguarded so an unresolved
+    skip surfaces instead of returning a false success."""
     try:
         update_pending_status(pending_id, "TRIGGER_FAILED", conn)
     except Exception:
         log.exception(
-            "TRIGGER_FAILED resolution write failed for %s — pending may be "
+            "TRIGGER_FAILED resolution retry failed for %s — pending may be "
             "stranded TRIGGERED (KL#0/Phase-3b reconcile boundary)",
             pending_id,
         )

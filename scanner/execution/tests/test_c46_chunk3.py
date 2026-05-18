@@ -136,7 +136,22 @@ def test_guarded_resolution_does_not_mask_original_error(conn, caplog):
             with pytest.raises(RuntimeError, match="original boom"):
                 _run_triggered(conn,
                                execute_side_effect=RuntimeError("original boom"))
-    assert "resolution write failed" in caplog.text
+    assert "resolution retry failed" in caplog.text
+
+
+def test_skip_path_resolution_failure_propagates_not_silent_success(conn):
+    """Skip (executed=False) + the TRIGGER_FAILED write fails: must NOT
+    return 1 (silent stranded TRIGGERED). The unguarded skip write raises →
+    `except BaseException` retries once → re-raises, so an unresolved skip
+    surfaces to the caller loop instead of a false success."""
+    _seed_pending(conn)
+    with patch.object(EM, "update_pending_status",
+                      side_effect=sqlite3.OperationalError("db down")) as upd:
+        with pytest.raises(sqlite3.OperationalError, match="db down"):
+            _run_triggered(conn, er=ExecutionResult(executed=False,
+                                                    skip_reason="duplicate"))
+    # Resolution attempted twice: unguarded skip write + guarded except retry.
+    assert upd.call_count == 2
 
 
 # --- (ii) entry-FILLED → >=1 on-exchange SL invariant ----------------------
