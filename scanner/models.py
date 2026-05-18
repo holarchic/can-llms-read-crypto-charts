@@ -398,6 +398,7 @@ class MetricsWindow:
     Phase-2a scope). `profit_factor` may be `float('inf')`."""
 
     count: int
+    risked_count: int  # trades with a usable risk anchor (SPEC #26 b; KL#9 b)
     win_rate: float
     expectancy_r: float
     profit_factor: float

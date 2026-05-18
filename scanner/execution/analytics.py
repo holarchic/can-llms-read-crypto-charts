@@ -5,26 +5,38 @@ read model (T-016 Phase 2a, SPEC #22). No DB access here: `get_closed_trades`
 from scanner.models import MetricsWindow, TradeRecord
 
 
+def risked_outcomes(
+    trades: list[TradeRecord],
+) -> tuple[list[TradeRecord], list[TradeRecord], list[TradeRecord]]:
+    """Single owner of the risk+outcome partition (T-016 Phase 3, SPEC #26 b;
+    KL#9 b). `risked` = trades with a usable risk anchor (`usable_risk`);
+    no/degenerate-SL trades are EXCLUDED, never counted via realized_r==0 as
+    break-even losses (which would dilute expectancy, depress win-rate, and —
+    for a profitable no-SL trade — contaminate profit factor; SPEC #24, KL#2
+    v). The `realized_r > 0` win/loss split is folded in here, not duplicated
+    at call sites, because it drives win_rate/profit_factor (not presentation;
+    plan-review-caught)."""
+    risked = [t for t in trades if t.usable_risk]
+    wins = [t for t in risked if t.realized_r > 0]
+    losses = [t for t in risked if t.realized_r <= 0]
+    return risked, wins, losses
+
+
 def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
     """Compute aggregate performance metrics from closed trades."""
     if not trades:
         return MetricsWindow(
-            count=0, win_rate=0, expectancy_r=0, profit_factor=0,
+            count=0, risked_count=0, win_rate=0, expectancy_r=0, profit_factor=0,
             total_pnl=0, max_drawdown_pct=0,
             avg_holding_hours=0, avg_slippage_r=0, total_funding_r=0,
             fill_rate=0, data_source="db_only",
             quality_warnings=_compute_quality_warnings([]),
         )
 
-    # No-usable-risk trades (risk_amount == 0: missing or degenerate original
-    # SL — SPEC #24, KL#2 v) are EXCLUDED from R-normalized metrics. Counting
-    # them via realized_r==0 would silently classify them as break-even losses
-    # — diluting expectancy, depressing win-rate, and (for a profitable no-SL
-    # trade) contaminating profit factor. They stay in count/total_pnl/
-    # drawdown/holding (non-R).
-    risked = [t for t in trades if t.risk_amount > 0]
-    wins = [t for t in risked if t.realized_r > 0]
-    losses = [t for t in risked if t.realized_r <= 0]
+    # Risk+outcome partition is single-owned (SPEC #26 b). No-usable-risk
+    # trades are excluded from R-normalized metrics but stay in non-R
+    # aggregates (count/total_pnl/drawdown/holding).
+    risked, wins, losses = risked_outcomes(trades)
 
     win_rate = len(wins) / len(risked) if risked else 0
     expectancy_r = sum(t.realized_r for t in risked) / len(risked) if risked else 0
@@ -63,6 +75,7 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
 
     return MetricsWindow(
         count=len(trades),
+        risked_count=len(risked),
         win_rate=round(win_rate, 4),
         expectancy_r=round(expectancy_r, 4),
         profit_factor=round(profit_factor, 4),

@@ -367,6 +367,25 @@ def test_metrics_relocation_faithful_except_documented_24_exclusion():
     assert new.expectancy_r != exp_all["expectancy_r"]
 
 
+def test_storage_sets_usable_risk_equals_risk_amount_positive():
+    """SPEC #26 c (KL#9 c) — the storage-owned `get_closed_trades` sets the
+    explicit `usable_risk` field == `risk_amount > 0` for EVERY prod row, and
+    the prod corpus is non-vacuous for the assertion (contains both usable and
+    no-usable-risk trades — the 5 documented zero-risk scratches). This is the
+    field-VALUE half of the C3 anti-vacuity gate; the partition-DRIVE half is
+    `test_analytics.TestRiskedOutcomesSingleOwner`."""
+    conn = _load_prod_corpus()
+    trades = get_closed_trades(conn)
+    assert len(trades) > 0
+    for t in trades:
+        assert t.usable_risk == (t.risk_amount > 0), t.scan_id
+    n_usable = sum(1 for t in trades if t.usable_risk)
+    n_unusable = len(trades) - n_usable
+    assert n_usable > 0 and n_unusable == 5, (
+        f"corpus drifted / vacuous: {n_usable} usable / {n_unusable} not (want >0 / 5)"
+    )
+
+
 def test_faithful_relocation_days_window():
     """The pre-2a `if days:` close-window SQL branch was relocated verbatim
     too — exercise it in BOTH frozen-old and new and assert identical, at

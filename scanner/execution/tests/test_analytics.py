@@ -5,7 +5,11 @@ import sqlite3
 
 import pytest
 
-from scanner.execution.analytics import compute_live_metrics, rolling_expectancy
+from scanner.execution.analytics import (
+    compute_live_metrics,
+    risked_outcomes,
+    rolling_expectancy,
+)
 from scanner.execution.storage import (
     ensure_orders_table,
     get_closed_trades,
@@ -610,3 +614,35 @@ class TestRollingExpectancy:
         ]
         result = rolling_expectancy(trades, window=20)
         assert len(result) == 0
+
+
+class TestRiskedOutcomesSingleOwner:
+    """Anti-vacuity for SPEC #26 b/c (codex plan-review R1#4 / R2#4): prove the
+    single-owner partition keys on the explicit `usable_risk` field, NOT a
+    re-derived `risk_amount > 0`. The fixtures are CONTRADICTORY — the two
+    predicates disagree — so a `risk_amount > 0` implementation fails."""
+
+    def test_partition_keys_on_usable_risk_not_risk_amount(self):
+        # risk_amount > 0 but usable_risk=False -> MUST be excluded
+        excluded = _tr("x1", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 200, 1,
+                       0, 0, "testnet", usable_risk=False)
+        # risk_amount == 0 but usable_risk=True -> MUST be included
+        included = _tr("x2", "ETH", "LONG", 100, 110, "TP1", 50, 1.0, 0, 1,
+                       0, 0, "testnet", usable_risk=True)
+        risked, wins, losses = risked_outcomes([excluded, included])
+        assert risked == [included], "partition still keying on risk_amount>0"
+        assert wins == [included] and losses == []
+
+    def test_compute_live_metrics_partitions_on_usable_risk(self):
+        trades = [
+            # risk_amount==0 but usable -> counted (a win)
+            _tr("a", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 0, 1, 0, 0,
+                "testnet", usable_risk=True),
+            # risk_amount>0 but unusable -> excluded from R metrics
+            _tr("b", "ETH", "LONG", 100, 90, "SL", -50, -1.0, 200, 1, 0, 0,
+                "testnet", usable_risk=False),
+        ]
+        m = compute_live_metrics(trades)
+        assert m.count == 2          # non-R aggregates over all
+        assert m.risked_count == 1   # only the usable trade
+        assert m.win_rate == 1.0     # the one risked trade is a win
