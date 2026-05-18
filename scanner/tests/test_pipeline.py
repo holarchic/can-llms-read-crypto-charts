@@ -17,6 +17,8 @@ from scanner.pipeline import (
     _build_summary,
     _empty_summary,
     _filter_pending_conditional,
+    _post_scan_ops_log,
+    _print_summary,
     _report_dry_run,
     _resolve_testnet_coins,
     _select_with_diversity,
@@ -409,6 +411,33 @@ class TestPhase4bHelpers:
                    return_value=[]):
             out = _filter_pending_conditional(sigs, exec_config, verbose=False)
         assert out == sigs
+
+    def test_raw_vs_rounded_elapsed_boundary(self, capsys):
+        # codex phase-review (correctness LOW) regression-pin for the codex
+        # plan-review R1 HIGH: the verbose duration line MUST print the RAW
+        # elapsed (`{elapsed:.0f}`) while the ops-log Duration reads the
+        # ROUNDED `elapsed_sec`. 123.456 is a boundary where these differ —
+        # so this test proves run_scan threading the raw float is
+        # load-bearing, not cosmetic.
+        elapsed = 123.456
+        raw_s = f"{elapsed:.0f}s"                 # "123s"
+        rounded_s = f"{round(elapsed, 1):.0f}s"   # "124s"
+        assert raw_s != rounded_s  # the boundary actually bites
+
+        summary = _build_summary(
+            signals=[1], results=[], exec_results=[],
+            alerted=0, elapsed=elapsed,
+        )
+        assert summary["elapsed_sec"] == round(elapsed, 1)
+
+        _print_summary(summary, elapsed)
+        printed = capsys.readouterr().out
+        assert f"Scan complete in {raw_s}" in printed
+        assert f"Scan complete in {rounded_s}" not in printed
+
+        with patch("scanner.pipeline.send_ops_log") as ops:
+            _post_scan_ops_log(summary, [], "HyperLiquid", MagicMock())
+        assert ops.call_args.args[1]["Duration"] == rounded_s
 
 
 class TestRunScanDispatcher:
