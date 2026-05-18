@@ -629,9 +629,9 @@ class TestRiskedOutcomesSingleOwner:
         # risk_amount == 0 but usable_risk=True -> MUST be included
         included = _tr("x2", "ETH", "LONG", 100, 110, "TP1", 50, 1.0, 0, 1,
                        0, 0, "testnet", usable_risk=True)
-        risked, wins, losses = risked_outcomes([excluded, included])
-        assert risked == [included], "partition still keying on risk_amount>0"
-        assert wins == [included] and losses == []
+        ro = risked_outcomes([excluded, included])
+        assert ro.risked == (included,), "partition still keying on risk_amount>0"
+        assert ro.wins == (included,) and ro.losses == ()
 
     def test_compute_live_metrics_partitions_on_usable_risk(self):
         trades = [

@@ -2,12 +2,10 @@
 read model (T-016 Phase 2a, SPEC #22). No DB access here: `get_closed_trades`
 / `llm_cost_summary` live in `scanner.execution.storage`."""
 
-from scanner.models import MetricsWindow, TradeRecord
+from scanner.models import MetricsWindow, RiskedOutcomes, TradeRecord
 
 
-def risked_outcomes(
-    trades: list[TradeRecord],
-) -> tuple[list[TradeRecord], list[TradeRecord], list[TradeRecord]]:
+def risked_outcomes(trades: list[TradeRecord]) -> RiskedOutcomes:
     """Single owner of the risk+outcome partition (T-016 Phase 3, SPEC #26 b;
     KL#9 b). `risked` = trades with a usable risk anchor (`usable_risk`);
     no/degenerate-SL trades are EXCLUDED, never counted via realized_r==0 as
@@ -15,11 +13,13 @@ def risked_outcomes(
     for a profitable no-SL trade — contaminate profit factor; SPEC #24, KL#2
     v). The `realized_r > 0` win/loss split is folded in here, not duplicated
     at call sites, because it drives win_rate/profit_factor (not presentation;
-    plan-review-caught)."""
-    risked = [t for t in trades if t.usable_risk]
-    wins = [t for t in risked if t.realized_r > 0]
-    losses = [t for t in risked if t.realized_r <= 0]
-    return risked, wins, losses
+    plan-review-caught). Returns a named `RiskedOutcomes` record, not a bare
+    same-typed 3-tuple (phase-review-arch-caught: a positional seam hides a
+    wins/losses swap)."""
+    risked = tuple(t for t in trades if t.usable_risk)
+    wins = tuple(t for t in risked if t.realized_r > 0)
+    losses = tuple(t for t in risked if t.realized_r <= 0)
+    return RiskedOutcomes(risked=risked, wins=wins, losses=losses)
 
 
 def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
@@ -36,7 +36,8 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
     # Risk+outcome partition is single-owned (SPEC #26 b). No-usable-risk
     # trades are excluded from R-normalized metrics but stay in non-R
     # aggregates (count/total_pnl/drawdown/holding).
-    risked, wins, losses = risked_outcomes(trades)
+    ro = risked_outcomes(trades)
+    risked, wins, losses = ro.risked, ro.wins, ro.losses
 
     win_rate = len(wins) / len(risked) if risked else 0
     expectancy_r = sum(t.realized_r for t in risked) / len(risked) if risked else 0

@@ -410,3 +410,17 @@ class MetricsWindow:
     fill_rate: float
     data_source: str
     quality_warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RiskedOutcomes:
+    """The single-owner risk+outcome partition (T-016 Phase 3, SPEC #26 b;
+    KL#9 b). Named typed seam — `risked`/`wins`/`losses` are all
+    `tuple[TradeRecord, ...]` so callers identify them by field, never by
+    positional slot (a wins/losses swap on a bare 3-tuple of same-typed lists
+    would be invisible). Immutable: built once in `analytics.risked_outcomes`,
+    read-only downstream (metrics / report)."""
+
+    risked: tuple[TradeRecord, ...]
+    wins: tuple[TradeRecord, ...]
+    losses: tuple[TradeRecord, ...]
