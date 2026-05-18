@@ -438,11 +438,22 @@ class TestSlMove:
 
 class TestForceClose:
 
-    @patch("scanner.execution.drift.cancel_remaining_orders")
-    @patch("scanner.execution.drift.market_close_position", return_value=95.0)
+    @patch("scanner.execution.drift._mark_counterparts_cancelled")
+    @patch("scanner.execution.drift._cancel_counterparts_on_exchange", return_value=[])
+    @patch("scanner.execution.drift.market_close_position")
     @patch("scanner.execution.drift._send_drift_close_alert", return_value=True)
-    def test_force_close_calls_market_close(self, mock_alert, mock_close, mock_cancel, drift_config, conn):
+    def test_force_close_calls_market_close(self, mock_alert, mock_close, mock_exch_cancel, mock_db_cancel, drift_config, conn):
         from scanner.execution.drift import _execute_force_close
+        from scanner.execution.monitor import MarketCloseResult
+
+        mock_close.return_value = MarketCloseResult(
+            "full",
+            {"order_id": "c1", "scan_id": "test1", "coin": "BTC",
+             "direction": "SHORT", "order_type": "drift_close", "status": "FILLED",
+             "fill_price": 95.0, "quantity": 1.0, "exchange": "hyperliquid",
+             "execution_mode": "testnet"},
+            95.0,
+        )
 
         entry = {
             "coin": "BTC", "direction": "SHORT", "scan_id": "test1",
@@ -477,7 +488,8 @@ class TestForceClose:
         assert result == 1
         mock_close.assert_called_once()
         assert mock_close.call_args.kwargs.get("order_type") == "drift_close"
-        mock_cancel.assert_called_once()
+        mock_exch_cancel.assert_called_once()  # exchange-cancel pass before the txn
+        mock_db_cancel.assert_called_once()    # DB-mark half inside the close txn
         mock_alert.assert_called_once()
 
 

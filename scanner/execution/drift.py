@@ -23,15 +23,18 @@ from .config import ExecutionConfig
 from .exchange import get_auth_exchange
 from .monitor import (
     _calc_r,
+    _cancel_counterparts_on_exchange,
     _get_remaining_qty,
+    _mark_counterparts_cancelled,
     _place_replacement_exit_order,
-    cancel_remaining_orders,
     market_close_position,
 )
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
     original_stop_price,
+    save_order,
+    transaction,
 )
 
 log = logging.getLogger(__name__)
@@ -603,12 +606,12 @@ def _execute_force_close(
 
     exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
-    fill_price = market_close_position(
+    result = market_close_position(
         entry, symbol, exit_side, remaining_qty, exchange, config, conn,
         order_type="drift_close",
     )
 
-    if fill_price is not None:
+    if result.kind == "full":
         # Original (first-by-created_at) SL is the risk anchor for the alert R.
         # drift sl_move and post-TP1 trail insert NEW stop_loss rows (decision
         # #13), so a bare LIMIT 1 (SQLite's undefined row order) could pick a
@@ -620,11 +623,25 @@ def _execute_force_close(
 
         r_val = None
         if sl_price and entry.get("fill_price"):
-            r_val = _calc_r(float(entry["fill_price"]), fill_price, sl_price, entry["direction"])
+            r_val = _calc_r(float(entry["fill_price"]), result.fill_price, sl_price, entry["direction"])
 
-        cancel_remaining_orders(entry["scan_id"], "", symbol, config, conn)
-        _send_drift_close_alert(entry, trigger, fill_price, r_val, config)
+        # Atomic full-close boundary: exchange-cancel pass first (outside the
+        # txn), then the close row + counterpart CANCELLED marks commit as ONE
+        # unit — a rollback leaves the close unrecorded so the position stays
+        # in the open set and the next cycle retries (self-healing, DB scoped).
+        targets = _cancel_counterparts_on_exchange(
+            entry["scan_id"], "", symbol, config, conn,
+        )
+        with transaction(conn):
+            save_order(result.payload, conn)
+            _mark_counterparts_cancelled(targets, conn)
+        _send_drift_close_alert(entry, trigger, result.fill_price, r_val, config)
         return 1
 
+    # kind in {"partial","none"}: no counterpart cancel → SL retained (Fix-3
+    # safety preserved). A partial leg is persisted truthfully (the row
+    # market_close_position used to write itself); remainder retried next cycle.
+    if result.kind == "partial":
+        save_order(result.payload, conn)
     _send_urgent_alert(f"DRIFT CLOSE FAILED: {entry['coin']} {entry['direction']} — {trigger}", config)
     return 0

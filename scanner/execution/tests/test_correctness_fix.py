@@ -26,6 +26,7 @@ from scanner.execution.config import ExecutionConfig
 from scanner.execution.storage import (
     ensure_orders_table,
     get_closed_trades,
+    make_cloid,
     original_stop_price,
 )
 
@@ -37,12 +38,14 @@ from scanner.execution.storage import (
 class FakeExchange:
     """Minimal ccxt stand-in. `create_resp`/`fetch_resp` are the order dicts
     returned by create_order / fetch_order; `fetch_raises` forces fetch_order
-    to throw (degraded-path test)."""
+    to throw (degraded-path test). `seen_cloid` records the clientOrderId of
+    the last create_order — cloid-for-cloid identity assertion."""
 
     def __init__(self, create_resp, fetch_resp=None, fetch_raises=False):
         self._create_resp = create_resp
         self._fetch_resp = fetch_resp
         self._fetch_raises = fetch_raises
+        self.seen_cloid = None
 
     def amount_to_precision(self, symbol, qty):
         return qty
@@ -50,7 +53,8 @@ class FakeExchange:
     def fetch_ticker(self, symbol):
         return {"last": 100.0}
 
-    def create_order(self, *a, **k):
+    def create_order(self, symbol, otype, side, qty, price, params=None):
+        self.seen_cloid = (params or {}).get("clientOrderId")
         return self._create_resp
 
     def fetch_order(self, oid, symbol):
@@ -86,93 +90,184 @@ def _rows(conn):
     ).fetchall()
 
 
-def _run(create_resp, fetch_resp=None, fetch_raises=False, qty=1.0):
+# C4#6 Chunk 2b re-contracted `market_close_position` → typed
+# `MarketCloseResult`; persistence moved to the caller (atomic full-close
+# boundary). The Fix-3 confirmed-fill GATING is preserved verbatim — these
+# retargeted tests assert (1) the kind/payload mapping per case, (2) that
+# market_close_position itself NEVER writes a row, and (3) the caller persists
+# a row + cloid IDENTICAL to the Fix-3 baseline (LESSONS "Green != verified":
+# the contract moved boundary, not behaviour).
+
+def _close(create_resp, fetch_resp=None, fetch_raises=False, qty=1.0):
+    """Direct market_close_position call. Returns (result, rows, exchange).
+    `rows` proves the invariant: market_close_position writes NOTHING."""
     conn = _conn()
     ex = FakeExchange(create_resp, fetch_resp, fetch_raises)
-    ret = M.market_close_position(
+    result = M.market_close_position(
         _entry(), "ABC/USDC:USDC", "sell", qty, ex, _cfg(), conn,
         order_type="drift_close",
     )
-    return ret, _rows(conn)
+    return result, _rows(conn), ex
 
 
-def test_closed_zero_fill_writes_no_row():
-    ret, rows = _run({"id": "x", "status": "closed", "filled": 0, "average": 99.0})
-    assert ret is None
+def test_closed_zero_fill_maps_none_no_self_persist():
+    result, rows, _ = _close({"id": "x", "status": "closed", "filled": 0, "average": 99.0})
+    assert result.kind == "none"
+    assert result.payload is None and result.fill_price is None
+    assert rows == []  # market_close_position never self-persists
+
+
+def test_closed_partial_maps_partial_truthful_leg():
+    result, rows, _ = _close(
+        {"id": "x", "status": "closed", "filled": 0.5, "average": 99.0}, qty=1.0
+    )
+    assert result.kind == "partial"
+    assert rows == []  # caller persists, not market_close_position
+    assert result.payload["status"] == "FILLED"
+    assert result.payload["quantity"] == 0.5  # actual leg, NOT rounded_qty
+    assert result.payload["fill_price"] == 99.0
+    assert result.fill_price == 99.0
+
+
+def test_closed_full_average_maps_full_with_price():
+    result, rows, _ = _close(
+        {"id": "x", "status": "closed", "filled": 1.0, "average": 99.0}, qty=1.0
+    )
+    assert result.kind == "full"
+    assert result.fill_price == 99.0
+    assert result.payload["quantity"] == 1.0
+    assert result.payload["fill_price"] == 99.0
     assert rows == []
 
 
-def test_closed_partial_writes_truthful_partial_leg():
-    ret, rows = _run(
-        {"id": "x", "status": "closed", "filled": 0.5, "average": 99.0}, qty=1.0
-    )
-    assert ret is None  # caller keeps SL, remainder retried next cycle
-    assert len(rows) == 1
-    assert rows[0]["status"] == "FILLED"
-    assert rows[0]["quantity"] == 0.5  # actual leg, NOT rounded_qty
-    assert rows[0]["fill_price"] == 99.0
-
-
-def test_closed_full_average_returns_price():
-    ret, rows = _run(
-        {"id": "x", "status": "closed", "filled": 1.0, "average": 99.0}, qty=1.0
-    )
-    assert ret == 99.0
-    assert len(rows) == 1
-    assert rows[0]["quantity"] == 1.0
-    assert rows[0]["fill_price"] == 99.0
-
-
 def test_closed_full_price_fallback_when_no_average():
-    ret, rows = _run(
+    result, _, _ = _close(
         {"id": "x", "status": "closed", "filled": 1.0, "average": None, "price": 98.5},
         qty=1.0,
     )
-    assert ret == 98.5
-    assert rows[0]["fill_price"] == 98.5
+    assert result.kind == "full"
+    assert result.fill_price == 98.5
+    assert result.payload["fill_price"] == 98.5
 
 
 def test_closed_filled_absent_is_full():
     # filled key absent (≠ explicit 0) + closed + priced → full close.
-    ret, rows = _run({"id": "x", "status": "closed", "average": 97.0}, qty=2.0)
-    assert ret == 97.0
-    assert len(rows) == 1
-    assert rows[0]["quantity"] == 2.0  # rounded_qty (full), not None
+    result, _, _ = _close({"id": "x", "status": "closed", "average": 97.0}, qty=2.0)
+    assert result.kind == "full"
+    assert result.fill_price == 97.0
+    assert result.payload["quantity"] == 2.0  # rounded_qty (full), not None
 
 
-def test_nonclosed_with_echoed_price_writes_no_row():
+def test_nonclosed_with_echoed_price_maps_none():
     # status canceled, filled absent, price PRESENT (echoed IOC limit) — must
     # NOT be treated as a fill just because `price` exists.
-    ret, rows = _run({"id": "x", "status": "canceled", "price": 100.0})
-    assert ret is None
+    result, rows, _ = _close({"id": "x", "status": "canceled", "price": 100.0})
+    assert result.kind == "none"
     assert rows == []
 
 
 def test_fetch_order_fallback_resolves_close():
     # create resp inconclusive (open, no price) → fetch_order yields the close.
-    ret, rows = _run(
+    result, _, _ = _close(
         {"id": "x", "status": "open"},
         fetch_resp={"id": "x", "status": "closed", "filled": 1.0, "average": 96.0},
         qty=1.0,
     )
-    assert ret == 96.0
-    assert rows[0]["fill_price"] == 96.0
+    assert result.kind == "full"
+    assert result.fill_price == 96.0
+    assert result.payload["fill_price"] == 96.0
 
 
-def test_fetch_order_raises_writes_no_row():
-    ret, rows = _run({"id": "x", "status": "open"}, fetch_raises=True)
-    assert ret is None
+def test_fetch_order_raises_maps_none():
+    result, rows, _ = _close({"id": "x", "status": "open"}, fetch_raises=True)
+    assert result.kind == "none"
     assert rows == []
 
 
 def test_no_row_path_logs_durable_ids(caplog):
     import logging
     with caplog.at_level(logging.ERROR, logger="scanner.execution.monitor"):
-        _run({"id": "EXCH99", "status": "canceled", "filled": 0})
+        _close({"id": "EXCH99", "status": "canceled", "filled": 0})
     msg = "\n".join(r.message for r in caplog.records)
     assert "NOT confirmed" in msg
     assert "exchange_id=EXCH99" in msg
     assert "order_id=" in msg and "cloid=" in msg
+
+
+# --- caller-level: row-for-row + cloid-for-cloid identical to Fix-3 baseline -
+
+def test_full_caller_persists_row_and_cloid_identical_to_baseline():
+    """Drive the real drift caller end-to-end. The persisted close row and the
+    clientOrderId the exchange saw must equal the Fix-3 baseline (the row
+    market_close_position used to write itself) — the boundary moved, the
+    bytes did not."""
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, exchange_order_id, quantity, exchange, execution_mode, created_at)
+        VALUES ('sl1','s1','ABC','LONG','stop_loss','PLACED','SLX',1.0,
+                'hyperliquid','testnet','2026-01-01T00:00:00+00:00')""",
+    )
+    conn.commit()
+    entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
+             "quantity": 1.0, "fill_price": 100.0}
+    ex = FakeExchange({"id": "EXCH7", "status": "closed", "filled": 1.0, "average": 99.0})
+
+    with patch.object(D, "_send_drift_close_alert"), \
+         patch.object(M, "cancel_order", return_value=True):
+        rc = D._execute_force_close(
+            entry, "reversal", {}, "ABC/USDC:USDC", ex, _cfg(), conn,
+        )
+
+    assert rc == 1
+    close = conn.execute(
+        "SELECT * FROM orders WHERE order_type='drift_close'"
+    ).fetchone()
+    # Fix-3 baseline row: FILLED, full rounded_qty, confirmed price, exch id.
+    assert close["status"] == "FILLED"
+    assert close["fill_price"] == 99.0
+    assert close["quantity"] == 1.0
+    assert close["exchange_order_id"] == "EXCH7"
+    # cloid-for-cloid: clientOrderId == make_cloid(close order_id), as before.
+    assert ex.seen_cloid == make_cloid(close["order_id"])
+    # counterpart SL marked CANCELLED inside the SAME txn as the close row.
+    sl = conn.execute(
+        "SELECT status FROM orders WHERE order_type='stop_loss'"
+    ).fetchone()
+    assert sl["status"] == "CANCELLED"
+
+
+def test_partial_caller_persists_only_partial_row_sl_retained():
+    """kind=='partial' → caller persists ONLY the truthful partial row and
+    RETAINS the SL/counterparts (Fix-3 partial safety not regressed)."""
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO orders (order_id, scan_id, coin, direction, order_type,
+        status, trigger_price, quantity, exchange, execution_mode, created_at)
+        VALUES ('sl1','s1','ABC','LONG','stop_loss','PLACED',95.0,1.0,
+                'hyperliquid','testnet','2026-01-01T00:00:00+00:00')""",
+    )
+    conn.commit()
+    entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
+             "quantity": 1.0, "fill_price": 100.0}
+    ex = FakeExchange({"id": "x", "status": "closed", "filled": 0.4, "average": 99.0})
+
+    with patch.object(D, "_send_urgent_alert") as urgent:
+        rc = D._execute_force_close(
+            entry, "reversal", {}, "ABC/USDC:USDC", ex, _cfg(), conn,
+        )
+
+    assert rc == 0
+    urgent.assert_called_once()
+    closes = conn.execute(
+        "SELECT quantity, fill_price FROM orders WHERE order_type='drift_close'"
+    ).fetchall()
+    assert len(closes) == 1
+    assert closes[0]["quantity"] == 0.4  # truthful partial leg only
+    sl = conn.execute(
+        "SELECT status FROM orders WHERE order_type='stop_loss'"
+    ).fetchone()
+    assert sl["status"] == "PLACED"  # SL retained — remainder retried next cycle
 
 
 # --- by-construction divergence vs the frozen pre-fix behaviour -------------
@@ -193,13 +288,14 @@ def test_adversarial_frozen_old_fabricates_where_new_refuses():
     assert old_row["fill_price"] is None      # OLD: NULL-price FILLED row
     assert old_ret == 0.0                     # OLD: 0.0 success sentinel
 
-    new_ret, new_rows = _run(resp)
-    assert new_rows == []                     # NEW: no fabricated row
-    assert new_ret is None                    # NEW: explicit failure
-    assert new_ret != old_ret                 # anti-vacuity: provably diverges
+    result, new_rows, _ = _close(resp)
+    assert result.kind == "none"              # NEW: explicit non-close
+    assert result.payload is None             # NEW: no row to persist
+    assert new_rows == []                     # NEW: nothing fabricated
+    assert result.fill_price != old_ret       # anti-vacuity: provably diverges
 
 
-# --- caller-level: None return is safe in both production callers ----------
+# --- caller-level: kind=='none' is safe in both production callers ----------
 
 
 def test_drift_force_close_none_keeps_sl_and_alerts():
@@ -214,16 +310,19 @@ def test_drift_force_close_none_keeps_sl_and_alerts():
     entry = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
              "quantity": 1.0, "fill_price": 100.0}
 
-    with patch.object(D, "market_close_position", return_value=None), \
+    with patch.object(D, "market_close_position",
+                      return_value=M.MarketCloseResult("none", None, None)), \
          patch.object(D, "_send_urgent_alert") as urgent, \
-         patch.object(D, "cancel_remaining_orders") as cancel:
+         patch.object(D, "_cancel_counterparts_on_exchange") as exch_cancel, \
+         patch.object(D, "_mark_counterparts_cancelled") as db_cancel:
         rc = D._execute_force_close(
             entry, "reversal", {}, "ABC/USDC:USDC", object(), _cfg(), conn,
         )
 
     assert rc == 0
     urgent.assert_called_once()
-    cancel.assert_not_called()  # SL must NOT be cancelled on an unconfirmed close
+    exch_cancel.assert_not_called()  # SL must NOT be cancelled on a non-close
+    db_cancel.assert_not_called()
     sl = conn.execute(
         "SELECT status FROM orders WHERE order_type='stop_loss'"
     ).fetchone()
@@ -253,13 +352,14 @@ def test_timeout_none_keeps_sl_and_alerts():
     with patch.object(M, "get_auth_exchange", return_value=object()), \
          patch.object(M, "get_exchange_meta",
                       return_value={"symbol_template": "{coin}/USDC:USDC"}), \
-         patch.object(M, "market_close_position", return_value=None), \
+         patch.object(M, "market_close_position",
+                      return_value=M.MarketCloseResult("none", None, None)), \
          patch.object(M, "_send_urgent_close_alert") as urgent, \
-         patch.object(M, "cancel_remaining_orders") as cancel:
+         patch.object(M, "_cancel_counterparts_on_exchange") as exch_cancel:
         M.enforce_position_timeouts(cfg, conn)
 
     urgent.assert_called_once()
-    cancel.assert_not_called()
+    exch_cancel.assert_not_called()
     sl = conn.execute(
         "SELECT status FROM orders WHERE order_type='stop_loss'"
     ).fetchone()
@@ -324,8 +424,15 @@ def test_drift_close_alert_r_anchored_on_original_sl():
     def _capture_alert(e, trig, fp, r_val, cfg):
         captured["r"] = r_val
 
-    with patch.object(D, "market_close_position", return_value=102.0), \
-         patch.object(D, "cancel_remaining_orders"), \
+    with patch.object(D, "market_close_position",
+                      return_value=M.MarketCloseResult(
+                          "full",
+                          {"order_id": "c1", "scan_id": "s1", "coin": "ABC",
+                           "direction": "LONG", "order_type": "drift_close",
+                           "status": "FILLED", "fill_price": 102.0, "quantity": 1.0,
+                           "exchange": "hyperliquid", "execution_mode": "testnet"},
+                          102.0)), \
+         patch.object(D, "_cancel_counterparts_on_exchange", return_value=[]), \
          patch.object(D, "_send_drift_close_alert", side_effect=_capture_alert):
         rc = D._execute_force_close(
             entry, "reversal", {}, "ABC/USDC:USDC", object(), _cfg(), conn,

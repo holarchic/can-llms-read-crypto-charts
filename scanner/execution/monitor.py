@@ -2,6 +2,7 @@
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
@@ -19,6 +20,7 @@ from .storage import (
     make_cloid,
     new_order_id,
     save_order,
+    transaction,
     update_order_status,
 )
 
@@ -146,11 +148,15 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                             entry["coin"], order["order_type"], order["quantity"], fill_qty,
                         )
                     original_qty = float(order["quantity"])
-                    update_order_status(
-                        order["order_id"], "FILLED", conn,
-                        fill_price=fill_price,
-                        filled_quantity=fill_qty,
-                    )
+                    is_exit = order["order_type"] in ("stop_loss", "tp1", "tp2")
+                    if not is_exit:
+                        # Entry (or other non-routed) fill — standalone FILLED
+                        # commit, exactly as before.
+                        update_order_status(
+                            order["order_id"], "FILLED", conn,
+                            fill_price=fill_price,
+                            filled_quantity=fill_qty,
+                        )
                     # Keep in-memory consistent with DB so replacement helpers
                     # see the fill state without re-querying.
                     order["status"] = "FILLED"
@@ -161,12 +167,15 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                         entry["coin"], order["order_type"], order["direction"], fill_price, fill_qty,
                     )
 
-                    # Handle exit fill: route based on partial vs full close
-                    if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                    # Exit fill: _handle_exit_fill OWNS the FILLED DB write so
+                    # the full-close route commits it atomically with the
+                    # counterpart CANCELLED marks (atomic full-close boundary).
+                    if is_exit:
                         _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
                         _handle_exit_fill(
                             order, entry, scan_orders,
                             symbol, exchange, exec_config, conn,
+                            fill_price=fill_price,
                             fill_qty=fill_qty,
                         )
                         break  # stale list — re-check next cycle
@@ -183,22 +192,25 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                             entry["coin"], order["order_type"], partial_fill, order["quantity"], fill_price,
                         )
                         original_qty = float(order["quantity"])
-                        update_order_status(
-                            order["order_id"], "FILLED", conn,
-                            fill_price=fill_price,
-                            filled_quantity=partial_fill,
-                        )
+                        is_exit = order["order_type"] in ("stop_loss", "tp1", "tp2")
+                        if not is_exit:
+                            update_order_status(
+                                order["order_id"], "FILLED", conn,
+                                fill_price=fill_price,
+                                filled_quantity=partial_fill,
+                            )
                         # Keep in-memory consistent with DB so replacement helpers
                         # see the fill state without re-querying.
                         order["status"] = "FILLED"
                         order["quantity"] = original_qty  # keep for residual math
                         updated += 1
 
-                        if order["order_type"] in ("stop_loss", "tp1", "tp2"):
+                        if is_exit:
                             _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
                             _handle_exit_fill(
                                 order, entry, scan_orders,
                                 symbol, exchange, exec_config, conn,
+                                fill_price=fill_price,
                                 fill_qty=partial_fill,
                             )
                             break
@@ -240,17 +252,23 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
     return updated
 
 
-def cancel_remaining_orders(
+def _cancel_counterparts_on_exchange(
     scan_id: str, filled_order_id: str, symbol: str, config: ExecutionConfig, conn,
-) -> None:
-    """Cancel all other PLACED orders for a scan after one exit fills.
+) -> list[dict]:
+    """Exchange-cancel pass for the closing position's PLACED counterparts.
 
-    Always marks DB as CANCELLED — the position is closing, so these orders
-    are dead regardless of whether the exchange cancel succeeds (exchange may
-    have already auto-cancelled them when the position closed).
+    The exchange half of the atomic full-close boundary (C4#6). Issues every
+    `cancel_order()` here — BEFORE the caller opens its close `transaction()`
+    — because the invariant forbids an exchange REST call inside a DB
+    transaction. Per-order try/except preserved: the exchange may have
+    auto-cancelled a counterpart when the position closed. Returns the orders
+    to mark CANCELLED; the caller passes them to `_mark_counterparts_cancelled`
+    INSIDE the same transaction as the close-state write, so a rollback leaves
+    the close unrecorded → the position stays in `get_open_entry_orders()` →
+    next monitor cycle retries (self-healing, DB-failure scoped).
     """
-    orders = get_orders_for_scan(scan_id, conn)
-    for order in orders:
+    targets = []
+    for order in get_orders_for_scan(scan_id, conn):
         if order["order_id"] == filled_order_id:
             continue
         if order["status"] != "PLACED":
@@ -262,36 +280,72 @@ def cancel_remaining_orders(
         except Exception as exc:
             log.error("Failed to cancel %s on exchange for %s: %s",
                       order["order_type"], scan_id, exc)
-        # Always mark DB as cancelled — position is closing regardless
+        targets.append(order)
+    return targets
+
+
+def _mark_counterparts_cancelled(targets: list[dict], conn) -> None:
+    """DB-mark half: mark every counterpart CANCELLED regardless of the
+    exchange-cancel outcome (the position is closing, so they are dead).
+
+    MUST run inside the caller's close `transaction()` so it commits as one
+    unit with the close-state write — the always-mark-CANCELLED invariant of
+    the former `cancel_remaining_orders`, now atomic with the close.
+    """
+    for order in targets:
         update_order_status(order["order_id"], "CANCELLED", conn)
-        log.info("Cancelled %s for %s (counterpart filled)", order["order_type"], scan_id)
+        log.info("Cancelled %s for %s (counterpart of close)",
+                 order["order_type"], order["scan_id"])
 
 
 def _handle_exit_fill(
     filled_order: dict, entry: dict, scan_orders: list[dict],
     symbol: str, exchange, config: ExecutionConfig, conn,
+    fill_price: float | None = None,
     fill_qty: float | None = None,
 ) -> None:
-    """Route exit fill: TP1 → partial close (replace SL), SL/TP2 → full close or partial."""
+    """Route an exit fill and OWN its FILLED DB write.
+
+    The filled-exit FILLED mark is written HERE, not by the caller, so the
+    full-close route can commit it atomically with the counterpart-CANCELLED
+    marks (the atomic full-close boundary, C4#6). A close-state write committed
+    before its counterpart cancels would strand PLACED counterparts on a
+    position `get_open_entry_orders()` no longer returns — the phantom_sl
+    family this exists to kill. The exchange-cancel pass runs OUTSIDE the
+    transaction (invariant: no exchange REST call inside a DB txn). TP1 /
+    partial routes keep the standalone FILLED commit then their existing
+    exchange-interleaved replacement saga (out of C4#6 scope) — unchanged.
+    """
+    oid = filled_order["order_id"]
     if filled_order["order_type"] == "tp1":
+        update_order_status(oid, "FILLED", conn,
+                            fill_price=fill_price, filled_quantity=fill_qty)
         _handle_tp1_fill(filled_order, entry, scan_orders, symbol, exchange, config, conn,
                          fill_qty=fill_qty)
-    else:
-        # Check for partial fill — residual position needs protection
-        order_qty = filled_order.get("quantity", 0)
-        actual_fill = fill_qty if fill_qty is not None else order_qty
-        if actual_fill < order_qty and order_qty > 0:
-            _handle_partial_exit_fill(
-                filled_order, entry, scan_orders,
-                symbol, exchange, config, conn,
-                fill_qty=actual_fill,
-            )
-        else:
-            # Full close — cancel everything
-            cancel_remaining_orders(
-                entry["scan_id"], filled_order["order_id"],
-                symbol, config, conn,
-            )
+        return
+    # Check for partial fill — residual position needs protection
+    order_qty = filled_order.get("quantity", 0)
+    actual_fill = fill_qty if fill_qty is not None else order_qty
+    if actual_fill < order_qty and order_qty > 0:
+        update_order_status(oid, "FILLED", conn,
+                            fill_price=fill_price, filled_quantity=fill_qty)
+        _handle_partial_exit_fill(
+            filled_order, entry, scan_orders,
+            symbol, exchange, config, conn,
+            fill_qty=actual_fill,
+        )
+        return
+    # Full close — atomic boundary: exchange-cancel pass first (outside the
+    # txn), then the exit FILLED mark + counterpart CANCELLED marks commit as
+    # ONE unit. A rollback leaves the close unrecorded so the position stays
+    # in the open set and the next cycle retries (self-healing, DB scoped).
+    targets = _cancel_counterparts_on_exchange(
+        entry["scan_id"], oid, symbol, config, conn,
+    )
+    with transaction(conn):
+        update_order_status(oid, "FILLED", conn,
+                            fill_price=fill_price, filled_quantity=fill_qty)
+        _mark_counterparts_cancelled(targets, conn)
 
 
 def _get_live_position_qty(
@@ -366,11 +420,14 @@ def _handle_partial_exit_fill(
         entry["coin"], entry["direction"], residual_qty, config,
     )
     if residual_qty <= 0:
-        # No residual — treat as full close
-        cancel_remaining_orders(
-            entry["scan_id"], filled_order["order_id"],
-            symbol, config, conn,
+        # No residual — treat as full close. The filled exit's FILLED row was
+        # already committed (tp1/partial route owns it standalone); group the
+        # counterpart cancels atomically (exchange pass before the txn).
+        targets = _cancel_counterparts_on_exchange(
+            entry["scan_id"], filled_order["order_id"], symbol, config, conn,
         )
+        with transaction(conn):
+            _mark_counterparts_cancelled(targets, conn)
         return
 
     filled_type = filled_order["order_type"]
@@ -563,11 +620,14 @@ def _handle_tp1_fill(
     )
 
     if remaining_qty <= 0:
-        # TP1 was full size — treat as full close
-        cancel_remaining_orders(
-            entry["scan_id"], tp1_order["order_id"],
-            symbol, config, conn,
+        # TP1 was full size — treat as full close. The TP1 FILLED row was
+        # already committed (tp1 route owns it standalone); group the
+        # counterpart cancels atomically (exchange pass before the txn).
+        targets = _cancel_counterparts_on_exchange(
+            entry["scan_id"], tp1_order["order_id"], symbol, config, conn,
         )
+        with transaction(conn):
+            _mark_counterparts_cancelled(targets, conn)
         return
 
     # Find the current SL order
@@ -600,13 +660,13 @@ def _send_urgent_sl_alert(coin: str, direction: str, config: ExecutionConfig) ->
 
 def _send_urgent_close_alert(coin: str, direction: str, config: ExecutionConfig) -> bool:
     """URGENT when a timeout market-close did NOT confirm (zero/partial/
-    unpriceable/retry-exhausted → `market_close_position` returned None).
+    unpriceable/retry-exhausted → `MarketCloseResult.kind` in {partial,none}).
 
-    The protective SL is RETAINED — `cancel_remaining_orders` is only reached
-    on a confirmed full close, so the position is NOT naked (distinct from
-    `_send_urgent_sl_alert`'s "running WITHOUT stop loss" condition). The
-    position/remainder is re-attempted next monitor cycle; reconcile from
-    exchange truth.
+    The protective SL is RETAINED — counterpart cancels run only on a
+    confirmed full close (`kind=="full"`), so the position is NOT naked
+    (distinct from `_send_urgent_sl_alert`'s "running WITHOUT stop loss"
+    condition). The position/remainder is re-attempted next monitor cycle;
+    reconcile from exchange truth.
     """
     from .alerts import send_urgent
     message = (f"@everyone **URGENT**: TIMEOUT close did NOT confirm for {coin} "
@@ -732,11 +792,11 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         symbol = meta["symbol_template"].format(coin=entry["coin"])
         exit_side = "sell" if entry["direction"] == "LONG" else "buy"
 
-        fill_price = market_close_position(
+        result = market_close_position(
             entry, symbol, exit_side, remaining_qty, exchange, exec_config, conn,
         )
 
-        if fill_price is not None:
+        if result.kind == "full":
             # Fetch ORIGINAL SL trigger for R calculation. Ordering matters —
             # without it the engine returns whichever row it picks first, which
             # for drift/trail-affected scans is the moved SL and collapses risk.
@@ -747,15 +807,27 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
             ).fetchone()
             sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
 
-            # Cancel remaining SL/TP orders
-            cancel_remaining_orders(entry["scan_id"], "", symbol, exec_config, conn)
+            # Atomic full-close boundary: exchange-cancel pass first (outside
+            # the txn), then the close row + counterpart CANCELLED marks commit
+            # as ONE unit. A rollback leaves the close unrecorded so the
+            # position stays in the open set and the next cycle retries.
+            targets = _cancel_counterparts_on_exchange(
+                entry["scan_id"], "", symbol, exec_config, conn,
+            )
+            with transaction(conn):
+                save_order(result.payload, conn)
+                _mark_counterparts_cancelled(targets, conn)
             _send_timeout_alert(entry, age_hours, remaining_qty, exec_config,
-                                fill_price=fill_price, sl_price=sl_price)
+                                fill_price=result.fill_price, sl_price=sl_price)
             timed_out += 1
         else:
-            # market_close_position returned None: zero/partial/unpriceable/
-            # exhausted. SL was NOT cancelled (that is inside the
-            # `is not None` block) → position retained WITH its SL, not naked.
+            # kind in {"partial","none"}: zero/partial/unpriceable/exhausted.
+            # No counterpart cancel → position retained WITH its SL, not naked
+            # (Fix-3 safety preserved). A partial leg is persisted truthfully
+            # (the row market_close_position used to write itself); remainder
+            # retried next cycle.
+            if result.kind == "partial":
+                save_order(result.payload, conn)
             _send_urgent_close_alert(entry["coin"], entry["direction"], exec_config)
 
     if own_conn:
@@ -780,22 +852,55 @@ def _get_remaining_qty(entry: dict, conn) -> float:
     return remaining if remaining > OPEN_QTY_EPSILON else 0.0
 
 
+@dataclass(frozen=True)
+class MarketCloseResult:
+    """Typed outcome of `market_close_position` (C4#6 — KL#9(a) market-close slice).
+
+    `market_close_position` re-derives fill state from the exchange but no
+    longer self-persists; the caller owns persistence so the close-state write
+    can commit atomically with its counterpart-CANCELLED marks (the atomic
+    full-close boundary — load-bearing invariant: no DB txn spans an exchange
+    REST call). The three-way `kind` preserves Fix-3's safety exactly — a flat
+    `payload | None` could not (a truthy partial would make callers cancel the
+    SL + fire a false full-close alert; a None partial would lose the truthful
+    partial row):
+
+      - "full"    → `payload` is the close `save_order` dict; caller composes
+                    the atomic close+cancel transaction. `fill_price` set.
+      - "partial" → `payload` is the truthful partial leg (actual filled qty);
+                    caller persists ONLY that row and RETAINS the SL/counterparts
+                    (remainder retried next cycle). `fill_price` set.
+      - "none"    → no row, no cancel (zero/unconfirmed/unpriceable/exhausted);
+                    `payload`/`fill_price` are None.
+    """
+
+    kind: str
+    payload: dict | None
+    fill_price: float | None
+
+
+# Shared sentinel — every non-confirmed/exception/exhausted path returns this.
+_CLOSE_NONE = MarketCloseResult("none", None, None)
+
+
 def market_close_position(
     entry: dict, symbol: str, exit_side: str, qty: float,
     exchange, config: ExecutionConfig, conn,
     order_type: str = "timeout_close",
-) -> float | None:
+) -> MarketCloseResult:
     """Place a reduceOnly market order to close a position. 3 retries.
 
-    Returns the fill price ONLY on a confirmed FULL priced close (a `FILLED`
-    row is written). Returns `None` on a partial close (a truthful partial
-    `FILLED` row IS written for the actual leg; caller retains the SL and the
-    remainder is re-attempted next monitor cycle), on a zero/unconfirmed/
-    unpriceable result (NO row written — a `FILLED`/NULL-price row would
-    fabricate a close, the 2026-04-17 phantom_sl class), and on retry
-    exhaustion. `create_order` succeeding is not proof of a fill — HL has no
-    native market order; ccxt simulates via limit-IOC which can under/not-fill,
-    so fill state is re-derived from `status`/`filled` (T-014(a), SPEC #24).
+    Returns a `MarketCloseResult` — persistence is the CALLER's job (so the
+    close row commits atomically with counterpart cancels; see the type's
+    docstring). `kind="full"` only on a confirmed FULL priced close;
+    `kind="partial"` carries the truthful partial leg (caller retains the SL,
+    remainder retried next cycle); `kind="none"` on a zero/unconfirmed/
+    unpriceable result (NO row — a `FILLED`/NULL-price row would fabricate a
+    close, the 2026-04-17 phantom_sl class) and on retry exhaustion.
+    `create_order` succeeding is not proof of a fill — HL has no native market
+    order; ccxt simulates via limit-IOC which can under/not-fill, so fill state
+    is re-derived from `status`/`filled` (T-014(a), SPEC #24). The confirmed-
+    fill GATING is preserved verbatim from Fix-3 — only persistence moved out.
 
     HyperLiquid has no native market orders — ccxt simulates via limit IOC
     with slippage. Requires current price as the base for slippage calc.
@@ -835,7 +940,8 @@ def market_close_position(
             if confirmed:
                 full = filled is None or filled + OPEN_QTY_EPSILON >= rounded_qty
                 recorded_qty = rounded_qty if full else filled
-                save_order({
+                now = datetime.now(timezone.utc).isoformat()
+                payload = {
                     "order_id": order_id,
                     "scan_id": entry["scan_id"],
                     "coin": entry["coin"],
@@ -847,22 +953,22 @@ def market_close_position(
                     "quantity": recorded_qty,
                     "exchange": config.exchange,
                     "execution_mode": config.mode,
-                    "filled_at": datetime.now(timezone.utc).isoformat(),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }, conn)
+                    "filled_at": now,
+                    "created_at": now,
+                }
                 if full:
                     log.info(
                         "%s %s %s: qty %s at %s",
                         order_type, entry["coin"], entry["direction"], recorded_qty, fill_price,
                     )
-                    return fill_price
+                    return MarketCloseResult("full", payload, fill_price)
                 log.warning(
                     "%s %s %s: PARTIAL close %s/%s at %s — remainder open, "
                     "retried next monitor cycle",
                     order_type, entry["coin"], entry["direction"],
                     recorded_qty, rounded_qty, fill_price,
                 )
-                return None
+                return MarketCloseResult("partial", payload, fill_price)
 
             # Not a confirmed priced close (status not closed, zero fill, or
             # unpriceable). Write NO row — a FILLED/NULL-price row fabricates a
@@ -874,7 +980,7 @@ def market_close_position(
                 order_type, entry["coin"], status, filled, fill_price,
                 order_id, cloid, exch_id,
             )
-            return None
+            return _CLOSE_NONE
         except Exception as exc:
             log.error(
                 "%s attempt %d/%d for %s failed: %s",
@@ -884,7 +990,7 @@ def market_close_position(
                 time.sleep(attempt)
 
     log.error("All %s attempts exhausted for %s — position still open", order_type, entry["coin"])
-    return None
+    return _CLOSE_NONE
 
 
 def _calc_r(entry_price: float, exit_price: float, sl_price: float, direction: str) -> float | None:
@@ -1061,17 +1167,15 @@ def _reclassify_missing_sl(
             entry["coin"], filled_qty, fill_price,
         )
         original_qty = float(sl_order.get("quantity") or 0)
-        update_order_status(
-            sl_order["order_id"], "FILLED", conn,
-            fill_price=fill_price,
-            filled_quantity=filled_qty,
-        )
+        # SL (exit) fill — _handle_exit_fill OWNS the FILLED DB write so the
+        # full-close route commits it atomically with the counterpart cancels.
         sl_order["status"] = "FILLED"
         sl_order["quantity"] = original_qty  # preserve for residual math
         _send_fill_alert(entry, sl_order, fill_price, config, scan_orders=scan_orders)
         _handle_exit_fill(
             sl_order, entry, scan_orders,
             symbol, exchange, config, conn,
+            fill_price=fill_price,
             fill_qty=filled_qty,
         )
         return "filled"
@@ -1146,8 +1250,8 @@ def check_positions(exec_config: ExecutionConfig, conn=None, scanner_config=None
                 break
 
         if not has_sl:
-            # Re-check: the reclassify step may have inserted a FILLED row +
-            # cancel_remaining_orders, which closes the position. If so, skip.
+            # Re-check: the reclassify step may have marked the exit FILLED +
+            # cancelled counterparts, which closes the position. If so, skip.
             current = get_orders_for_scan(entry["scan_id"], conn)
             filled_exits = [
                 x for x in current
