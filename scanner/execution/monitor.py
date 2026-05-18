@@ -456,13 +456,18 @@ def _reclassify_missing_sl(
         # full-close route commits it atomically with the counterpart cancels.
         sl_order["status"] = "FILLED"
         sl_order["quantity"] = original_qty  # preserve for residual math
-        _send_fill_alert(entry, sl_order, fill_price, config, conn)
+        # Fill-alert only AFTER the close cluster commits (same invariant as
+        # the C-LOW sync_order_status fix, SPEC #27): there is no rollback
+        # catch here — if _handle_exit_fill raises, the close is unrecorded
+        # and the next health-check cycle re-detects the SL fill, so alerting
+        # first would double-alert on the rare rollback.
         _handle_exit_fill(
             sl_order, entry, scan_orders,
             symbol, exchange, config, conn,
             fill_price=fill_price,
             fill_qty=filled_qty,
         )
+        _send_fill_alert(entry, sl_order, fill_price, config, conn)
         return "filled"
 
     return "phantom"
