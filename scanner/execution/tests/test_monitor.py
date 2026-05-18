@@ -1443,14 +1443,15 @@ class TestFillAlert:
     """SL/TP fill Discord embed notifications."""
 
     @patch("scanner.execution.alerts.requests.post")
-    def test_fill_alert_sl(self, mock_post):
-        """SL fill → red embed, SL FILLED title, R value field."""
+    def test_fill_alert_sl(self, mock_post, conn):
+        """SL fill, no original-SL row in DB → fallback to the just-filled
+        SL's trigger (KL#2(iv): re-point preserves the SL-fill fallback)."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "BTC", "direction": "LONG", "entry_price": 62000}
         order = {"order_type": "stop_loss", "trigger_price": 59800}
 
-        result = _send_fill_alert(entry, order, 59800.0, config)
+        result = _send_fill_alert(entry, order, 59800.0, config, conn)
 
         assert result is True
         embed = mock_post.call_args[1]["json"]["embeds"][0]
@@ -1462,15 +1463,18 @@ class TestFillAlert:
         assert "-1.00R" in field_values["R Value"]
 
     @patch("scanner.execution.alerts.requests.post")
-    def test_fill_alert_tp(self, mock_post):
-        """TP1 fill → green embed, TP1 FILLED title, R value from scan_orders SL."""
+    def test_fill_alert_tp(self, mock_post, conn):
+        """TP1 fill → green embed, R value from the DB original-SL anchor
+        (KL#2(iv): single owner storage.original_stop_price)."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
-        entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
+        save_order(_make_order(scan_id="s_tp", coin="ETH", direction="SHORT",
+                               order_type="stop_loss", status="PLACED",
+                               trigger_price=3500), conn)
+        entry = {"scan_id": "s_tp", "coin": "ETH", "direction": "SHORT", "entry_price": 3400}
         order = {"order_type": "tp1"}
-        scan_orders = [{"order_type": "stop_loss", "trigger_price": 3500}]
 
-        result = _send_fill_alert(entry, order, 3200.50, config, scan_orders=scan_orders)
+        result = _send_fill_alert(entry, order, 3200.50, config, conn)
 
         assert result is True
         embed = mock_post.call_args[1]["json"]["embeds"][0]
@@ -1481,14 +1485,15 @@ class TestFillAlert:
         assert "+2.00R" in field_values["R Value"]
 
     @patch("scanner.execution.alerts.requests.post")
-    def test_fill_alert_tp_no_scan_orders(self, mock_post):
-        """TP fill without scan_orders → no R field, no crash."""
+    def test_fill_alert_tp_no_original_sl(self, mock_post, conn):
+        """TP fill, no original-SL row in DB → no R field, no crash (TP has
+        no fallback — only SL fills fall back to the just-filled trigger)."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "ETH", "direction": "SHORT", "entry_price": 3400}
         order = {"order_type": "tp1"}
 
-        result = _send_fill_alert(entry, order, 3200.50, config)
+        result = _send_fill_alert(entry, order, 3200.50, config, conn)
 
         assert result is True
         embed = mock_post.call_args[1]["json"]["embeds"][0]
@@ -1497,24 +1502,27 @@ class TestFillAlert:
         assert "R Value" not in field_names
 
     @patch("scanner.execution.alerts.requests.post")
-    def test_fill_alert_sl_drift_flatten_uses_original_sl(self, mock_post):
+    def test_fill_alert_sl_drift_flatten_uses_original_sl(self, mock_post, conn):
         """Drift-flatten case: SL was moved to entry, then filled at entry.
         Without using the original SL as risk anchor, risk = 0 → R=None →
         R Value field omitted from alert (XRP/KBONK 2026-05-01 pattern).
         With the fix, R reports +0.00R (correct breakeven outcome)."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
-        entry = {"coin": "XRP", "direction": "LONG", "entry_price": 1.3704}
+        entry = {"scan_id": "s_drift", "coin": "XRP", "direction": "LONG", "entry_price": 1.3704}
         # Order that just filled is the post-drift SL (trigger == entry)
         order = {"order_type": "stop_loss", "trigger_price": 1.3704}
-        # Scan order chain: original SL (1.3439) cancelled, drift-moved SL filled
-        scan_orders = [
-            {"order_type": "entry", "trigger_price": None, "created_at": "2026-04-30T12:06:40Z"},
-            {"order_type": "stop_loss", "trigger_price": 1.3439, "created_at": "2026-04-30T12:06:40Z"},
-            {"order_type": "stop_loss", "trigger_price": 1.3704, "created_at": "2026-05-01T00:10:51Z"},
-        ]
+        # DB order chain: original SL (1.3439, earlier created_at) then the
+        # drift-moved SL (1.3704). storage.original_stop_price ORDER BY
+        # created_at ASC LIMIT 1 → the ORIGINAL 1.3439 (the risk anchor).
+        save_order(_make_order(scan_id="s_drift", coin="XRP", order_type="stop_loss",
+                               status="CANCELLED", trigger_price=1.3439,
+                               created_at="2026-04-30T12:06:40+00:00"), conn)
+        save_order(_make_order(scan_id="s_drift", coin="XRP", order_type="stop_loss",
+                               status="PLACED", trigger_price=1.3704,
+                               created_at="2026-05-01T00:10:51+00:00"), conn)
 
-        result = _send_fill_alert(entry, order, 1.3704, config, scan_orders=scan_orders)
+        result = _send_fill_alert(entry, order, 1.3704, config, conn)
 
         assert result is True
         embed = mock_post.call_args[1]["json"]["embeds"][0]
@@ -1523,14 +1531,14 @@ class TestFillAlert:
         assert "+0.00R" in field_values["R Value"]
 
     @patch("scanner.execution.alerts.requests.post")
-    def test_fill_alert_no_entry_price(self, mock_post):
+    def test_fill_alert_no_entry_price(self, mock_post, conn):
         """No entry_price on entry dict → no R field, no crash."""
         mock_post.return_value = MagicMock(status_code=204)
         config = ExecutionConfig(discord_ops_webhook_url="https://discord.com/ops")
         entry = {"coin": "BTC", "direction": "LONG"}
         order = {"order_type": "stop_loss", "trigger_price": 59800}
 
-        result = _send_fill_alert(entry, order, 59800.0, config)
+        result = _send_fill_alert(entry, order, 59800.0, config, conn)
 
         assert result is True
         embed = mock_post.call_args[1]["json"]["embeds"][0]
@@ -1538,13 +1546,13 @@ class TestFillAlert:
         field_names = [f["name"] for f in embed["fields"]]
         assert "R Value" not in field_names
 
-    def test_fill_alert_no_webhook(self):
+    def test_fill_alert_no_webhook(self, conn):
         """No ops webhook → returns False, no request."""
         config = ExecutionConfig(discord_ops_webhook_url="")
         entry = {"coin": "BTC", "direction": "LONG"}
         order = {"order_type": "stop_loss"}
 
-        result = _send_fill_alert(entry, order, 59800.0, config)
+        result = _send_fill_alert(entry, order, 59800.0, config, conn)
         assert result is False
 
 

@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timezone
 
 from .config import ExecutionConfig
+from .storage import original_stop_price
 
 log = logging.getLogger("scanner.execution.monitor")
 
@@ -31,28 +32,9 @@ def _calc_r(entry_price: float, exit_price: float, sl_price: float, direction: s
         return (entry_price - exit_price) / risk
 
 
-def _original_sl_price(scan_orders: list[dict] | None) -> float | None:
-    """First-placed stop_loss trigger price for this scan.
-
-    Risk anchor for R reporting. Drift `sl_move` and post-TP1 trail mutate
-    the current SL; using the original keeps the R denominator stable across
-    the position lifecycle: drift-flatten reports +0.00R (not None) and
-    trailed runners report true R vs. initial risk.
-
-    `get_orders_for_scan` already orders by created_at then type — the first
-    stop_loss row is the original.
-    """
-    if not scan_orders:
-        return None
-    for o in scan_orders:
-        if o["order_type"] == "stop_loss" and o.get("trigger_price"):
-            return float(o["trigger_price"])
-    return None
-
-
 def _send_fill_alert(
     entry: dict, order: dict, fill_price: float | None, config: ExecutionConfig,
-    scan_orders: list[dict] | None = None,
+    conn,
 ) -> bool:
     """Send Discord embed when an exit order (SL/TP) fills."""
     webhook = config.discord_ops_webhook_url
@@ -70,11 +52,19 @@ def _send_fill_alert(
     if fill_price and entry.get("entry_price"):
         # Original (first-placed) SL is the risk anchor — drift sl_move and
         # post-TP1 trail mutate the current SL, so using the order that just
-        # filled collapses risk to 0 on drift-flatten.
-        sl_price = _original_sl_price(scan_orders)
-        # Fallback for SL fills when scan_orders not passed (legacy callers
-        # / tests). For TP fills there's no fallback — without scan_orders we
-        # have no SL reference, so R stays None (existing behavior).
+        # filled collapses risk to 0 on drift-flatten. Single owner (KL#2(iv),
+        # SPEC #27): the Phase-2a storage.original_stop_price (ORDER BY
+        # created_at ASC LIMIT 1, mode+exchange-scoped). `or None` preserves
+        # the prior falsy-trigger→no-anchor handling byte-identically; no
+        # scan_id (can't look up) → None, same as the old empty-scan_orders
+        # path.
+        scan_id = entry.get("scan_id")
+        sl_price = (
+            original_stop_price(scan_id, conn, config.mode, config.exchange)
+            if scan_id else None
+        ) or None
+        # Fallback for SL fills with no original-SL row in the DB. For TP
+        # fills there's no fallback — no SL reference, so R stays None.
         if sl_price is None and order["order_type"] == "stop_loss":
             sl_price = order.get("trigger_price")
         if sl_price:

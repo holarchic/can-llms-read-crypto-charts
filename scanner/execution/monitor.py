@@ -36,7 +36,6 @@ from .exit_fills import (  # noqa: F401  (re-export surface)
 # not a second definition). One-directional: monitor -> monitor_alerts.
 from .monitor_alerts import (  # noqa: F401  (re-export surface)
     _calc_r,
-    _original_sl_price,
     _send_errors_tp_alert,
     _send_fill_alert,
     _send_timeout_alert,
@@ -61,6 +60,7 @@ from .storage import (
     get_orders_for_scan,
     make_cloid,
     new_order_id,
+    original_stop_price,
     save_order,
     transaction,
     update_order_status,
@@ -177,7 +177,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                     # the full-close route commits it atomically with the
                     # counterpart CANCELLED marks (atomic full-close boundary).
                     if is_exit:
-                        _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
+                        _send_fill_alert(entry, order, fill_price, exec_config, conn)
                         try:
                             _handle_exit_fill(
                                 order, entry, scan_orders,
@@ -228,7 +228,7 @@ def sync_order_status(exec_config: ExecutionConfig, conn=None,
                         updated += 1
 
                         if is_exit:
-                            _send_fill_alert(entry, order, fill_price, exec_config, scan_orders=scan_orders)
+                            _send_fill_alert(entry, order, fill_price, exec_config, conn)
                             try:
                                 _handle_exit_fill(
                                     order, entry, scan_orders,
@@ -341,15 +341,15 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
         )
 
         if result.kind == "full":
-            # Fetch ORIGINAL SL trigger for R calculation. Ordering matters —
-            # without it the engine returns whichever row it picks first, which
-            # for drift/trail-affected scans is the moved SL and collapses risk.
-            sl_row = conn.execute(
-                "SELECT trigger_price FROM orders WHERE scan_id = ? AND order_type = 'stop_loss' "
-                "ORDER BY created_at LIMIT 1",
-                (entry["scan_id"],),
-            ).fetchone()
-            sl_price = float(sl_row["trigger_price"]) if sl_row and sl_row["trigger_price"] else None
+            # Original-SL risk anchor — single owner (KL#2(iv), SPEC #27): the
+            # Phase-2a storage.original_stop_price (ORDER BY created_at ASC
+            # LIMIT 1, mode+exchange-scoped). `or None` preserves the prior
+            # `... if sl_row and sl_row["trigger_price"] else None` falsy→None
+            # coercion byte-identically (storage returns 0.0 for a trigger==0
+            # row; `0.0 or None` → None).
+            sl_price = original_stop_price(
+                entry["scan_id"], conn, exec_config.mode, exec_config.exchange,
+            ) or None
 
             # Atomic full-close boundary: exchange-cancel pass first (outside
             # the txn), then the close row + counterpart CANCELLED marks commit
@@ -439,7 +439,7 @@ def _reclassify_missing_sl(
         # full-close route commits it atomically with the counterpart cancels.
         sl_order["status"] = "FILLED"
         sl_order["quantity"] = original_qty  # preserve for residual math
-        _send_fill_alert(entry, sl_order, fill_price, config, scan_orders=scan_orders)
+        _send_fill_alert(entry, sl_order, fill_price, config, conn)
         _handle_exit_fill(
             sl_order, entry, scan_orders,
             symbol, exchange, config, conn,
