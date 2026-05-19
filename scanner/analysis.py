@@ -19,44 +19,12 @@ from .llm import (
     parse_decision_block,
     parse_machine_block,
 )
-from .models import MarketContext, ScanResult, SetupSignal
-
-
-def _build_btc_context(btc_ctx: MarketContext) -> str:
-    """Build multi-line BTC context block for LLM prompt."""
-    structure = btc_ctx.structure.value.lower()
-    price = btc_ctx.current_price
-
-    # Position within range (if ranging)
-    position = ""
-    if btc_ctx.range_bounds:
-        lo, hi = btc_ctx.range_bounds
-        if hi > lo:
-            pct = (price - lo) / (hi - lo) * 100
-            if pct < 30:
-                position = f"Near range lows ({lo:,.0f}–{hi:,.0f})."
-            elif pct > 70:
-                position = f"Near range highs ({lo:,.0f}–{hi:,.0f})."
-            else:
-                position = f"Mid-range ({lo:,.0f}–{hi:,.0f})."
-
-    # Last swing low for reference
-    recent_lows = [s for s in btc_ctx.swings if s.type == "low"]
-    last_low = f"Last swing low: ${recent_lows[-1].body_price:,.0f}." if recent_lows else ""
-
-    lines = [
-        "Market context — BTC:",
-        f"- Daily structure: {structure.capitalize()}. {position} {last_low}".strip(),
-        f"- Volatility: ATR percentile {btc_ctx.vol_percentile:.0f}%.",
-    ]
-    return "\n".join(lines)
+from .models import ScanResult, SetupSignal
 
 
 def _build_scanner_content(
     chart_paths: list[Path],
     signal: SetupSignal,
-    btc_structure: str | None = None,
-    btc_context: MarketContext | None = None,
 ) -> list[dict]:
     """Build user content blocks with chart images. No screener context — LLM analyzes blind."""
     content = []
@@ -114,8 +82,6 @@ def analyze_for_scanner(
     signal: SetupSignal,
     chart_paths: list[Path],
     config: ScannerConfig | None = None,
-    btc_structure: str | None = None,
-    btc_context: MarketContext | None = None,
 ) -> ScanResult:
     """Run LLM deep analysis on a screener signal. Returns ScanResult."""
     cfg = config or ScannerConfig()
@@ -219,7 +185,7 @@ def analyze_for_scanner(
         "- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n"
         "  REJECT — except for B/F (above).\n"
     )
-    user_content = _build_scanner_content(chart_paths, signal, btc_structure, btc_context)
+    user_content = _build_scanner_content(chart_paths, signal)
     messages = [{"role": "user", "content": user_content}]
 
     # Explicit timeout + retries — SDK defaults are 10min/2 retries, which

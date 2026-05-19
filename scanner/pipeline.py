@@ -13,7 +13,7 @@ from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
 from .db import get_connection
 from .indicators import build_context
-from .models import ExecutionRequest, MarketContext, ScanResult, SetupSignal
+from .models import ExecutionRequest, ScanResult, SetupSignal
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
@@ -62,7 +62,7 @@ def stage1_screen(
     verbose: bool = True,
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
-) -> tuple[list[SetupSignal], str | None, MarketContext | None, dict]:
+) -> tuple[list[SetupSignal], dict]:
     """Stage 1: Fetch pairs → batch fetch 4H candles → run screener → dedup."""
     conn = get_connection()
 
@@ -164,14 +164,12 @@ def stage1_screen(
     if verbose:
         print(f"Stage 1 complete: {len(capped)} signals (from {len(all_signals)} pre-cap)")
 
-    return capped, btc_structure, btc_context, candle_map
+    return capped, candle_map
 
 
 def _analyze_one(
     signal: SetupSignal,
     config: ScannerConfig,
-    btc_structure: str | None = None,
-    btc_context=None,
     prefetched_candles: dict | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
@@ -184,7 +182,7 @@ def _analyze_one(
                 candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
 
         chart_paths = generate_charts_for_signal(signal, candle_sets)
-        result = analyze_for_scanner(signal, chart_paths, config, btc_structure, btc_context)
+        result = analyze_for_scanner(signal, chart_paths, config)
         return result
     except Exception as e:
         print(f"  Error analyzing {signal.coin}: {e}")
@@ -198,8 +196,6 @@ def stage2_analyze(
     config: ScannerConfig,
     verbose: bool = True,
     strategy_id: str = "v0",
-    btc_structure: str | None = None,
-    btc_context=None,
     prefetched_candles: dict | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
@@ -228,7 +224,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config, btc_structure, btc_context, prefetched_candles): signal
+            executor.submit(_analyze_one, signal, config, prefetched_candles): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -566,7 +562,7 @@ def run_scan(
     testnet_coins = _resolve_testnet_coins(cfg, exec_config, exchange_label, verbose)
 
     # Stage 1
-    signals, btc_structure, btc_context, candle_map = stage1_screen(
+    signals, candle_map = stage1_screen(
         cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id,
         testnet_coins=testnet_coins,
     )
@@ -586,7 +582,6 @@ def run_scan(
 
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
-                                 btc_structure=btc_structure, btc_context=btc_context,
                                  prefetched_candles=candle_map)
 
     # Stage 3

@@ -447,7 +447,7 @@ class TestRunScanDispatcher:
     def test_dry_run_short_circuits_before_stage2(self):
         sig = _make_signal(coin="BTC")
         with patch("scanner.pipeline.stage1_screen",
-                   return_value=([sig], "BULL", None, {})), \
+                   return_value=([sig], {})), \
              patch("scanner.pipeline.stage2_analyze") as s2, \
              patch("scanner.pipeline.stage3_alert") as s3, \
              patch("scanner.pipeline.stage4_execute") as s4:
@@ -459,7 +459,7 @@ class TestRunScanDispatcher:
 
     def test_no_signals_short_circuits_to_empty_summary(self):
         with patch("scanner.pipeline.stage1_screen",
-                   return_value=([], None, None, {})), \
+                   return_value=([], {})), \
              patch("scanner.pipeline.stage2_analyze") as s2:
             out = run_scan(verbose=False, skip_discord=True)
         assert out == _empty_summary()
@@ -472,7 +472,7 @@ class TestRunScanDispatcher:
                                 mode="live", exchange="hyperliquid")
         sentinel = {"sentinel": "summary"}
         mgr = MagicMock()
-        mgr.s1.return_value = ([sig], "BULL", None, {})
+        mgr.s1.return_value = ([sig], {})
         mgr.filt.return_value = [sig]
         mgr.s2.return_value = [result]
         mgr.s3.return_value = 2
