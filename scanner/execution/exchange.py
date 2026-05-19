@@ -142,9 +142,18 @@ def get_open_positions_strict(config) -> list[dict]:
 
 
 def get_exchange_open_orders(config) -> list[dict]:
-    """Get open SL/TP orders on exchange."""
+    """Get open SL/TP orders on exchange.
+
+    `method="frontendOpenOrders"` is pinned explicitly (it is the ccxt-4.5.50
+    HL default, made non-silent): the Phase-3b-(b) duplicate-SL discriminator
+    keys on `info.{isTrigger,triggerCondition,reduceOnly}`, which only the
+    `frontendOpenOrders` shape carries — a ccxt default change or an
+    `openOrders` caller must not silently strip it (SPEC #30 / codex
+    plan-review R2). Behaviour-preserving for the existing `len`/`id`-only
+    callers.
+    """
     exchange = get_auth_exchange(config)
-    return exchange.fetch_open_orders()
+    return exchange.fetch_open_orders(params={"method": "frontendOpenOrders"})
 
 
 def cancel_order(exchange_order_id: str, symbol: str, config) -> bool:
