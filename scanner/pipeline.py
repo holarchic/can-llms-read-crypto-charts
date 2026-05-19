@@ -134,7 +134,6 @@ def stage1_screen(
 
     # Compute BTC Daily structure for market context (Daily = filter TF for 4H execution)
     btc_structure = None
-    btc_context = None
     try:
         btc_daily_df = fetch_candles("BTC", "1d", config.candle_counts["1d"], config)
         if btc_daily_df is not None and len(btc_daily_df) >= 50:
