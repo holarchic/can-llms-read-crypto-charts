@@ -1,114 +1,78 @@
-"""Tests for strategy CRUD operations."""
+"""Tests for strategy CRUD — disabled_types per strategy_id (decision #31)."""
 
-
+from scanner.strategy.models import Strategy
 from scanner.strategy.store import (
-    activate_strategy,
     ensure_baseline,
-    get_active_strategy,
     get_strategy,
     list_strategies,
-    save_strategy,
+    set_disabled_types,
 )
 
 
-class TestSaveAndGet:
-    def test_save_and_retrieve(self, db_conn, baseline_strategy):
-        save_strategy(baseline_strategy, db_conn)
-        got = get_strategy("v0", db_conn)
-        assert got is not None
-        assert got.strategy_id == "v0"
-        assert got.label == "baseline"
-        assert got.swing_lookback == 5
-        assert got.sr_cluster_pct == 0.015
-
+class TestGetAndBaseline:
     def test_get_nonexistent_returns_none(self, db_conn):
         assert get_strategy("nope", db_conn) is None
 
-    def test_save_updates_on_conflict(self, db_conn, baseline_strategy):
-        save_strategy(baseline_strategy, db_conn)
-        baseline_strategy.label = "updated"
-        save_strategy(baseline_strategy, db_conn)
-        got = get_strategy("v0", db_conn)
-        assert got.label == "updated"
-
-    def test_custom_params_roundtrip(self, db_conn, custom_strategy):
-        save_strategy(custom_strategy, db_conn)
-        got = get_strategy("v1-wider", db_conn)
-        assert got.swing_lookback == 7
-        assert got.sr_cluster_pct == 0.02
-        assert got.proximity_atr_mult == 2.0
-        assert got.max_setups_per_coin == 5
-        assert got.atr_stop_mult == 2.0
-        assert got.atr_target_mult == 4.0
-        assert got.notes == "Testing wider parameters"
-
-
-class TestActivate:
-    def test_activate_deactivates_others(self, db_conn, baseline_strategy, custom_strategy):
-        baseline_strategy.is_active = True
-        save_strategy(baseline_strategy, db_conn)
-        save_strategy(custom_strategy, db_conn)
-
-        activate_strategy("v1-wider", db_conn)
-
-        v0 = get_strategy("v0", db_conn)
-        v1 = get_strategy("v1-wider", db_conn)
-        assert v0.is_active is False
-        assert v1.is_active is True
-
-    def test_get_active_strategy(self, db_conn, baseline_strategy):
-        baseline_strategy.is_active = True
-        save_strategy(baseline_strategy, db_conn)
-        active = get_active_strategy(db_conn)
-        assert active is not None
-        assert active.strategy_id == "v0"
-
-    def test_no_active_returns_none(self, db_conn):
-        assert get_active_strategy(db_conn) is None
-
-
-class TestListStrategies:
-    def test_empty_list(self, db_conn):
-        assert list_strategies(db_conn) == []
-
-    def test_lists_all(self, db_conn, baseline_strategy, custom_strategy):
-        save_strategy(baseline_strategy, db_conn)
-        save_strategy(custom_strategy, db_conn)
-        strategies = list_strategies(db_conn)
-        assert len(strategies) == 2
-        ids = {s.strategy_id for s in strategies}
-        assert ids == {"v0", "v1-wider"}
-
-
-class TestEnsureBaseline:
-    def test_creates_baseline(self, db_conn):
+    def test_ensure_baseline_creates_v0(self, db_conn):
         baseline = ensure_baseline(db_conn)
         assert baseline.strategy_id == "v0"
-        assert baseline.label == "baseline"
-        assert baseline.is_active is True
-        # Verify persisted
+        assert baseline.disabled_types == ""
         got = get_strategy("v0", db_conn)
-        assert got is not None
+        assert got is not None and got.strategy_id == "v0"
 
-    def test_idempotent(self, db_conn):
+    def test_ensure_baseline_idempotent(self, db_conn):
         ensure_baseline(db_conn)
         ensure_baseline(db_conn)
-        strategies = list_strategies(db_conn)
-        v0s = [s for s in strategies if s.strategy_id == "v0"]
+        v0s = [s for s in list_strategies(db_conn) if s.strategy_id == "v0"]
         assert len(v0s) == 1
 
 
-class TestToScannerConfig:
-    def test_defaults_match(self, baseline_strategy):
-        cfg = baseline_strategy.to_scanner_config()
-        assert cfg.swing_lookback == 5
-        assert cfg.sr_cluster_pct == 0.015
-        assert cfg.proximity_atr_mult == 1.5
-        assert cfg.max_setups_per_coin == 3
+class TestSetDisabledTypes:
+    def test_set_and_read_back(self, db_conn):
+        ensure_baseline(db_conn)
+        set_disabled_types("v0", "A,E", db_conn)
+        got = get_strategy("v0", db_conn)
+        assert got.disabled_types == "A,E"
+        assert got.disabled_types_set == {"A", "E"}
 
-    def test_custom_params(self, custom_strategy):
-        cfg = custom_strategy.to_scanner_config()
-        assert cfg.swing_lookback == 7
-        assert cfg.sr_cluster_pct == 0.02
-        assert cfg.proximity_atr_mult == 2.0
-        assert cfg.max_setups_per_coin == 5
+    def test_clear(self, db_conn):
+        ensure_baseline(db_conn)
+        set_disabled_types("v0", "A,E", db_conn)
+        set_disabled_types("v0", "", db_conn)
+        got = get_strategy("v0", db_conn)
+        assert got.disabled_types == ""
+        assert got.disabled_types_set == set()
+
+    def test_preserves_rest_of_row_no_created_at_churn(self, db_conn):
+        # decision #31 no-clobber: a single-column in-place UPDATE must NOT
+        # rewrite created_at or the inert defaulted columns.
+        ensure_baseline(db_conn)
+        before = db_conn.execute(
+            "SELECT created_at, label, swing_lookback FROM strategies WHERE strategy_id='v0'"
+        ).fetchone()
+        set_disabled_types("v0", "G", db_conn)
+        after = db_conn.execute(
+            "SELECT created_at, label, swing_lookback FROM strategies WHERE strategy_id='v0'"
+        ).fetchone()
+        assert after["created_at"] == before["created_at"]
+        assert after["label"] == before["label"]
+        assert after["swing_lookback"] == before["swing_lookback"]
+
+
+class TestListStrategies:
+    def test_empty(self, db_conn):
+        assert list_strategies(db_conn) == []
+
+    def test_lists_ids_and_disabled(self, db_conn):
+        ensure_baseline(db_conn)
+        set_disabled_types("v0", "E,G", db_conn)
+        strategies = list_strategies(db_conn)
+        assert len(strategies) == 1
+        assert strategies[0].strategy_id == "v0"
+        assert strategies[0].disabled_types == "E,G"
+
+
+class TestDisabledTypesSet:
+    def test_parsing(self):
+        assert Strategy("v0", "").disabled_types_set == set()
+        assert Strategy("v0", "a, e ,G").disabled_types_set == {"A", "E", "G"}
