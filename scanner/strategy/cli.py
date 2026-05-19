@@ -1,9 +1,9 @@
 """Strategy CLI — create, list, activate, disable.
 
-Replay/sweep/calibrate/report/backfill were removed in T-001 (2026-05-12)
-when llm-trader stopped persisting candles. Strategy management for the
-live scanner remains: a row in `strategies` configures the active screener
-parameters that `scanner/pipeline.py` reads via `get_strategy`.
+Strategy management for the live scanner: a row in `strategies` configures
+the active screener parameters that `scanner/pipeline.py` reads via
+`get_strategy`. (No replay/sweep/calibrate/report/backfill — llm-trader
+does not persist candles.)
 """
 
 import argparse

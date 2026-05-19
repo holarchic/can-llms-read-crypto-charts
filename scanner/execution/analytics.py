@@ -12,10 +12,9 @@ def risked_outcomes(trades: list[TradeRecord]) -> RiskedOutcomes:
     break-even losses (which would dilute expectancy, depress win-rate, and —
     for a profitable no-SL trade — contaminate profit factor; SPEC #24, KL#2
     v). The `realized_r > 0` win/loss split is folded in here, not duplicated
-    at call sites, because it drives win_rate/profit_factor (not presentation;
-    plan-review-caught). Returns a named `RiskedOutcomes` record, not a bare
-    same-typed 3-tuple (phase-review-arch-caught: a positional seam hides a
-    wins/losses swap)."""
+    at call sites, because it drives win_rate/profit_factor (not
+    presentation). Returns a named `RiskedOutcomes` record, not a bare
+    same-typed 3-tuple — a positional seam hides a wins/losses swap."""
     risked = tuple(t for t in trades if t.usable_risk)
     wins = tuple(t for t in risked if t.realized_r > 0)
     losses = tuple(t for t in risked if t.realized_r <= 0)

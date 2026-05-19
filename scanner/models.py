@@ -350,7 +350,7 @@ class ExecutionRequest:
     fallback, now collapsed at the build site); the conditional-entry
     trigger path passes trigger-fire `now()`. Naming it for the invariant
     (staleness reference) rather than one caller's source keeps the contract
-    discoverable from the type (codex Phase-1b arch review).
+    discoverable from the type.
     """
 
     scan_id: str

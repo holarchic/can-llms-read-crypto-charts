@@ -55,8 +55,8 @@ log = logging.getLogger(__name__)
 # stop-loss order. A replacement SL's live clientOrderId is
 # `make_cloid(PREDECESSOR_row.order_id + suffix)` while its saved row carries a
 # fresh random order_id — so keeper identity must apply every suffix to every
-# stop_loss row of the scan chain, never the current row alone (SPEC #30 /
-# codex plan-review R1 HIGH). Frozen, grep-pinned to each emit site:
+# stop_loss row of the scan chain, never the current row alone (SPEC #30).
+# Frozen, grep-pinned to each emit site:
 #   ""         base / recovery placement  (executor.py:488, monitor.py:710)
 #   ":replaced" _place_replacement_exit_order default (exit_fills.py:294,466)
 #   ":partial"  partial-exit replacement   (exit_fills.py:250,281)
@@ -100,7 +100,7 @@ def _is_reduce_only_sl(open_order: dict, coin: str, direction: str) -> bool:
     given position, grounded in the real `frontendOpenOrders` parse shape
     (ccxt 4.5.50): unified `reduceOnly` + raw `info.{isTrigger,
     triggerCondition}` — fetched orders carry NO `stopLossPrice`/`isStopLoss`
-    (those are creation params; SPEC #30 / codex plan-review R2). SL-vs-TP is
+    (those are creation params; SPEC #30). SL-vs-TP is
     the trigger-direction vs position-direction relationship: a reduceOnly
     exit-side trigger is a stop-loss iff LONG→price-below or SHORT→price-above
     (the opposite is a take-profit). `"N/A"`/unparseable triggerCondition ⇒
@@ -224,9 +224,9 @@ def _converge_duplicate_stop_losses(
     Net-grouped (HL is net-position) so scaled-in scans don't drive a double
     cancel. **Never-naked by construction:** a net group is acted on ONLY iff
     **EVERY** DB-open scan in the group has ≥1 of its OWN keeper ids live in
-    the snapshot. A group-wide "any keeper live" gate was unsafe (codex
-    phase-review-arch HIGH): with two DB-open scans on one net position, scan
-    A's live keeper would satisfy a group gate while scan B's only live SL
+    the snapshot. A group-wide "any keeper live" gate is unsafe: with two
+    DB-open scans on one net position, scan A's live keeper would satisfy a
+    group gate while scan B's only live SL
     (no DB chain — the exact lost-`order_id` crash this window exists for) is
     cloid-unmatched and gets cancelled → B's share transiently naked. The
     per-scan-complete gate means an extra is cancelled only once every scan's
@@ -257,7 +257,7 @@ def _converge_duplicate_stop_losses(
 
         # Every scan's OWN keeper must be live before any cancel — else a
         # scan whose SL has no DB chain would lose its only live SL to
-        # another scan's keeper proving the group (codex arch HIGH).
+        # another scan's keeper proving the group.
         if not all(
             any(_order_ids(oo) & ks for oo in open_orders)
             for ks in scan_keepers.values()

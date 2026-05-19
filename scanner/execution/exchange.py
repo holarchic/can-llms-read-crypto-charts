@@ -149,7 +149,7 @@ def get_exchange_open_orders(config) -> list[dict]:
     duplicate-SL discriminator keys on `info.{isTrigger,triggerCondition,
     reduceOnly}`, which only the `frontendOpenOrders` shape carries — a ccxt
     default change or an `openOrders` caller must not silently strip it
-    (SPEC #30 / codex review). The param is HL-specific; Bybit/Binance
+    (SPEC #30). The param is HL-specific; Bybit/Binance
     (Phase 5) have no `method` request param and ccxt forwards unknown params
     into the REST call, so other exchanges keep the bare call —
     byte-identical to the pre-pin behaviour. Behaviour-preserving for the
