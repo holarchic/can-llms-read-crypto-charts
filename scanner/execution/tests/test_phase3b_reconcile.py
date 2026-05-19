@@ -9,6 +9,7 @@ a real DB write/non-write through the production function.
 """
 
 import sqlite3
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -82,10 +83,21 @@ def _pending_status(conn, pid):
     ).fetchone()["status"]
 
 
+@contextmanager
 def _patch_positions(value=None, side_effect=None):
-    return patch("scanner.execution.exchange.get_open_positions",
-                 return_value=value if value is not None else [],
-                 side_effect=side_effect)
+    # Phase-3b-(b) added a `get_exchange_open_orders` read into the SAME
+    # up-front fail-closed try. The a+c tests don't exercise window (b), so
+    # default open-orders to [] (window b → no-op); when get_open_positions
+    # raises, the try aborts before open-orders matters (fail-closed intact).
+    with ExitStack() as es:
+        es.enter_context(patch(
+            "scanner.execution.exchange.get_open_positions",
+            return_value=value if value is not None else [],
+            side_effect=side_effect))
+        es.enter_context(patch(
+            "scanner.execution.exchange.get_exchange_open_orders",
+            return_value=[]))
+        yield
 
 
 # --- Window (a): exchange-closed / DB-open ---
