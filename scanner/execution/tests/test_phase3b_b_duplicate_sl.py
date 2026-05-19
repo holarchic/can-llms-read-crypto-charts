@@ -346,13 +346,34 @@ class TestNetDedup:
         cancel.assert_not_called()                         # s2 NOT left naked
 
 
-def test_get_exchange_open_orders_pins_frontend_method():
+def _fake_ex():
+    # records whatever kwargs fetch_open_orders is called with
+    return type("X", (), {"fetch_open_orders": lambda self, **kw: kw})()
+
+
+def test_get_exchange_open_orders_pins_frontend_method_on_hl():
     # codex plan-review R2: the discriminator's info.* fields only exist on
-    # the frontendOpenOrders shape — the method must be pinned explicitly.
+    # the HL frontendOpenOrders shape — the method must be pinned explicitly.
     from scanner.execution.exchange import get_exchange_open_orders
 
-    fake = type("X", (), {"fetch_open_orders": lambda self, **kw: kw})()
     with patch("scanner.execution.exchange.get_auth_exchange",
-               return_value=fake):
+               return_value=_fake_ex()), \
+         patch("scanner.execution.exchange.get_exchange_meta",
+               return_value={"ccxt_class": "hyperliquid"}):
         out = get_exchange_open_orders(_cfg())
     assert out["params"] == {"method": "frontendOpenOrders"}
+
+
+def test_get_exchange_open_orders_bare_on_non_hl():
+    # codex phase-review-corr R2 HIGH: the pin is HL-specific. Bybit/Binance
+    # (Phase 5) have no `method` request param and ccxt forwards unknown
+    # params into the REST call — non-HL MUST get the bare call (byte-
+    # identical to pre-pin behaviour), not the HL param.
+    from scanner.execution.exchange import get_exchange_open_orders
+
+    with patch("scanner.execution.exchange.get_auth_exchange",
+               return_value=_fake_ex()), \
+         patch("scanner.execution.exchange.get_exchange_meta",
+               return_value={"ccxt_class": "bybit"}):
+        out = get_exchange_open_orders(_cfg())
+    assert out == {}  # called with NO kwargs → no params injected
