@@ -53,14 +53,16 @@ def ensure_baseline(conn: sqlite3.Connection) -> Strategy:
 
     Minimal insert — supplies only the two NOT-NULL-no-default columns
     (`label`, `created_at`); the `NOT NULL DEFAULT` param columns and
-    `disabled_types DEFAULT ''` fill themselves.
+    `disabled_types DEFAULT ''` fill themselves. `INSERT OR IGNORE` keeps it
+    conflict-tolerant (the prior `INSERT OR REPLACE` was) so a concurrent
+    bootstrap of a fresh DB cannot raise a UNIQUE failure.
     """
-    existing = get_strategy("v0", conn)
-    if existing:
-        return existing
     conn.execute(
-        "INSERT INTO strategies (strategy_id, label, created_at) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO strategies (strategy_id, label, created_at) VALUES (?, ?, ?)",
         ("v0", "baseline", datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
+    existing = get_strategy("v0", conn)
+    if existing:
+        return existing
     return Strategy(strategy_id="v0", disabled_types="")
