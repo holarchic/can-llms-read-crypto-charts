@@ -327,6 +327,24 @@ class TestNetDedup:
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == "ORPH"
 
+    def test_mixed_group_scan_without_db_chain_is_never_naked(self, conn):
+        # codex phase-review-arch HIGH (reproduced): two DB-open scans share
+        # one net (coin,direction). s1 has a tracked SL (keeper K1 live); s2
+        # has NO stop_loss DB row but its OWN live SL on the exchange (the
+        # lost-order_id crash this window exists for). A group-wide "any
+        # keeper live" gate would let K1 prove the group and cancel s2's only
+        # live SL → s2 transiently NAKED. The per-scan-complete gate must
+        # SKIP the whole group → zero cancels, s2's SL preserved.
+        _seed_entry(conn, "s1", coin="ABC", direction="LONG")
+        _seed_entry(conn, "s2", coin="ABC", direction="LONG")
+        _seed_sl(conn, "s1", "sl1")                       # only s1 has a chain
+        k1 = _oo(oid="K1", cloid=make_cloid("sl1"))        # s1 keeper live
+        s2_sl = _oo(oid="S2SL", cloid="0xs2only")          # s2's only live SL
+        with _patch_exchange(_POS, [k1, s2_sl]) as cancel:
+            n = reconcile_positions(_cfg(), conn)
+        assert n == 0
+        cancel.assert_not_called()                         # s2 NOT left naked
+
 
 def test_get_exchange_open_orders_pins_frontend_method():
     # codex plan-review R2: the discriminator's info.* fields only exist on

@@ -223,10 +223,21 @@ def _converge_duplicate_stop_losses(
 
     Net-grouped (HL is net-position) so scaled-in scans don't drive a double
     cancel. **Never-naked by construction:** a net group is acted on ONLY iff
-    ≥1 keeper id is live in the snapshot — keeper-absent ⇒ zero cancels (that
-    is the `missing_sl` case `attempt_sl_recovery` owns; cancelling the lone
-    orphan there would leave the position naked). DB-mutation-free: the orphan
-    has no DB row, the keeper row is untouched (#25 holds trivially)."""
+    **EVERY** DB-open scan in the group has ≥1 of its OWN keeper ids live in
+    the snapshot. A group-wide "any keeper live" gate was unsafe (codex
+    phase-review-arch HIGH): with two DB-open scans on one net position, scan
+    A's live keeper would satisfy a group gate while scan B's only live SL
+    (no DB chain — the exact lost-`order_id` crash this window exists for) is
+    cloid-unmatched and gets cancelled → B's share transiently naked. The
+    per-scan-complete gate means an extra is cancelled only once every scan's
+    own protection is confirmed live, so the cancelled order can never be some
+    scan's sole SL. A mixed group (some scan has no live keeper) is **skipped
+    whole** — fail-closed-safe, not corrective: per-*scan* SL attribution
+    against one HL net position is the named accepted residual, mirroring
+    window (a)'s multi-row disposition; `attempt_sl_recovery`/`check_positions`
+    owns re-establishing the missing scan's SL. Keeper-absent ⇒ zero cancels.
+    DB-mutation-free: the orphan has no DB row, the keeper row is untouched
+    (#25 holds trivially)."""
     from .exchange import cancel_order
 
     groups: dict[tuple[str, str], list[str]] = {}
@@ -235,16 +246,23 @@ def _converge_duplicate_stop_losses(
 
     cancelled = 0
     for (coin, direction), scan_ids in groups.items():
-        keeper_ids: set[str] = set()
-        for scan_id in scan_ids:
-            sl_rows = [
+        scan_keepers = {
+            scan_id: _keeper_ids([
                 o for o in get_orders_for_scan(scan_id, conn)
                 if o["order_type"] == "stop_loss"
-            ]
-            keeper_ids |= _keeper_ids(sl_rows)
+            ])
+            for scan_id in scan_ids
+        }
+        keeper_ids: set[str] = set().union(*scan_keepers.values())
 
-        if not any(_order_ids(oo) & keeper_ids for oo in open_orders):
-            continue  # no tracked SL live → missing_sl/attempt_sl_recovery's job
+        # Every scan's OWN keeper must be live before any cancel — else a
+        # scan whose SL has no DB chain would lose its only live SL to
+        # another scan's keeper proving the group (codex arch HIGH).
+        if not all(
+            any(_order_ids(oo) & ks for oo in open_orders)
+            for ks in scan_keepers.values()
+        ):
+            continue  # mixed/absent keeper → skip whole group (fail-closed)
 
         for oo in open_orders:
             if not _is_reduce_only_sl(oo, coin, direction):
