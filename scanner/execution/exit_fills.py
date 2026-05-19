@@ -531,3 +531,46 @@ def _get_remaining_qty(entry: dict, conn) -> float:
     ).fetchone()
     remaining = entry.get("quantity", 0) - float(row["filled_qty"])
     return remaining if remaining > OPEN_QTY_EPSILON else 0.0
+
+
+def has_open_exchange_position(
+    positions: list[dict], coin: str, direction: str,
+) -> bool:
+    """Single owner of the 'is this position still live on the exchange'
+    predicate over a `get_open_positions` snapshot. Shared by the reactive
+    SL-recovery flat-check and the proactive Phase-3b reconcile so the
+    position-absent decision lives in exactly one place (SPEC #29)."""
+    return any(
+        p.get("coin") == coin and p.get("direction") == direction
+        and float(p.get("size") or 0) > OPEN_QTY_EPSILON
+        for p in positions
+    )
+
+
+def book_external_close(
+    entry: dict, remaining_qty: float, conn, *, exchange: str, mode: str,
+) -> None:
+    """Single owner of the 'position absent on exchange → synthetic
+    manual_close at best-effort entry price' decision (SPEC #29).
+
+    The price is the entry-best-effort fabrication, NOT a true-PnL replay —
+    Decision #25 explicitly rejected a lossless saga/outbox. Both the reactive
+    SL-recovery flat-check and the proactive reconcile book this identical row;
+    each caller keeps its own context log line and supplies `remaining_qty`
+    from the single-owner `_get_remaining_qty`.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    save_order({
+        "order_id": new_order_id(),
+        "scan_id": entry["scan_id"],
+        "coin": entry["coin"],
+        "direction": entry["direction"],
+        "order_type": "manual_close",
+        "status": "FILLED",
+        "quantity": remaining_qty,
+        "fill_price": float(entry.get("fill_price") or entry.get("entry_price") or 0),
+        "exchange": exchange,
+        "execution_mode": mode,
+        "filled_at": now,
+        "created_at": now,
+    }, conn)

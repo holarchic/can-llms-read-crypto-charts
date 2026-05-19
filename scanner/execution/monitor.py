@@ -27,6 +27,8 @@ from .exit_fills import (  # noqa: F401  (re-export surface)
     _mark_counterparts_cancelled,
     _place_replacement_exit_order,
     _position_closed_on_exchange,
+    book_external_close,
+    has_open_exchange_position,
 )
 
 # T-016 Phase 4a (SPEC #27): alert-composition + R math extracted to
@@ -629,39 +631,21 @@ def attempt_sl_recovery(
     # (Phase-3b) owns replaying the true close. A saga/outbox journal to make
     # this lossless was explicitly rejected by the approved design.
     try:
-        from .exchange import get_open_positions
-        # strict=True: a lossy snapshot (unparseable live position) must NOT be
-        # read as "flat" and book a false synthetic manual_close. PositionParseError
-        # is caught below → fall through to the usual SL-placement flow (no false
-        # close, SL still placed → never naked). Phase-3b / SPEC #29 end-to-end
-        # strictness: every close-on-position-absent path is fail-closed.
-        positions = get_open_positions(config, strict=True)
-        exchange_has_position = any(
-            p.get("coin") == coin and p.get("direction") == direction
-            and float(p.get("size") or 0) > OPEN_QTY_EPSILON
-            for p in positions
-        )
-        if not exchange_has_position:
+        from .exchange import get_open_positions_strict
+        # Strict snapshot: a lossy/unparseable live position must NOT be read
+        # as "flat" and book a false synthetic manual_close. PositionParseError
+        # is caught below → fall through to the usual SL-placement flow (no
+        # false close, SL still placed → never naked). Phase-3b / SPEC #29
+        # end-to-end strictness; the absence + close decision is single-owned
+        # in exit_fills (shared with the proactive reconcile pass).
+        positions = get_open_positions_strict(config)
+        if not has_open_exchange_position(positions, coin, direction):
             log.warning(
                 "SL recovery: %s %s not on exchange — recording manual_close to stop recovery loop",
                 coin, direction,
             )
-            from .storage import new_order_id as _new_oid
-            now = datetime.now(timezone.utc).isoformat()
-            save_order({
-                "order_id": _new_oid(),
-                "scan_id": scan_id,
-                "coin": coin,
-                "direction": direction,
-                "order_type": "manual_close",
-                "status": "FILLED",
-                "quantity": remaining_qty,
-                "fill_price": float(entry.get("fill_price") or entry.get("entry_price") or 0),
-                "exchange": config.exchange,
-                "execution_mode": config.mode,
-                "filled_at": now,
-                "created_at": now,
-            }, conn)
+            book_external_close(entry, remaining_qty, conn,
+                                exchange=config.exchange, mode=config.mode)
             return True
     except Exception as exc:
         # Don't abort recovery on a reconciliation failure — fall through to

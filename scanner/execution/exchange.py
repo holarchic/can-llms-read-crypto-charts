@@ -129,6 +129,18 @@ def get_open_positions(config, strict: bool = False) -> list[dict]:
     return result
 
 
+def get_open_positions_strict(config) -> list[dict]:
+    """Fail-closed position snapshot — the named entry point every
+    close-on-position-absence path MUST use (Phase-3b / SPEC #29).
+
+    Equivalent to `get_open_positions(config, strict=True)` but a named
+    function so a caller that books a close on "position absent" cannot
+    silently forget the magic flag and read a lossy snapshot as flat. Raises
+    `PositionParseError` on any unparseable live position.
+    """
+    return get_open_positions(config, strict=True)
+
+
 def get_exchange_open_orders(config) -> list[dict]:
     """Get open SL/TP orders on exchange."""
     exchange = get_auth_exchange(config)

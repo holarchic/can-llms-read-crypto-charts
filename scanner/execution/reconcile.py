@@ -27,14 +27,15 @@ nothing at risk; true provenance needs the rejected saga).
 import logging
 from datetime import datetime, timezone
 
-from .exit_fills import _get_remaining_qty
+from .exit_fills import (
+    _get_remaining_qty,
+    book_external_close,
+    has_open_exchange_position,
+)
 from .storage import (
-    OPEN_QTY_EPSILON,
     get_open_entry_orders,
     get_orders_for_scan,
     get_triggered_pending_entries,
-    new_order_id,
-    save_order,
     update_pending_status,
 )
 
@@ -47,43 +48,22 @@ log = logging.getLogger(__name__)
 RECONCILE_STRANDED_MIN_AGE_S = 3600
 
 
-def _has_exchange_position(positions: list[dict], coin: str, direction: str) -> bool:
-    return any(
-        p.get("coin") == coin and p.get("direction") == direction
-        and float(p.get("size") or 0) > OPEN_QTY_EPSILON
-        for p in positions
-    )
-
-
 def _book_missed_closes(positions: list[dict], conn, exchange: str, mode: str) -> int:
     """Window (a): a DB-open entry with no matching exchange position is
     closed-on-exchange / DB-open → book a best-effort synthetic manual_close
-    at the entry price (same shape the reactive path books; KL#0 "surface
-    sooner", #25 rejected the lossless true-PnL saga). Quantity is the
-    single-owner remaining qty (not the raw entry qty) so a partially-exited
-    position books the truthful residual and stays idempotent."""
+    via the single-owner `book_external_close` (same decision the reactive
+    SL-recovery path delegates to; KL#0 "surface sooner", #25 rejected the
+    lossless true-PnL saga). Quantity is the single-owner remaining qty (not
+    the raw entry qty) so a partially-exited position books the truthful
+    residual and stays idempotent."""
     booked = 0
     for e in get_open_entry_orders(conn, exchange, mode):
-        if _has_exchange_position(positions, e["coin"], e["direction"]):
+        if has_open_exchange_position(positions, e["coin"], e["direction"]):
             continue
         remaining = _get_remaining_qty(e, conn)
         if remaining <= 0:
             continue  # already flat in DB (defensive; get_open_entry_orders filters)
-        now = datetime.now(timezone.utc).isoformat()
-        save_order({
-            "order_id": new_order_id(),
-            "scan_id": e["scan_id"],
-            "coin": e["coin"],
-            "direction": e["direction"],
-            "order_type": "manual_close",
-            "status": "FILLED",
-            "quantity": remaining,
-            "fill_price": float(e.get("fill_price") or e.get("entry_price") or 0),
-            "exchange": exchange,
-            "execution_mode": mode,
-            "filled_at": now,
-            "created_at": now,
-        }, conn)
+        book_external_close(e, remaining, conn, exchange=exchange, mode=mode)
         log.warning(
             "reconcile: %s %s DB-open but flat on exchange — booked manual_close "
             "qty=%s (best-effort entry price; SPEC #29 window a)",
@@ -110,7 +90,7 @@ def _resolve_stranded_pendings(positions: list[dict], conn, exchange: str, mode:
             continue
         # 2. no live exchange position (an untracked position is window (a)/
         #    check_positions' concern, NOT a stranded pending).
-        if _has_exchange_position(positions, coin, direction):
+        if has_open_exchange_position(positions, coin, direction):
             continue
         # 3. age-gated: only flip a TRIGGERED pending whose claim is old enough
         #    that an in-flight execute_trade cannot still be running. A missing/
@@ -154,15 +134,17 @@ def reconcile_positions(config, conn) -> int:
     """Proactive exchange-truth-vs-DB reconcile. Returns the number of
     reconciled items (missed closes booked + stranded pendings resolved).
 
-    Fail-closed: the strict position snapshot is taken first; on ANY failure
-    (raised read OR a successful-but-lossy snapshot, which `strict=True` turns
-    into a raise) the pass logs and returns 0 having mutated nothing.
+    Fail-closed: the strict position snapshot is taken first; on any failure
+    (raised read OR a successful-but-lossy snapshot, which the strict snapshot
+    turns into a raise) the pass logs and returns 0 having mutated nothing.
+    `Exception` only — `KeyboardInterrupt`/`SystemExit` must propagate (a
+    shutdown signal is not a "skip this cycle").
     """
-    from .exchange import get_open_positions
+    from .exchange import get_open_positions_strict
 
     try:
-        positions = get_open_positions(config, strict=True)
-    except BaseException as exc:
+        positions = get_open_positions_strict(config)
+    except Exception as exc:
         log.warning(
             "reconcile: strict position snapshot unavailable (%s: %s) — "
             "skipping this cycle, no DB mutation", type(exc).__name__, exc,
