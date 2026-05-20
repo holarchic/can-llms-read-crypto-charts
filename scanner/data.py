@@ -51,9 +51,9 @@ def _is_transient_ccxt(exc: Exception) -> bool:
 
     Geo-block errors are checked *first* and classified as non-transient —
     ccxt maps them to ExchangeNotAvailable, but retrying them from a
-    blocked IP just burns the scan's 30-min cron timeout (see b73b126
-    regression: bybit CloudFront 403 + binance 451 turned an 80-coin scan
-    into a 40-min retry storm, no CONFIRMs, no alerts).
+    blocked IP just burns the scan's 30-min cron timeout (the failure
+    shape: bybit CloudFront 403 + binance 451 turn an 80-coin scan into
+    a 40-min retry storm with no CONFIRMs, no alerts).
     """
     msg = str(exc)
     if any(s in msg for s in _PERMANENT_BLOCK_MARKERS):

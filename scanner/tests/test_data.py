@@ -84,7 +84,7 @@ class TestIsTransientCcxt:
     """_is_transient_ccxt decides whether an error warrants retry.
 
     Geo-block signals must classify as non-transient — retrying them from a
-    blocked host just burns the scan timeout (b73b126 regression).
+    blocked host just burns the scan timeout.
     """
 
     def test_rate_limit_class_is_transient(self):
@@ -168,8 +168,8 @@ class TestGetExchangeFailureCache:
     def test_transient_exhausted_is_not_cached(self):
         """Transient retries exhausted → don't cache; next caller may retry.
 
-        This preserves the intent of b73b126: a brief HL blip shouldn't
-        permanently kill the scan — if the blip clears, later coins succeed.
+        A brief HL blip shouldn't permanently kill the scan — if the blip
+        clears, later coins succeed.
         """
         mock_exchange = MagicMock()
         mock_exchange.load_markets.side_effect = ccxt.NetworkError("conn reset")
