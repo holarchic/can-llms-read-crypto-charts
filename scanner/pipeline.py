@@ -253,7 +253,7 @@ def stage3_alert(
 ) -> int:
     """Stage 3: Filter CONFIRMs → post to Discord → cleanup charts."""
     conn = get_connection()
-    confirms = [r for r in results if r.decision == "CONFIRM"]
+    confirms = [r for r in results if r.is_confirm]
     alerted_count = 0
 
     if verbose:
@@ -416,20 +416,29 @@ def _empty_summary():
     return {"signals": 0, "results": 0, "confirms": 0, "alerted": 0}
 
 
-def _filter_pending_conditional(signals, exec_config, verbose):
-    """Skip LLM for coins with an active pending conditional entry.
+def _query_pending_conditional_coins(exec_config) -> set[str]:
+    """Pure DB lookup — coins with an active pending conditional entry.
 
-    Connection lifetime is preserved verbatim from the pre-split inline block:
+    Connection lifetime preserved from the pre-split inline block:
     `pending_conn` is closed on the success path only — if
     `get_active_pending_entries` raises it is left open. This is pre-existing
-    behaviour deliberately NOT hardened here (T-016 Phase 4b is a pure
-    relocation, not a resource-handling fix).
+    behaviour deliberately NOT hardened here (resource-handling fix is its
+    own task).
     """
     from .execution.storage import get_active_pending_entries
     pending_conn = get_connection()
     pending = get_active_pending_entries(pending_conn, exec_config.exchange, exec_config.mode)
     pending_conn.close()
-    pending_coins = {p["coin"] for p in pending}
+    return {p["coin"] for p in pending}
+
+
+def _filter_pending_conditional(signals, exec_config, verbose):
+    """Skip LLM for coins with an active pending conditional entry.
+
+    Lookup is delegated to `_query_pending_conditional_coins`; this function
+    owns the filter + verbose reporting seam.
+    """
+    pending_coins = _query_pending_conditional_coins(exec_config)
     if pending_coins:
         before = len(signals)
         signals = [s for s in signals if s.coin not in pending_coins]
@@ -490,9 +499,9 @@ def _build_summary(signals, results, exec_results, alerted, elapsed):
     return {
         "signals": len(signals),
         "results": len(results),
-        "confirms": sum(1 for r in results if r.decision == "CONFIRM"),
-        "rejects": sum(1 for r in results if r.decision == "REJECT"),
-        "waits": sum(1 for r in results if r.decision == "WAIT"),
+        "confirms": sum(1 for r in results if r.is_confirm),
+        "rejects": sum(1 for r in results if r.is_reject),
+        "waits": sum(1 for r in results if r.is_wait),
         "alerted": alerted,
         "executed": n_executed,
         "cost_usd": round(total_cost, 4),
@@ -587,7 +596,7 @@ def run_scan(
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)
 
     # Stage 4: Execution (if enabled)
-    confirms = [r for r in results if r.decision == "CONFIRM"]
+    confirms = [r for r in results if r.is_confirm]
     exec_results = []
 
     if dry_execute and confirms:

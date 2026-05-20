@@ -459,7 +459,7 @@ class TestForceClose:
             "coin": "BTC", "direction": "SHORT", "scan_id": "test1",
             "fill_price": 100.0, "quantity": 1.0,
         }
-        # Insert entry order so _get_remaining_qty can calculate
+        # Insert entry order so get_remaining_qty can calculate
         ensure_orders_table(conn)
         save_order({
             "order_id": "entry1", "scan_id": "test1", "coin": "BTC",

@@ -108,7 +108,8 @@ class TestWindowABookMissedClose:
         with _patch_positions([]):  # exchange flat
             n = reconcile_positions(_cfg(), conn)
         rows = _manual_closes(conn, "s1")
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         assert len(rows) == 1
         r = rows[0]
         assert r["coin"] == "ABC" and r["direction"] == "LONG"
@@ -118,15 +119,16 @@ class TestWindowABookMissedClose:
     def test_idempotent_second_run_noop(self, conn):
         _seed_entry(conn, scan_id="s1")
         with _patch_positions([]):
-            assert reconcile_positions(_cfg(), conn) == 1
-            assert reconcile_positions(_cfg(), conn) == 0  # entry now closed
+            assert reconcile_positions(_cfg(), conn).count == 1
+            assert reconcile_positions(_cfg(), conn).count == 0  # entry now closed
         assert len(_manual_closes(conn, "s1")) == 1
 
     def test_live_position_not_closed(self, conn):
         _seed_entry(conn, scan_id="s1", coin="ABC", direction="LONG")
         with _patch_positions([{"coin": "ABC", "direction": "LONG", "size": 1.0}]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _manual_closes(conn) == []
 
     def test_multi_row_same_coin_dir_with_position_zero_closes(self, conn):
@@ -136,7 +138,8 @@ class TestWindowABookMissedClose:
         _seed_entry(conn, scan_id="s2", coin="ABC", direction="LONG")
         with _patch_positions([{"coin": "ABC", "direction": "LONG", "size": 1.0}]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _manual_closes(conn) == []
 
 
@@ -147,7 +150,8 @@ class TestWindowCStrandedPending:
         _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ", age_s=99999)
         with _patch_positions([]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         assert _pending_status(conn, "p1") == "TRIGGER_FAILED"
 
     def test_filled_entry_means_legit_not_flipped(self, conn):
@@ -157,7 +161,8 @@ class TestWindowCStrandedPending:
         _seed_entry(conn, scan_id="p1", coin="ZZZ")  # a real trade placed
         with _patch_positions([{"coin": "ZZZ", "direction": "LONG", "size": 1.0}]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _pending_status(conn, "p1") == "TRIGGERED"
         assert _manual_closes(conn) == []
 
@@ -165,7 +170,8 @@ class TestWindowCStrandedPending:
         _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ", age_s=99999)
         with _patch_positions([{"coin": "ZZZ", "direction": "LONG", "size": 1.0}]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _pending_status(conn, "p1") == "TRIGGERED"
 
     def test_tz_naive_resolved_at_skipped_not_crash(self, conn):
@@ -180,7 +186,8 @@ class TestWindowCStrandedPending:
         conn.commit()
         with _patch_positions([]):
             n = reconcile_positions(_cfg(), conn)  # must not raise
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _pending_status(conn, "p1") == "TRIGGERED"
 
     def test_recent_claim_not_flipped(self, conn):
@@ -189,7 +196,8 @@ class TestWindowCStrandedPending:
                                 age_s=RECONCILE_STRANDED_MIN_AGE_S - 60)
         with _patch_positions([]):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         assert _pending_status(conn, "p1") == "TRIGGERED"
 
 
@@ -201,7 +209,8 @@ class TestFailClosed:
         _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ", age_s=99999)
         with _patch_positions(side_effect=RuntimeError("network down")):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is True  # fail-closed: snapshot raised
         assert _manual_closes(conn) == []
         assert _pending_status(conn, "p1") == "TRIGGERED"
 
@@ -211,7 +220,8 @@ class TestFailClosed:
         _seed_entry(conn, scan_id="s1")
         with _patch_positions(side_effect=PositionParseError("unparseable side")):
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is True  # fail-closed: strict snapshot raised
         assert _manual_closes(conn) == []
 
 
@@ -224,7 +234,7 @@ class TestDoubleBookPrevention:
         the open set → recovery sees 'already closed')."""
         _seed_entry(conn, scan_id="s1", coin="ABC", direction="LONG")
         with _patch_positions([]):
-            assert reconcile_positions(_cfg(), conn) == 1
+            assert reconcile_positions(_cfg(), conn).count == 1
         assert len(_manual_closes(conn, "s1")) == 1
 
         issue = {"scan_id": "s1", "coin": "ABC", "direction": "LONG",
@@ -245,4 +255,5 @@ def test_count_is_closes_plus_resolutions(conn):
     _seed_triggered_pending(conn, scan_id="p1", coin="ZZZ", age_s=99999)  # (c)
     with _patch_positions([]):
         n = reconcile_positions(_cfg(), conn)
-    assert n == 2
+    assert n.count == 2
+    assert n.skipped is False

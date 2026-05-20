@@ -331,6 +331,18 @@ class ScanResult:
     machine_block: "MachineBlock | None" = None
     detected_at: datetime | None = None
 
+    @property
+    def is_confirm(self) -> bool:
+        return self.decision == "CONFIRM"
+
+    @property
+    def is_reject(self) -> bool:
+        return self.decision == "REJECT"
+
+    @property
+    def is_wait(self) -> bool:
+        return self.decision == "WAIT"
+
 
 @dataclass(frozen=True)
 class ExecutionRequest:

@@ -192,13 +192,16 @@ class TestConverges:
         orphan = _oo(oid="ORPH", cloid="0xdead")          # untracked dup SL
         with _patch_exchange(_POS, [keeper, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == "ORPH"           # the orphan's id
 
         # 2nd run: snapshot no longer lists the orphan → no-op.
         with _patch_exchange(_POS, [keeper]) as cancel2:
-            assert reconcile_positions(_cfg(), conn) == 0
+            outcome = reconcile_positions(_cfg(), conn)
+            assert outcome.count == 0
+            assert outcome.skipped is False  # snapshot succeeded, nothing to do
         cancel2.assert_not_called()
 
     def test_keeper_matched_by_exchange_order_id(self, conn):
@@ -208,7 +211,8 @@ class TestConverges:
         orphan = _oo(oid="ORPH", cloid="0xdead")
         with _patch_exchange(_POS, [keeper, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         assert cancel.call_args[0][0] == "ORPH"
 
 
@@ -222,7 +226,8 @@ class TestNeverNaked:
         lone = _oo(oid="LONE", cloid="0xnotkeeper")        # untracked, no keeper live
         with _patch_exchange(_POS, [lone]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         cancel.assert_not_called()
 
 
@@ -239,7 +244,9 @@ class TestFailClosed:
                 return_value=[_oo(oid="ORPH", cloid="0xdead")]))
             cancel = es.enter_context(patch(
                 "scanner.execution.exchange.cancel_order", return_value=True))
-            assert reconcile_positions(_cfg(), conn) == 0
+            outcome = reconcile_positions(_cfg(), conn)
+            assert outcome.count == 0
+            assert outcome.skipped is True
         cancel.assert_not_called()
 
     def test_open_orders_read_raises_zero_cancel(self, conn):
@@ -254,7 +261,9 @@ class TestFailClosed:
                 side_effect=RuntimeError("orders fetch down")))
             cancel = es.enter_context(patch(
                 "scanner.execution.exchange.cancel_order", return_value=True))
-            assert reconcile_positions(_cfg(), conn) == 0
+            outcome = reconcile_positions(_cfg(), conn)
+            assert outcome.count == 0
+            assert outcome.skipped is True
         cancel.assert_not_called()
 
 
@@ -267,7 +276,8 @@ class TestSLvsTP:
         orphan = _oo(oid="ORPH", cloid="0xdead", condition="Price below 94.0")
         with _patch_exchange(_POS, [keeper, tp, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == "ORPH"           # TP never cancelled
 
@@ -285,7 +295,8 @@ class TestSLvsTP:
                      condition="Price above 106.0")               # untracked SL
         with _patch_exchange(pos, [keeper, tp, na, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         assert cancel.call_args[0][0] == "ORPH"           # TP + N/A spared
 
 
@@ -304,7 +315,8 @@ class TestReplacementKeeperEndToEnd:
         orphan = _oo(oid="ORPH", cloid="0xdead")
         with _patch_exchange(_POS, [live_keeper, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == "ORPH"           # keeper NOT cancelled
 
@@ -323,7 +335,8 @@ class TestNetDedup:
         orphan = _oo(oid="ORPH", cloid="0xdead")
         with _patch_exchange(_POS, [k1, k2, orphan]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 1
+        assert n.count == 1
+        assert n.skipped is False
         cancel.assert_called_once()
         assert cancel.call_args[0][0] == "ORPH"
 
@@ -342,7 +355,8 @@ class TestNetDedup:
         s2_sl = _oo(oid="S2SL", cloid="0xs2only")          # s2's only live SL
         with _patch_exchange(_POS, [k1, s2_sl]) as cancel:
             n = reconcile_positions(_cfg(), conn)
-        assert n == 0
+        assert n.count == 0
+        assert n.skipped is False
         cancel.assert_not_called()                         # s2 NOT left naked
 
 

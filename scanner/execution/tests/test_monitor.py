@@ -8,7 +8,6 @@ import pytest
 from scanner.execution.config import ExecutionConfig
 from scanner.execution.monitor import (
     _calc_r,
-    _get_remaining_qty,
     _send_fill_alert,
     check_positions,
     enforce_position_timeouts,
@@ -18,6 +17,7 @@ from scanner.execution.storage import (
     ensure_orders_table,
     get_order,
     get_orders_for_scan,
+    get_remaining_qty,
     new_order_id,
     save_order,
 )
@@ -1889,7 +1889,7 @@ class TestGetRemainingQtyPrecision:
         save_order(tp1, conn)
         save_order(timeout, conn)
 
-        remaining = _get_remaining_qty(entry, conn)
+        remaining = get_remaining_qty(entry, conn)
         assert remaining == 0.0
 
     def test_genuine_partial_returns_remainder(self, conn):
@@ -1899,7 +1899,7 @@ class TestGetRemainingQtyPrecision:
         save_order(entry, conn)
         save_order(tp1, conn)
 
-        remaining = _get_remaining_qty(entry, conn)
+        remaining = get_remaining_qty(entry, conn)
         assert remaining == pytest.approx(0.05)
 
     def test_emergency_close_reduces_remaining(self, conn):
@@ -1909,7 +1909,7 @@ class TestGetRemainingQtyPrecision:
         save_order(entry, conn)
         save_order(ec, conn)
 
-        remaining = _get_remaining_qty(entry, conn)
+        remaining = get_remaining_qty(entry, conn)
         assert remaining == 0.0
 
 

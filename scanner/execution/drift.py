@@ -26,7 +26,6 @@ from .exchange import get_auth_exchange
 # leaf modules directly, not the monitor coordinator's re-export).
 from .exit_fills import (
     _cancel_counterparts_on_exchange,
-    _get_remaining_qty,
     _mark_counterparts_cancelled,
     _place_replacement_exit_order,
 )
@@ -35,6 +34,7 @@ from .position_close import market_close_position
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
+    get_remaining_qty,
     original_stop_price,
     save_order,
     transaction,
@@ -594,7 +594,7 @@ def _execute_force_close(
     exchange, config: ExecutionConfig, conn,
 ) -> int:
     """Execute force close for no_momentum/reversal triggers."""
-    remaining_qty = _get_remaining_qty(entry, conn)
+    remaining_qty = get_remaining_qty(entry, conn)
     if remaining_qty <= 0:
         return 0
 

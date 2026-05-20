@@ -34,20 +34,41 @@ accepted residual — the runbook does not hand-place SLs on tracked positions).
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .exit_fills import (
-    _get_remaining_qty,
     book_external_close,
     has_open_exchange_position,
 )
 from .storage import (
     get_open_entry_orders,
     get_orders_for_scan,
+    get_remaining_qty,
     get_triggered_pending_entries,
     make_cloid,
     update_pending_status,
 )
+
+
+@dataclass(frozen=True)
+class ReconcileOutcome:
+    """Result of a `reconcile_positions` pass (T-018(c)).
+
+    Distinguishes the previously-ambiguous int-0 return:
+      • `skipped=True`  — strict snapshot absent/lossy; fail-closed safety
+                          path took the exit; nothing mutated; `count` is 0.
+      • `skipped=False, count=0` — snapshot succeeded; nothing needed
+                          reconciling (the steady-state outcome).
+      • `skipped=False, count>0` — snapshot succeeded; `count` items
+                          reconciled (closes booked + pendings resolved
+                          + duplicate SLs cancelled).
+
+    A bare int collapses the first two states; callers that care about the
+    distinction (operator dashboards, future alerting) need them separate.
+    """
+    skipped: bool
+    count: int
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +157,7 @@ def _book_missed_closes(positions: list[dict], conn, exchange: str, mode: str) -
     for e in get_open_entry_orders(conn, exchange, mode):
         if has_open_exchange_position(positions, e["coin"], e["direction"]):
             continue
-        remaining = _get_remaining_qty(e, conn)
+        remaining = get_remaining_qty(e, conn)
         if remaining <= 0:
             continue  # already flat in DB (defensive; get_open_entry_orders filters)
         book_external_close(e, remaining, conn, exchange=exchange, mode=mode)
@@ -280,17 +301,20 @@ def _converge_duplicate_stop_losses(
     return cancelled
 
 
-def reconcile_positions(config, conn) -> int:
-    """Proactive exchange-truth-vs-DB reconcile. Returns the number of
-    reconciled items (missed closes booked + stranded pendings resolved +
+def reconcile_positions(config, conn) -> ReconcileOutcome:
+    """Proactive exchange-truth-vs-DB reconcile.
+
+    Returns a `ReconcileOutcome` distinguishing fail-closed skip
+    (`skipped=True`) from a successful pass (`skipped=False`, with `count`
+    items reconciled: missed closes booked + stranded pendings resolved +
     duplicate SLs cancelled).
 
     Fail-closed: the strict position snapshot AND the open-orders snapshot are
     taken first, together; on any failure (raised read OR a successful-but-
     lossy position snapshot, which the strict snapshot turns into a raise) the
-    pass logs and returns 0 having mutated nothing. `Exception` only —
-    `KeyboardInterrupt`/`SystemExit` must propagate (a shutdown signal is not a
-    "skip this cycle").
+    pass logs at WARNING and returns `ReconcileOutcome(skipped=True, count=0)`
+    having mutated nothing. `Exception` only — `KeyboardInterrupt`/`SystemExit`
+    must propagate (a shutdown signal is not a "skip this cycle").
     """
     from .exchange import get_exchange_open_orders, get_open_positions_strict
 
@@ -302,10 +326,10 @@ def reconcile_positions(config, conn) -> int:
             "reconcile: exchange snapshot unavailable (%s: %s) — "
             "skipping this cycle, no DB mutation", type(exc).__name__, exc,
         )
-        return 0
+        return ReconcileOutcome(skipped=True, count=0)
 
     exchange, mode = config.exchange, config.mode
     n = _book_missed_closes(positions, conn, exchange, mode)
     n += _resolve_stranded_pendings(positions, conn, exchange, mode)
     n += _converge_duplicate_stop_losses(open_orders, conn, exchange, mode, config)
-    return n
+    return ReconcileOutcome(skipped=False, count=n)

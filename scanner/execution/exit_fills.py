@@ -23,9 +23,9 @@ from .config import ExecutionConfig
 from .exchange import cancel_order, get_open_positions, is_rate_limit_error
 from .monitor_alerts import _send_errors_tp_alert, _send_urgent_sl_alert
 from .storage import (
-    EXIT_ORDER_TYPES_SQL,
     OPEN_QTY_EPSILON,
     get_orders_for_scan,
+    get_remaining_qty,
     make_cloid,
     new_order_id,
     save_order,
@@ -479,7 +479,7 @@ def _attempt_exit_order_replacement(
     if order["order_type"] not in ("stop_loss", "tp1", "tp2"):
         return
 
-    remaining_qty = _get_remaining_qty(entry, conn)
+    remaining_qty = get_remaining_qty(entry, conn)
     if remaining_qty <= 0:
         log.info("Skipping %s replacement for %s — position fully closed",
                  order["order_type"], entry["coin"])
@@ -517,22 +517,6 @@ def _attempt_exit_order_replacement(
     )
 
 
-def _get_remaining_qty(entry: dict, conn) -> float:
-    """Calculate remaining open quantity for an entry (entry qty minus filled exits).
-
-    Clamps to 0.0 when the residual is below OPEN_QTY_EPSILON to avoid
-    IEEE 754 floating-point artifacts creating ghost positions.
-    """
-    row = conn.execute(
-        f"""SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
-        WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
-        AND status = 'FILLED'""",
-        (entry["scan_id"],),
-    ).fetchone()
-    remaining = entry.get("quantity", 0) - float(row["filled_qty"])
-    return remaining if remaining > OPEN_QTY_EPSILON else 0.0
-
-
 def has_open_exchange_position(
     positions: list[dict], coin: str, direction: str,
 ) -> bool:
@@ -557,7 +541,7 @@ def book_external_close(
     Decision #25 explicitly rejected a lossless saga/outbox. Both the reactive
     SL-recovery flat-check and the proactive reconcile book this identical row;
     each caller keeps its own context log line and supplies `remaining_qty`
-    from the single-owner `_get_remaining_qty`.
+    from the single-owner `get_remaining_qty`.
     """
     now = datetime.now(timezone.utc).isoformat()
     save_order({

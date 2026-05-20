@@ -351,6 +351,22 @@ def update_order_status(
     _maybe_commit(conn)
 
 
+def get_remaining_qty(entry: dict, conn: sqlite3.Connection) -> float:
+    """Remaining open quantity for an entry (entry qty minus filled exits).
+
+    Clamps to 0.0 when the residual is below `OPEN_QTY_EPSILON` to avoid
+    IEEE 754 floating-point artifacts creating ghost positions.
+    """
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(quantity), 0) as filled_qty FROM orders
+        WHERE scan_id = ? AND order_type IN {EXIT_ORDER_TYPES_SQL}
+        AND status = 'FILLED'""",
+        (entry["scan_id"],),
+    ).fetchone()
+    remaining = entry.get("quantity", 0) - float(row["filled_qty"])
+    return remaining if remaining > OPEN_QTY_EPSILON else 0.0
+
+
 def get_open_entry_orders(
     conn: sqlite3.Connection, exchange: str = "hyperliquid", execution_mode: str = "testnet",
 ) -> list[dict]:

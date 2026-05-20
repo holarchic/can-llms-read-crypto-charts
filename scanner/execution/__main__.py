@@ -175,9 +175,11 @@ def _cmd_monitor(config, discord_handler=None):
         # fail-closed on absent/lossy exchange truth (mutates nothing).
         try:
             from .reconcile import reconcile_positions
-            reconciled = reconcile_positions(config, conn)
-            if reconciled:
-                print(f"Reconciled: {reconciled}")
+            outcome = reconcile_positions(config, conn)
+            if outcome.skipped:
+                print("reconcile: skipped (fail-closed — snapshot absent/lossy)")
+            elif outcome.count:
+                print(f"Reconciled: {outcome.count}")
         except _TRANSIENT as exc:
             print(f"reconcile_positions skipped (transient): {exc}")
 

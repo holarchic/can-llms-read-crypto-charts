@@ -1,5 +1,6 @@
 """Tests for pipeline helpers (diversity selection, candle collection)."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -369,11 +370,25 @@ class TestPhase4bHelpers:
         # codex R1 HIGH regression-pin: `alerted` is a closed-over local the
         # summary reads, and `elapsed_sec` must stay round(elapsed, 1) while
         # the raw float is what _print_summary consumes.
+        # Stub derives is_confirm/is_reject/is_wait from `decision` at access
+        # time (real-property semantics), so future predicate refactors are
+        # caught — vs. a MagicMock with hard-set booleans that would silently
+        # pass even if the property logic regressed.
+        @dataclass
+        class _R:
+            decision: str | None
+            cost_usd: float
+            @property
+            def is_confirm(self) -> bool: return self.decision == "CONFIRM"
+            @property
+            def is_reject(self) -> bool: return self.decision == "REJECT"
+            @property
+            def is_wait(self) -> bool: return self.decision == "WAIT"
         results = [
-            MagicMock(decision="CONFIRM", cost_usd=0.1),
-            MagicMock(decision="REJECT", cost_usd=0.2),
-            MagicMock(decision="WAIT", cost_usd=0.05),
-            MagicMock(decision=None, cost_usd=0.0),
+            _R("CONFIRM", 0.1),
+            _R("REJECT", 0.2),
+            _R("WAIT", 0.05),
+            _R(None, 0.0),
         ]
         exec_results = [MagicMock(executed=True), MagicMock(executed=False)]
         summary = _build_summary(

@@ -13,14 +13,13 @@ from .exchange import get_auth_exchange, get_exchange_open_orders, is_rate_limit
 # T-016 Phase 4a (SPEC #27): exit-order lifecycle cluster extracted to
 # exit_fills.py. Re-exported so coordinators (sync_order_status calls
 # _handle_exit_fill/_attempt_exit_order_replacement; enforce_position_timeouts
-# calls _get_remaining_qty/_cancel_counterparts_on_exchange/
-# _mark_counterparts_cancelled), drift.py, and tests resolve through the
-# monitor namespace. One-directional: monitor -> exit_fills -> monitor_alerts.
+# calls _cancel_counterparts_on_exchange/_mark_counterparts_cancelled) and
+# tests resolve through the monitor namespace.
+# One-directional: monitor -> exit_fills -> monitor_alerts.
 from .exit_fills import (  # noqa: F401  (re-export surface)
     _attempt_exit_order_replacement,
     _cancel_counterparts_on_exchange,
     _get_live_position_qty,
-    _get_remaining_qty,
     _handle_exit_fill,
     _handle_partial_exit_fill,
     _handle_tp1_fill,
@@ -60,6 +59,7 @@ from .storage import (
     OPEN_QTY_EPSILON,
     get_open_entry_orders,
     get_orders_for_scan,
+    get_remaining_qty,
     make_cloid,
     new_order_id,
     original_stop_price,
@@ -348,7 +348,7 @@ def enforce_position_timeouts(exec_config: ExecutionConfig, conn=None) -> int:
             continue
 
         # Calculate remaining qty
-        remaining_qty = _get_remaining_qty(entry, conn)
+        remaining_qty = get_remaining_qty(entry, conn)
         if remaining_qty <= 0:
             continue
 
@@ -611,7 +611,7 @@ def attempt_sl_recovery(
         log.error("SL recovery: no filled entry for scan %s", scan_id)
         return False
 
-    remaining_qty = _get_remaining_qty(entry, conn)
+    remaining_qty = get_remaining_qty(entry, conn)
     if remaining_qty <= 0:
         log.info("SL recovery: position already closed for %s", coin)
         return True
