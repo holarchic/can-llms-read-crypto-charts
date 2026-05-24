@@ -68,15 +68,16 @@ class SRLevelV2:
     detectors (Chunk 5b). Two distinct timestamps by design: ``formed_at`` is when
     the establishing pivot formed (bracket-eligibility reads this); ``last_test`` is
     the most-recent touch across contributors (quality recency reads this). For a
-    freshly-found single pivot they are equal. ``strength`` is a distinct-TF-lineage
-    confirmation count (``1d``/``3d`` count once); ``quality`` is set at the end of
-    ``derive_sr_levels`` (0.0 until then).
+    freshly-found single pivot they are equal. ``confirmations`` is a distinct-TF
+    -lineage count (``1d``/``3d`` count once) — deliberately a *different* unit from
+    v1 ``SRLevel.strength`` (raw swing touch count), hence the different name.
+    ``quality`` is set at the end of ``derive_sr_levels`` (0.0 until then).
     """
 
     price: float
     tf_source: str          # "1mo" | "1w" | "3d" | "1d" — provenance + rank
     pivot_type: str         # "high" | "low"
-    strength: int           # distinct-TF-lineage confirmations
+    confirmations: int      # distinct-TF-lineage confirmations
     vrvp_confluence: bool
     formed_at: datetime
     last_test: datetime
