@@ -189,14 +189,15 @@ class TestEnrichmentStructure:
         generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True, htf_ema=htf)
         assert len(_panel(capture_plot["addplot"], 0)) == baseline_n  # htf line absent
 
-    def test_htf_ema_duplicate_index_does_not_raise(self, long_df, signal, capture_plot, tmp_charts):
-        # A non-unique index would make reindex() raise; the renderer dedupes first so the
-        # degrade-to-NaN contract holds. Duplicate the first label across two rows.
-        dup_index = long_df.index.copy()
-        dup_index = dup_index.delete(1).insert(0, dup_index[0])  # index[0] now appears twice
+    def test_htf_ema_duplicate_index_is_skipped(self, long_df, signal, capture_plot, tmp_charts):
+        # A non-unique index never equals df.index → the overlay is skipped (no raise, no
+        # positional/partial line). Duplicate the first label across two rows.
+        generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True)
+        baseline_n = len(_panel(capture_plot["addplot"], 0))
+        dup_index = long_df.index.delete(1).insert(0, long_df.index[0])  # index[0] appears twice
         htf = pd.Series(long_df["Close"].to_numpy(), index=dup_index)
         generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True, htf_ema=htf)
-        assert "addplot" in capture_plot  # rendered without raising
+        assert len(_panel(capture_plot["addplot"], 0)) == baseline_n  # htf line absent
 
 
 class TestEnrichmentRender:

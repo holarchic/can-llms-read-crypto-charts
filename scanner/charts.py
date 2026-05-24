@@ -144,9 +144,9 @@ def generate_chart(
     ``enrich=False`` (default) renders the v1 blind chart — candles + volume + S/R lines,
     no indicator overlays (Decision #5). ``enrich=True`` adds the v10 substrate: the EMA-band
     "ribbon" + envelope, the longer MA set, an optional cross-TF anchor EMA, and a Stoch-RSI
-    sub-pane. ``htf_ema`` is a pre-aligned higher-TF line (the 4H-200 EMA on LTF charts); it is
-    reindexed onto ``df.index`` before plotting so a mis-indexed series degrades to NaN rather
-    than rendering positionally wrong (the forward-fill aligner is the data plane's job).
+    sub-pane. ``htf_ema`` is a pre-aligned higher-TF line (the 4H-200 EMA on LTF charts) that the
+    data plane (Chunk 7a) forward-fills onto ``df.index``; the renderer plots it only on an exact
+    index match and otherwise skips it — it never repairs alignment or plots a series positionally.
     """
     out_dir = output_dir or CHARTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -175,15 +175,13 @@ def generate_chart(
     if enrich:
         close = df["Close"]
         addplots, fill = _ma_addplots(close)
-        if htf_ema is not None:
-            # Drop duplicate source labels first — reindex() raises on them, which would
-            # break the degrade-to-NaN contract for a malformed (non-unique) index.
-            deduped = htf_ema[~htf_ema.index.duplicated()]
-            aligned = deduped.reindex(df.index)
-            if aligned.notna().any():
-                addplots.append(
-                    mpf.make_addplot(aligned, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
-                )
+        if htf_ema is not None and htf_ema.index.equals(df.index) and htf_ema.notna().any():
+            # The data plane (Chunk 7a) owns alignment + forward-fill; the renderer only
+            # plots an exact-index match. Anything else is skipped, never repaired here or
+            # plotted positionally wrong — alignment stays a single upstream responsibility.
+            addplots.append(
+                mpf.make_addplot(htf_ema, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
+            )
         stoch_addplots = _stoch_addplots(close, _STOCH_PANEL)
         addplots.extend(stoch_addplots)
         if addplots:
