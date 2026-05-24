@@ -30,7 +30,7 @@ from typing import NamedTuple
 import pandas as pd
 
 from .indicators import build_context
-from .ma_indicators import EMABand, LongerMASet
+from .ma_indicators import EMABand, LongerMASet, compute_rsi
 from .models import (
     MSB,
     ConfluenceFactor,
@@ -53,6 +53,9 @@ __all__ = [
     "detect_trend_continuation",
     "detect_trend_reclaim",
     "detect_deviation_reclaim",
+    "detect_gap_fill",
+    "detect_sfp_range",
+    "detect_rsi_divergence_range",
 ]
 
 
@@ -348,6 +351,248 @@ def detect_deviation_reclaim(
         entry=ema36,
         hard_stop=hard,
         soft_stop=SoftStop(SoftStopMode.TREND_RECLAIM_AGAINST, ema36),
+        confluence=frozenset(factors),
+        weakness_flag=_weakness_flag(context.swings, direction),
+    )]
+
+
+# --- Chunk 5b: rotational / counter-trend detectors ---------------------------
+
+
+def _gap_fill_geometry(
+    substrate: TFSubstrate, close: float, atr: float, *, min_gap: float,
+) -> tuple[bool, Direction | None]:
+    """Counter-trend reclaim toward the 100MA with a real remaining gap to fill.
+
+    Direction is set by the dominant HTF trend (the fill runs against it): in a
+    downtrend a bounce that reclaimed above the ribbon but is still below the 100MA
+    (a LONG fill); in an uptrend the mirror (SHORT). ``htf == FLAT`` → no fill.
+    """
+    ts = substrate.trend_state
+    htf = substrate.regime.htf_trend_direction
+    sma_100 = _latest(substrate.longer.sma_100)
+    if pd.isna(sma_100) or htf is TrendDirection.FLAT:
+        return (False, None)
+    pos = ts.price_vs_ribbon
+    if htf is TrendDirection.DOWN:
+        if pos is BandPosition.ABOVE and close < sma_100 and (sma_100 - close) / atr >= min_gap:
+            return (True, Direction.LONG)
+    elif htf is TrendDirection.UP:
+        if pos is BandPosition.BELOW and close > sma_100 and (close - sma_100) / atr >= min_gap:
+            return (True, Direction.SHORT)
+    return (False, None)
+
+
+def _rsi_divergence(
+    df: pd.DataFrame, swings: list[SwingPoint], *,
+    rsi_len: int, max_gap: int, rsi_hi: float, rsi_lo: float,
+) -> tuple[Direction, SwingPoint] | None:
+    """Price/RSI divergence on the last two confirmed same-type swings.
+
+    Bearish (→ SHORT): price prints a higher high while RSI prints a lower high, the
+    reacting RSI is overbought (> ``rsi_hi``), the swings are ≤ ``max_gap`` bars apart,
+    and RSI did NOT reset back down through 50 between them. Bullish (→ LONG) is the
+    mirror (lower low / higher RSI low / oversold / no upside 50-reset). Returns
+    ``(direction, reacting_swing)`` or ``None``.
+    """
+    rsi = compute_rsi(df["Close"], rsi_len)
+    highs = [s for s in swings if s.type == "high"]
+    lows = [s for s in swings if s.type == "low"]
+    if len(highs) >= 2:
+        a, b = highs[-2], highs[-1]
+        ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
+        if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
+                and b.body_price > a.body_price and rb < ra and rb > rsi_hi
+                and float(rsi.iloc[a.index:b.index + 1].min()) >= 50.0):
+            return (Direction.SHORT, b)
+    if len(lows) >= 2:
+        a, b = lows[-2], lows[-1]
+        ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
+        if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
+                and b.body_price < a.body_price and rb > ra and rb < rsi_lo
+                and float(rsi.iloc[a.index:b.index + 1].max()) <= 50.0):
+            return (Direction.LONG, b)
+    return None
+
+
+def _significant_level(
+    wick: float, side: str, sr_levels: list[SRLevelV2],
+    range_bounds: tuple[float, float] | None, sr_tol: float, atr: float,
+) -> tuple[float | None, bool]:
+    """The significant level a sweep targets, and whether it is an S/R level.
+
+    Branch (a): an ``sr_levels`` member within ``sr_tol·ATR`` of the wick (``at_sr``
+    True). Branch (b): external liquidity beyond the structural ``range_bounds``
+    extreme (``at_sr`` False). Neither → ``(None, False)`` (a mid-range sweep).
+    """
+    near = [lvl.price for lvl in sr_levels if abs(wick - lvl.price) <= sr_tol * atr]
+    if near:
+        return (min(near, key=lambda p: abs(wick - p)), True)
+    if range_bounds is not None:
+        low_b, high_b = range_bounds
+        if side == "short" and wick > high_b:
+            return (high_b, False)
+        if side == "long" and wick < low_b:
+            return (low_b, False)
+    return (None, False)
+
+
+def _sweep(
+    df: pd.DataFrame, sr_levels: list[SRLevelV2], range_bounds: tuple[float, float] | None,
+    *, sr_tol: float, atr: float, reaction_window: int, max_age: int,
+) -> tuple[Direction, float, float, bool] | None:
+    """Most recent significant-level sweep with a close-back and a reaction.
+
+    A sweep bar pierces a significant level with its wick but closes back through it;
+    the following ``reaction_window`` bars must stay on the reclaimed side (price
+    continued away). Returns ``(direction, swept_level, sweep_wick_extreme, at_sr)`` or
+    ``None``. Scans only recent bars (within ``max_age``) that leave room for the
+    reaction window.
+    """
+    n = len(df)
+    high, low, close = df["High"], df["Low"], df["Close"]
+    for i in range(n - 1 - reaction_window, max(0, n - 1 - max_age), -1):
+        level, at_sr = _significant_level(float(high.iloc[i]), "short", sr_levels, range_bounds, sr_tol, atr)
+        if level is not None and high.iloc[i] > level and close.iloc[i] < level \
+                and all(close.iloc[j] < level for j in range(i + 1, i + 1 + reaction_window)):
+            return (Direction.SHORT, level, float(high.iloc[i]), at_sr)
+        level, at_sr = _significant_level(float(low.iloc[i]), "long", sr_levels, range_bounds, sr_tol, atr)
+        if level is not None and low.iloc[i] < level and close.iloc[i] > level \
+                and all(close.iloc[j] > level for j in range(i + 1, i + 1 + reaction_window)):
+            return (Direction.LONG, level, float(low.iloc[i]), at_sr)
+    return None
+
+
+def detect_gap_fill(
+    context: SetupContext,
+    substrate: TFSubstrate,
+    sr_levels: list[SRLevelV2],
+    *,
+    min_gap: float = 1.0,
+    rsi_len: int = 14,
+    div_max_gap: int = 14,
+    rsi_hi: float = 70.0,
+    rsi_lo: float = 30.0,
+    sr_tol: float = 0.5,
+    min_bars: int = 40,
+) -> list[SetupSignalV2]:
+    """Counter-trend gap-fill toward the 100MA: geometry AND (divergence OR F2 stall)."""
+    if len(context.df) < min_bars:
+        return []
+    price, atr = context.current_price, context.atr
+    if _isnan(price) or _isnan(atr) or atr <= 0:
+        return []
+    geom_ok, direction = _gap_fill_geometry(substrate, price, atr, min_gap=min_gap)
+    if not geom_ok:
+        return []
+    stall = substrate.regime.f2_gapfill_stall
+    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap, rsi_hi=rsi_hi, rsi_lo=rsi_lo)
+    has_div = div is not None and div[0] is direction
+    if not (has_div or stall):
+        return []
+    ema36 = _latest(substrate.bands.slow)
+    if _isnan(ema36):
+        return []
+    hard = _protected_stop(context.swings, direction, price)
+    if _isnan(hard):
+        return []
+    factors = {ConfluenceFactor.COUNTER_TREND}
+    if has_div:
+        factors.add(ConfluenceFactor.DIVERGENCE)
+    if stall:
+        factors.add(ConfluenceFactor.GAPFILL_STALL)
+    if _near_sr(price, sr_levels, atr, sr_tol):
+        factors.add(ConfluenceFactor.AT_SR)
+    return [SetupSignalV2(
+        setup_type=SetupTypeV2.GAP_FILL,
+        direction=direction,
+        basis_price=ema36,
+        entry=price,
+        hard_stop=hard,
+        soft_stop=SoftStop(SoftStopMode.TREND_RECLAIM_AGAINST, ema36),
+        confluence=frozenset(factors),
+        weakness_flag=_weakness_flag(context.swings, direction),
+    )]
+
+
+def detect_sfp_range(
+    context: SetupContext,
+    substrate: TFSubstrate,
+    sr_levels: list[SRLevelV2],
+    *,
+    sr_tol: float = 0.5,
+    reaction_window: int = 2,
+    max_age: int = 8,
+    min_bars: int = 40,
+) -> list[SetupSignalV2]:
+    """Swing-failure pattern at a significant level (sr OR external liquidity)."""
+    if len(context.df) < min_bars:
+        return []
+    atr = context.atr
+    if _isnan(atr) or atr <= 0:
+        return []
+    if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
+        return []
+    swept = _sweep(context.df, sr_levels, context.range_bounds,
+                   sr_tol=sr_tol, atr=atr, reaction_window=reaction_window, max_age=max_age)
+    if swept is None:
+        return []
+    direction, level, extreme, at_sr = swept
+    factors = {ConfluenceFactor.SWEEP_RECLAIM}
+    if at_sr:
+        factors.add(ConfluenceFactor.AT_SR)
+    return [SetupSignalV2(
+        setup_type=SetupTypeV2.SFP_RANGE,
+        direction=direction,
+        basis_price=level,
+        entry=level,
+        hard_stop=extreme,  # beyond the sweep-bar wick
+        soft_stop=SoftStop(SoftStopMode.LEVEL_RECLAIM_AGAINST, level),
+        confluence=frozenset(factors),
+        weakness_flag=_weakness_flag(context.swings, direction),
+    )]
+
+
+def detect_rsi_divergence_range(
+    context: SetupContext,
+    substrate: TFSubstrate,
+    sr_levels: list[SRLevelV2],
+    *,
+    rsi_len: int = 14,
+    div_max_gap: int = 14,
+    rsi_hi: float = 70.0,
+    rsi_lo: float = 30.0,
+    sr_tol: float = 0.5,
+    min_bars: int = 40,
+) -> list[SetupSignalV2]:
+    """RSI divergence at a range extreme in a rotational/transitional regime."""
+    if len(context.df) < min_bars:
+        return []
+    price, atr = context.current_price, context.atr
+    if _isnan(price) or _isnan(atr) or atr <= 0:
+        return []
+    if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
+        return []
+    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap, rsi_hi=rsi_hi, rsi_lo=rsi_lo)
+    if div is None:
+        return []
+    direction, swing = div
+    if context.range_bounds is None:
+        return []
+    low_b, high_b = context.range_bounds
+    extreme = high_b if direction is Direction.SHORT else low_b
+    if abs(swing.body_price - extreme) > sr_tol * atr:  # divergence swing must sit at the range extreme
+        return []
+    factors = {ConfluenceFactor.DIVERGENCE, ConfluenceFactor.OVERSOLD_OVERBOUGHT}
+    if _near_sr(swing.body_price, sr_levels, atr, sr_tol):
+        factors.add(ConfluenceFactor.AT_SR)
+    return [SetupSignalV2(
+        setup_type=SetupTypeV2.RSI_DIVERGENCE_RANGE,
+        direction=direction,
+        basis_price=swing.body_price,
+        entry=price,
+        hard_stop=swing.price,  # beyond the reacting swing's wick extreme
+        soft_stop=SoftStop(SoftStopMode.LEVEL_RECLAIM_AGAINST, swing.price),
         confluence=frozenset(factors),
         weakness_flag=_weakness_flag(context.swings, direction),
     )]

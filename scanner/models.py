@@ -165,12 +165,19 @@ class ConfluenceFactor(Enum):
     RETEST = "retest"
     VERTICAL_ACCUMULATION = "vertical_accumulation"
     LOWER_TF_CONFIRMED = "lower_tf_confirmed"
+    # Chunk 5b — rotational / counter-trend factors:
+    DIVERGENCE = "divergence"
+    COUNTER_TREND = "counter_trend"
+    SWEEP_RECLAIM = "sweep_reclaim"
+    OVERSOLD_OVERBOUGHT = "oversold_overbought"
+    GAPFILL_STALL = "gapfill_stall"
 
 
 class SoftStopMode(Enum):
     """How a signal's soft stop is evaluated downstream."""
 
-    TREND_RECLAIM_AGAINST = "trend_reclaim_against"
+    TREND_RECLAIM_AGAINST = "trend_reclaim_against"  # the dominant trend resumes against the position
+    LEVEL_RECLAIM_AGAINST = "level_reclaim_against"  # price reclaims back through the basis level (range setups)
 
 
 @dataclass
