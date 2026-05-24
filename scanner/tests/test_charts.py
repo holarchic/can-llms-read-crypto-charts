@@ -23,25 +23,15 @@ def _osc_df(n: int, start: str = "2026-01-01") -> pd.DataFrame:
     exist (a monotonic series collapses RSI → flat → Stoch undefined).
     """
     rng = np.random.default_rng(7)
-    rows = []
+    cols: dict[str, list[float]] = {"Open": [], "High": [], "Low": [], "Close": []}
     for i in range(n):
         mid = 100 + i * 0.4 + np.sin(i * 0.35) * 5
-        o = mid + rng.uniform(-0.5, 0.5)
-        h = mid + rng.uniform(1, 3)
-        low = mid - rng.uniform(1, 3)
-        c = mid + rng.uniform(-0.6, 0.6)
-        rows.append((o, h, low, c))
+        cols["Open"].append(mid + rng.uniform(-0.5, 0.5))
+        cols["High"].append(mid + rng.uniform(1, 3))
+        cols["Low"].append(mid - rng.uniform(1, 3))
+        cols["Close"].append(mid + rng.uniform(-0.6, 0.6))
     idx = pd.date_range(start, periods=n, freq="4h", tz="UTC")
-    return pd.DataFrame(
-        {
-            "Open": [r[0] for r in rows],
-            "High": [r[1] for r in rows],
-            "Low": [r[2] for r in rows],
-            "Close": [r[3] for r in rows],
-            "Volume": [1000.0] * n,
-        },
-        index=idx,
-    )
+    return pd.DataFrame({**cols, "Volume": [1000.0] * n}, index=idx)
 
 
 @pytest.fixture
