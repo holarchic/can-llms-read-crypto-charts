@@ -5,11 +5,13 @@ Synthetic, deterministic, fixed-date fixtures. The MA substrate
 functions; ``sr_levels`` are hand-built ``SRLevelV2`` inputs (precise control over
 the AT_SR / HTF-resistance / deviation-support conditions — ``derive_sr_levels`` is
 already tested in Chunk 3). Frames use ``Open == Close`` for clean swing bodies
-except where an impulse candle is needed (continuation).
+except where a directional impulse candle is needed (continuation).
 
-Reclaim's confirming MSB is naturally a handful of bars behind the reclaim point, so
-its tests pass ``msb_lookback=15`` (a v1 default calibrated in Chunk 8b); the default
-``detect_msbs`` 30-bar look-ahead is what bounds fixture construction.
+The reclaim fixtures pass ``msb_lookback=25``: a reclaim's confirming structure break
+sits a handful of bars behind the reclaim point, and the threshold is a v1 default
+calibrated in Chunk 8b (the module default of 10 is intentionally tight). Both
+reclaim fixtures carry ≥3 swing highs, so their ``weakness_flag`` assertions exercise
+the real last-two-highs comparison, not the ``len < 2`` fast path.
 """
 
 from datetime import datetime
@@ -62,27 +64,37 @@ def _lvl(price):
 
 # --- fixtures (closes) ---------------------------------------------------------
 
-def _continuation_df():
+def _continuation_closes():
     """Strong 300+ bar uptrend (longer + local UP, TRENDING) with shallow pullback
-    swings and an impulse candle near the end (vertical accumulation)."""
+    swings; the caller supplies an impulse candle via the opens override."""
     def line(i):
         return 50 + 0.6 * i
     closes = [line(i) - (4 if (i % 12 == 0 and i > 0) else 0) for i in range(280)]
     closes += [line(280 + j) for j in range(30)]
-    opens = list(closes)
-    opens[302] = closes[302] - 7  # the impulse body
-    return closes, opens
+    return closes
 
 
-_RECLAIM = [120.0, 115.0, 110.0, 106.0, 103.0, 100.0, 97.0, 92.0, 88.0, 85.0, 81.0, 78.0, 75.0,
-            71.0, 67.0, 64.0, 59.0, 55.0, 52.0, 55.0, 52.0, 48.0, 43.0, 40.0, 43.0, 40.0, 40.0,
-            40.0, 40.0, 43.0, 46.0, 43.0, 40.0, 43.0, 46.0, 41.0, 40.0, 43.0, 40.0, 40.0, 40.0,
-            43.0, 46.0, 41.0, 40.0, 40.0, 40.0, 40.0, 40.0, 43.0, 40.0, 40.0, 40.0, 43.0, 40.0,
-            43.0, 40.0, 45.0, 50.0, 56.0, 53.0, 58.0, 62.0, 66.0, 70.0, 76.0, 80.0, 77.0, 81.0,
-            78.0, 84.0, 90.0, 95.0, 99.0, 96.0, 93.0, 99.0, 96.0, 93.0, 97.0, 101.0, 107.0, 112.0,
-            118.0, 122.0, 128.0, 132.0, 138.0, 135.0, 132.0, 129.0, 135.0, 141.0, 138.0, 135.0,
-            132.0, 138.0, 135.0, 139.0, 136.0, 133.0, 130.0, 134.0, 138.0, 144.0, 141.0, 138.0,
-            142.0, 139.0, 136.0, 141.0]
+# Reclaim: decline-then-rally with a recent bullish MSB, a structural swing low below
+# entry, and a full-ribbon reclaim. SEQ_F's last two swing highs extend (weakness
+# False); SEQ_T's fail to extend (weakness True).
+_RECLAIM = [120.0, 117.0, 112.0, 115.0, 111.0, 108.0, 111.0, 107.0, 110.0, 113.0, 116.0, 111.0,
+            106.0, 103.0, 106.0, 102.0, 99.0, 102.0, 98.0, 94.0, 90.0, 87.0, 90.0, 87.0, 84.0,
+            79.0, 75.0, 71.0, 67.0, 64.0, 67.0, 70.0, 67.0, 70.0, 65.0, 62.0, 57.0, 53.0, 50.0,
+            53.0, 56.0, 53.0, 49.0, 46.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 42.0, 48.0,
+            52.0, 56.0, 61.0, 67.0, 72.0, 76.0, 82.0, 79.0, 83.0, 87.0, 92.0, 89.0, 86.0, 92.0,
+            89.0, 95.0, 99.0, 105.0, 102.0, 99.0, 103.0, 108.0, 105.0, 102.0, 99.0, 103.0, 107.0,
+            104.0, 108.0, 113.0, 119.0, 124.0, 121.0, 127.0, 132.0, 137.0, 141.0, 138.0, 135.0,
+            141.0, 145.0, 151.0, 148.0, 145.0, 149.0, 146.0, 150.0, 154.0, 158.0, 155.0, 160.0,
+            165.0, 170.0]
+
+_RECLAIM_WEAK = [120.0, 116.0, 113.0, 110.0, 107.0, 110.0, 107.0, 103.0, 106.0, 102.0, 99.0, 96.0,
+                 92.0, 88.0, 85.0, 88.0, 91.0, 94.0, 90.0, 85.0, 80.0, 77.0, 73.0, 70.0, 73.0, 69.0,
+                 64.0, 67.0, 63.0, 60.0, 57.0, 54.0, 50.0, 45.0, 45.0, 48.0, 45.0, 45.0, 45.0, 48.0,
+                 45.0, 48.0, 45.0, 45.0, 45.0, 45.0, 48.0, 45.0, 45.0, 45.0, 48.0, 52.0, 57.0, 63.0,
+                 60.0, 65.0, 70.0, 74.0, 71.0, 75.0, 72.0, 69.0, 75.0, 79.0, 76.0, 73.0, 79.0, 85.0,
+                 91.0, 88.0, 85.0, 82.0, 79.0, 85.0, 91.0, 88.0, 85.0, 82.0, 79.0, 84.0, 81.0, 85.0,
+                 89.0, 94.0, 91.0, 96.0, 93.0, 98.0, 102.0, 99.0, 105.0, 110.0, 114.0, 120.0, 117.0,
+                 114.0, 111.0, 115.0, 120.0, 124.0, 130.0, 136.0, 133.0, 138.0, 135.0, 140.0]
 
 _FLAT = [100, 98, 96, 93, 96, 94, 96, 93, 90, 92, 95, 93, 96, 94, 92, 95, 98, 101, 98, 96, 99,
          102, 100, 103, 101, 104, 102, 99, 96, 98, 100, 98, 96, 94, 97, 99, 97, 99, 96, 98, 95,
@@ -106,7 +118,9 @@ def _d4_inside_df():
 # --- continuation -------------------------------------------------------------
 
 def test_trend_continuation_emits_in_aligned_trending_with_impulse():
-    closes, opens = _continuation_df()
+    closes = _continuation_closes()
+    opens = list(closes)
+    opens[302] = closes[302] - 7  # a green (long-direction) impulse body
     df = _frame(closes, opens=opens)
     sig = detect_trend_continuation(setup_context_from_df(df), _substrate(df), [])
     assert len(sig) == 1
@@ -116,12 +130,18 @@ def test_trend_continuation_emits_in_aligned_trending_with_impulse():
     assert {ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.VERTICAL_ACCUMULATION} <= s.confluence
     assert s.hard_stop < s.entry  # a long's stop sits below entry
     assert s.soft_stop.mode is SoftStopMode.TREND_RECLAIM_AGAINST
-    assert s.weakness_flag is False  # rising higher-highs → no weakness
 
 
 def test_trend_continuation_suppressed_without_impulse_candle():
-    closes, _ = _continuation_df()
-    df = _frame(closes)  # Open == Close → no impulse body → slow grind
+    df = _frame(_continuation_closes())  # Open == Close → no impulse body → slow grind
+    assert detect_trend_continuation(setup_context_from_df(df), _substrate(df), []) == []
+
+
+def test_trend_continuation_suppressed_by_counter_trend_impulse():
+    closes = _continuation_closes()
+    opens = list(closes)
+    opens[302] = closes[302] + 7  # a red (counter-trend) impulse must NOT enable a long
+    df = _frame(closes, opens=opens)
     assert detect_trend_continuation(setup_context_from_df(df), _substrate(df), []) == []
 
 
@@ -129,18 +149,26 @@ def test_trend_continuation_suppressed_without_impulse_candle():
 
 def test_trend_reclaim_emits_on_full_ribbon_reclaim_with_lower_tf_and_msb():
     df = _frame(_RECLAIM)
-    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=15)
+    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25)
     assert len(sig) == 1
     s = sig[0]
     assert s.setup_type is SetupTypeV2.TREND_RECLAIM
     assert s.direction is Direction.LONG
     assert {ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.LOWER_TF_CONFIRMED} <= s.confluence
     assert s.hard_stop < s.entry
+    assert s.weakness_flag is False  # last two swing highs extended (non-vacuous: ≥2 highs)
+
+
+def test_trend_reclaim_weakness_flag_set_on_failed_extension():
+    df = _frame(_RECLAIM_WEAK)
+    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25)
+    assert len(sig) == 1
+    assert sig[0].weakness_flag is True  # most recent swing high failed to exceed the prior
 
 
 def test_trend_reclaim_suppressed_without_lower_tf_reclaim():
     df = _frame(_RECLAIM)
-    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=False, msb_lookback=15) == []
+    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=False, msb_lookback=25) == []
 
 
 def test_trend_reclaim_suppressed_by_nearby_htf_resistance():
@@ -148,12 +176,12 @@ def test_trend_reclaim_suppressed_by_nearby_htf_resistance():
     sub, ctx = _substrate(df), setup_context_from_df(df)
     ema36, atr = sub.bands.slow.iloc[-1], ctx.atr
     resistance = [_lvl(ema36 + 0.5 * atr)]  # within htf_res_tol (1.0·ATR) above the reclaim
-    assert detect_trend_reclaim(ctx, sub, resistance, lower_tf_reclaim=True, msb_lookback=15) == []
+    assert detect_trend_reclaim(ctx, sub, resistance, lower_tf_reclaim=True, msb_lookback=25) == []
 
 
 def test_trend_reclaim_requires_full_ribbon_not_just_above_ema36():
     df = _frame(_d4_inside_df())  # price above EMA36 but still INSIDE the band
-    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=15) == []
+    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25) == []
 
 
 # --- deviation ----------------------------------------------------------------

@@ -124,11 +124,16 @@ def _reclaimed_full_ribbon(direction: Direction, pos: BandPosition) -> bool:
     return pos is BandPosition.BELOW
 
 
-def _has_impulse(df: pd.DataFrame, lookback: int, impulse_k: float, atr: float) -> bool:
-    """Vertical accumulation: an impulse candle (body > impulse_k·ATR) in the last
-    ``lookback`` bars. Steady grind (no impulse) → False → no with-trend entry."""
-    body = (df["Close"] - df["Open"]).abs().iloc[-lookback:]
-    return bool((body > impulse_k * atr).any())
+def _has_impulse(
+    df: pd.DataFrame, direction: Direction, lookback: int, impulse_k: float, atr: float,
+) -> bool:
+    """Vertical accumulation: a *same-direction* impulse candle (signed body beyond
+    impulse_k·ATR) in the last ``lookback`` bars — a green body for a long, red for a
+    short. Steady grind (or a counter-trend impulse) → False → no with-trend entry."""
+    body = (df["Close"] - df["Open"]).iloc[-lookback:]
+    if direction is Direction.LONG:
+        return bool((body > impulse_k * atr).any())
+    return bool((body < -impulse_k * atr).any())
 
 
 def _deviated_within_lookback(
@@ -173,18 +178,17 @@ def _htf_block(
     return bool(behind) and (entry - max(behind)) <= tol * atr
 
 
-def _protected_stop(
-    swings: list[SwingPoint], direction: Direction, entry: float, atr: float,
-) -> float:
+def _protected_stop(swings: list[SwingPoint], direction: Direction, entry: float) -> float:
     """The nearest protective swing on the stop side of ``entry`` (a swing low BELOW
     entry for a long / swing high ABOVE for a short) — the structure whose break
-    invalidates the setup. Falls back to ``entry ∓ atr`` so the hard stop is always a
-    valid level on the correct side of entry (never above for a long)."""
+    invalidates the setup. NaN when no such structure exists: the detector then fails
+    closed (a trend setup with no structural invalidation is not well-formed — no
+    ATR-derived stop masquerading as structural)."""
     if direction is Direction.LONG:
         lows = [s.body_price for s in swings if s.type == "low" and s.body_price < entry]
-        return max(lows) if lows else entry - atr
+        return max(lows) if lows else float("nan")
     highs = [s.body_price for s in swings if s.type == "high" and s.body_price > entry]
-    return min(highs) if highs else entry + atr
+    return min(highs) if highs else float("nan")
 
 
 def _weakness_flag(swings: list[SwingPoint], direction: Direction) -> bool:
@@ -235,9 +239,11 @@ def detect_trend_continuation(
     ema36, price, atr = _latest(substrate.bands.slow), context.current_price, context.atr
     if _isnan(ema36) or _isnan(price) or _isnan(atr) or atr <= 0:
         return []
-    if not _has_impulse(context.df, lookback, impulse_k, atr):  # vertical accumulation gate
+    if not _has_impulse(context.df, direction, lookback, impulse_k, atr):  # vertical accumulation
         return []
-    hard = _protected_stop(context.swings, direction, ema36, atr)
+    hard = _protected_stop(context.swings, direction, ema36)
+    if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
+        return []
     factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.VERTICAL_ACCUMULATION}
     factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
     return [SetupSignalV2(
@@ -280,7 +286,9 @@ def detect_trend_reclaim(
         return []
     if _htf_block(sr_levels, ema36, direction, atr, htf_res_tol):  # resistance too close
         return []
-    hard = _protected_stop(context.swings, direction, ema36, atr)
+    hard = _protected_stop(context.swings, direction, ema36)
+    if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
+        return []
     factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.LOWER_TF_CONFIRMED}
     factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
     return [SetupSignalV2(
@@ -319,7 +327,9 @@ def detect_deviation_reclaim(
         return []
     if not _near_sr(ema36, sr_levels, atr, sr_tol):  # reclaim must be S/R-supported
         return []
-    hard = _protected_stop(context.swings, direction, ema36, atr)
+    hard = _protected_stop(context.swings, direction, ema36)
+    if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
+        return []
     factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.AT_SR}
     if abs(price - ema36) <= retest_tol * atr:
         factors.add(ConfluenceFactor.RETEST)
