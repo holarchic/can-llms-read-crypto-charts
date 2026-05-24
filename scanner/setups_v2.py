@@ -384,16 +384,18 @@ def _gap_fill_geometry(
 
 
 def _rsi_divergence(
-    df: pd.DataFrame, swings: list[SwingPoint], *,
-    rsi_len: int, max_gap: int, rsi_hi: float, rsi_lo: float,
-) -> tuple[Direction, SwingPoint] | None:
+    df: pd.DataFrame, swings: list[SwingPoint], *, rsi_len: int, max_gap: int,
+) -> tuple[Direction, SwingPoint, float] | None:
     """Price/RSI divergence on the last two confirmed same-type swings.
 
-    Bearish (→ SHORT): price prints a higher high while RSI prints a lower high, the
-    reacting RSI is overbought (> ``rsi_hi``), the swings are ≤ ``max_gap`` bars apart,
-    and RSI did NOT reset back down through 50 between them. Bullish (→ LONG) is the
-    mirror (lower low / higher RSI low / oversold / no upside 50-reset). Returns
-    ``(direction, reacting_swing)`` or ``None``.
+    Bearish (→ SHORT): price prints a higher high while RSI prints a *lower* high (the
+    fading momentum IS the divergence), the swings are ≤ ``max_gap`` bars apart, and
+    RSI did NOT reset back down through 50 between them. Bullish (→ LONG) is the mirror
+    (lower low / higher RSI low / no upside 50-reset). Returns ``(direction,
+    reacting_swing, reference_rsi)`` — the reference swing's RSI lets the caller decide
+    the overbought/oversold confluence (a corroborating factor, NOT an emit gate: the
+    reacting peak of a real divergence has fading, i.e. sub-extreme, RSI, and a
+    structural range mechanically caps the 14-period RSI well below 70).
     """
     rsi = compute_rsi(df["Close"], rsi_len)
     highs = [s for s in swings if s.type == "high"]
@@ -402,64 +404,68 @@ def _rsi_divergence(
         a, b = highs[-2], highs[-1]
         ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
         if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
-                and b.body_price > a.body_price and rb < ra and rb > rsi_hi
+                and b.body_price > a.body_price and rb < ra
                 and float(rsi.iloc[a.index:b.index + 1].min()) >= 50.0):
-            return (Direction.SHORT, b)
+            return (Direction.SHORT, b, ra)
     if len(lows) >= 2:
         a, b = lows[-2], lows[-1]
         ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
         if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
-                and b.body_price < a.body_price and rb > ra and rb < rsi_lo
+                and b.body_price < a.body_price and rb > ra
                 and float(rsi.iloc[a.index:b.index + 1].max()) <= 50.0):
-            return (Direction.LONG, b)
+            return (Direction.LONG, b, ra)
     return None
 
 
 def _significant_level(
-    wick: float, side: str, sr_levels: list[SRLevelV2],
-    range_bounds: tuple[float, float] | None, sr_tol: float, atr: float,
+    close_i: float, wick: float, side: str, sr_levels: list[SRLevelV2],
+    range_bounds: tuple[float, float] | None,
 ) -> tuple[float | None, bool]:
-    """The significant level a sweep targets, and whether it is an S/R level.
+    """The significant level a bar *pierced* — close on one side, wick beyond.
 
-    Branch (a): an ``sr_levels`` member within ``sr_tol·ATR`` of the wick (``at_sr``
-    True). Branch (b): external liquidity beyond the structural ``range_bounds``
-    extreme (``at_sr`` False). Neither → ``(None, False)`` (a mid-range sweep).
+    A short sweep straddles a level ``L`` with ``close < L < wick``; a long sweep with
+    ``wick < L < close``. Branch (a): an ``sr_levels`` member so pierced (``at_sr``
+    True, the closest-to-the-wick one). Branch (b): external liquidity — the structural
+    ``range_bounds`` extreme pierced (``at_sr`` False). A mid-range bar that pierces
+    neither → ``(None, False)``.
     """
-    near = [lvl.price for lvl in sr_levels if abs(wick - lvl.price) <= sr_tol * atr]
-    if near:
-        return (min(near, key=lambda p: abs(wick - p)), True)
-    if range_bounds is not None:
-        low_b, high_b = range_bounds
-        if side == "short" and wick > high_b:
-            return (high_b, False)
-        if side == "long" and wick < low_b:
-            return (low_b, False)
+    if side == "short":
+        pierced = [lvl.price for lvl in sr_levels if close_i < lvl.price < wick]
+        if pierced:
+            return (max(pierced), True)
+        if range_bounds is not None and close_i < range_bounds[1] < wick:
+            return (range_bounds[1], False)
+    else:
+        pierced = [lvl.price for lvl in sr_levels if wick < lvl.price < close_i]
+        if pierced:
+            return (min(pierced), True)
+        if range_bounds is not None and wick < range_bounds[0] < close_i:
+            return (range_bounds[0], False)
     return (None, False)
 
 
 def _sweep(
     df: pd.DataFrame, sr_levels: list[SRLevelV2], range_bounds: tuple[float, float] | None,
-    *, sr_tol: float, atr: float, reaction_window: int, max_age: int,
+    *, reaction_window: int, max_age: int,
 ) -> tuple[Direction, float, float, bool] | None:
     """Most recent significant-level sweep with a close-back and a reaction.
 
-    A sweep bar pierces a significant level with its wick but closes back through it;
-    the following ``reaction_window`` bars must stay on the reclaimed side (price
-    continued away). Returns ``(direction, swept_level, sweep_wick_extreme, at_sr)`` or
-    ``None``. Scans only recent bars (within ``max_age``) that leave room for the
-    reaction window.
+    A sweep bar pierces a significant level with its wick but closes back through it
+    (``_significant_level``); the following ``reaction_window`` bars must stay on the
+    reclaimed side (price continued away). Returns ``(direction, swept_level,
+    sweep_wick_extreme, at_sr)`` or ``None``. Scans only recent bars (within
+    ``max_age``) that leave room for the reaction window.
     """
     n = len(df)
     high, low, close = df["High"], df["Low"], df["Close"]
     for i in range(n - 1 - reaction_window, max(0, n - 1 - max_age), -1):
-        level, at_sr = _significant_level(float(high.iloc[i]), "short", sr_levels, range_bounds, sr_tol, atr)
-        if level is not None and high.iloc[i] > level and close.iloc[i] < level \
-                and all(close.iloc[j] < level for j in range(i + 1, i + 1 + reaction_window)):
-            return (Direction.SHORT, level, float(high.iloc[i]), at_sr)
-        level, at_sr = _significant_level(float(low.iloc[i]), "long", sr_levels, range_bounds, sr_tol, atr)
-        if level is not None and low.iloc[i] < level and close.iloc[i] > level \
-                and all(close.iloc[j] > level for j in range(i + 1, i + 1 + reaction_window)):
-            return (Direction.LONG, level, float(low.iloc[i]), at_sr)
+        ci, hi, lo = float(close.iloc[i]), float(high.iloc[i]), float(low.iloc[i])
+        level, at_sr = _significant_level(ci, hi, "short", sr_levels, range_bounds)
+        if level is not None and all(close.iloc[j] < level for j in range(i + 1, i + 1 + reaction_window)):
+            return (Direction.SHORT, level, hi, at_sr)
+        level, at_sr = _significant_level(ci, lo, "long", sr_levels, range_bounds)
+        if level is not None and all(close.iloc[j] > level for j in range(i + 1, i + 1 + reaction_window)):
+            return (Direction.LONG, level, lo, at_sr)
     return None
 
 
@@ -471,8 +477,6 @@ def detect_gap_fill(
     min_gap: float = 1.0,
     rsi_len: int = 14,
     div_max_gap: int = 14,
-    rsi_hi: float = 70.0,
-    rsi_lo: float = 30.0,
     sr_tol: float = 0.5,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
@@ -486,7 +490,7 @@ def detect_gap_fill(
     if not geom_ok:
         return []
     stall = substrate.regime.f2_gapfill_stall
-    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap, rsi_hi=rsi_hi, rsi_lo=rsi_lo)
+    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap)
     has_div = div is not None and div[0] is direction
     if not (has_div or stall):
         return []
@@ -520,7 +524,6 @@ def detect_sfp_range(
     substrate: TFSubstrate,
     sr_levels: list[SRLevelV2],
     *,
-    sr_tol: float = 0.5,
     reaction_window: int = 2,
     max_age: int = 8,
     min_bars: int = 40,
@@ -534,7 +537,7 @@ def detect_sfp_range(
     if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
         return []
     swept = _sweep(context.df, sr_levels, context.range_bounds,
-                   sr_tol=sr_tol, atr=atr, reaction_window=reaction_window, max_age=max_age)
+                   reaction_window=reaction_window, max_age=max_age)
     if swept is None:
         return []
     direction, level, extreme, at_sr = swept
@@ -573,17 +576,21 @@ def detect_rsi_divergence_range(
         return []
     if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
         return []
-    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap, rsi_hi=rsi_hi, rsi_lo=rsi_lo)
+    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap)
     if div is None:
         return []
-    direction, swing = div
-    if context.range_bounds is None:
-        return []
-    low_b, high_b = context.range_bounds
-    extreme = high_b if direction is Direction.SHORT else low_b
-    if abs(swing.body_price - extreme) > sr_tol * atr:  # divergence swing must sit at the range extreme
-        return []
-    factors = {ConfluenceFactor.DIVERGENCE, ConfluenceFactor.OVERSOLD_OVERBOUGHT}
+    direction, swing, ref_rsi = div
+    # The rotation context is the regime gate above (not TRENDING); the divergence
+    # swing is itself a local extreme, so no separate classify_structure==RANGING gate
+    # — that requirement is jointly infeasible with the no-50-reset rule (a RANGING
+    # structure's deep lows drive RSI through 50 between the swings). Matches the
+    # parent rule, which scopes the divergence by candles/thresholds/50-reset, not by
+    # structural range bounds.
+    factors = {ConfluenceFactor.DIVERGENCE}
+    overbought = direction is Direction.SHORT and ref_rsi > rsi_hi
+    oversold = direction is Direction.LONG and ref_rsi < rsi_lo
+    if overbought or oversold:  # corroborating extreme, not a gate
+        factors.add(ConfluenceFactor.OVERSOLD_OVERBOUGHT)
     if _near_sr(swing.body_price, sr_levels, atr, sr_tol):
         factors.add(ConfluenceFactor.AT_SR)
     return [SetupSignalV2(
