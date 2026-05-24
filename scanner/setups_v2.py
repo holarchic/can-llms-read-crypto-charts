@@ -173,11 +173,18 @@ def _htf_block(
     return bool(behind) and (entry - max(behind)) <= tol * atr
 
 
-def _protected_stop(swings: list[SwingPoint], direction: Direction) -> float:
-    """The last same-side protective swing (HL for long / LH for short); NaN if none."""
-    want = "low" if direction is Direction.LONG else "high"
-    same = [s for s in swings if s.type == want]
-    return same[-1].body_price if same else float("nan")
+def _protected_stop(
+    swings: list[SwingPoint], direction: Direction, entry: float, atr: float,
+) -> float:
+    """The nearest protective swing on the stop side of ``entry`` (a swing low BELOW
+    entry for a long / swing high ABOVE for a short) — the structure whose break
+    invalidates the setup. Falls back to ``entry ∓ atr`` so the hard stop is always a
+    valid level on the correct side of entry (never above for a long)."""
+    if direction is Direction.LONG:
+        lows = [s.body_price for s in swings if s.type == "low" and s.body_price < entry]
+        return max(lows) if lows else entry - atr
+    highs = [s.body_price for s in swings if s.type == "high" and s.body_price > entry]
+    return min(highs) if highs else entry + atr
 
 
 def _weakness_flag(swings: list[SwingPoint], direction: Direction) -> bool:
@@ -230,10 +237,8 @@ def detect_trend_continuation(
         return []
     if not _has_impulse(context.df, lookback, impulse_k, atr):  # vertical accumulation gate
         return []
-    hard = _protected_stop(context.swings, direction)
-    if _isnan(hard):
-        return []
-    factors = {ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.VERTICAL_ACCUMULATION}
+    hard = _protected_stop(context.swings, direction, ema36, atr)
+    factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.VERTICAL_ACCUMULATION}
     factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.TREND_CONTINUATION,
@@ -275,10 +280,8 @@ def detect_trend_reclaim(
         return []
     if _htf_block(sr_levels, ema36, direction, atr, htf_res_tol):  # resistance too close
         return []
-    hard = _protected_stop(context.swings, direction)
-    if _isnan(hard):
-        return []
-    factors = {ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.LOWER_TF_CONFIRMED}
+    hard = _protected_stop(context.swings, direction, ema36, atr)
+    factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.LOWER_TF_CONFIRMED}
     factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.TREND_RECLAIM,
@@ -316,10 +319,8 @@ def detect_deviation_reclaim(
         return []
     if not _near_sr(ema36, sr_levels, atr, sr_tol):  # reclaim must be S/R-supported
         return []
-    hard = _protected_stop(context.swings, direction)
-    if _isnan(hard):
-        return []
-    factors = {ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.AT_SR}
+    hard = _protected_stop(context.swings, direction, ema36, atr)
+    factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.AT_SR}
     if abs(price - ema36) <= retest_tol * atr:
         factors.add(ConfluenceFactor.RETEST)
     return [SetupSignalV2(
