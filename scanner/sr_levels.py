@@ -40,7 +40,7 @@ Pipeline order in ``derive_sr_levels``: find → refine → merge → score → 
 Degradation: missing/short ``1w``/``1mo`` history yields fewer/zero macro pivots →
 fewer/zero brackets → possibly an empty result, never a raise. Thresholds
 (``window`` / ``tol`` / ``n_sub``) are v1 defaults, calibrated in Chunk 8b. Per-TF
-multi-touch beyond distinct lineage is not separately counted in v1 confirmations.
+multi-touch beyond distinct lineage is not separately counted in ``confirmations``.
 """
 
 from dataclasses import replace
@@ -49,6 +49,11 @@ import pandas as pd
 
 from .ma_indicators import VolumeProfile, compute_volume_profile
 from .models import SRLevelV2
+
+# Public surface (enforced): the supported pipeline seam + the Chunk-4 VRVP primitive.
+# The derivation stages are private (`_find_htf_pivots` etc.); unit tests reach them
+# deliberately, but no production caller should.
+__all__ = ["derive_sr_levels", "anchor_vrvp_for_range"]
 
 _TF_RANK = {"1mo": 3, "1w": 2, "3d": 1, "1d": 0}
 _DEFAULT_TOL = 0.01      # price-cluster width, relative (1%) — v1 default
