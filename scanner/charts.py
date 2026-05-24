@@ -25,11 +25,12 @@ STYLE = mpf.make_mpf_style(
     ),
 )
 
-# v10 enrichment palette (light theme). The band fades fast→slow; the longer set
-# is distinguished by linestyle so three lines stay legible in greyscale too.
-_BAND = ((13, "#1565c0"), (25, "#42a5f5"), (36, "#90caf9"))  # (period, colour) fast→slow
+# v10 enrichment palette (light theme). The band fades fast→slow; the longer set is
+# distinguished by linestyle so three lines stay legible in greyscale too. Colours only —
+# the MA periods (13/25/36, 100/200/300) stay owned by ma_indicators, not restated here.
+_BAND_FAST, _BAND_MID, _BAND_SLOW = "#1565c0", "#42a5f5", "#90caf9"
+_SMA100, _EMA200, _SMA300 = "#fb8c00", "#8e24aa", "#455a64"
 _ENVELOPE = {"color": "#90a4ae", "alpha": 0.15}
-_LONGER = (("#fb8c00", "dotted"), ("#8e24aa", "dashed"), ("#455a64", "dashdot"))  # 100/200/300
 _HTF_COLOR = "#d81b60"
 _STOCH_K, _STOCH_D, _STOCH_MID = "#3949ab", "#ef6c00", "#9e9e9e"
 _STOCH_PANEL = 2  # price=0, volume=1, Stoch RSI=2
@@ -49,12 +50,20 @@ def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
     band = compute_ema_band(close)
     longer = compute_longer_set(close)
 
+    # Each line pairs its named substrate field with a colour at the styling site — no
+    # positional zip against a separate colour table whose order could silently drift.
+    band_lines = ((band.fast, _BAND_FAST), (band.mid, _BAND_MID), (band.slow, _BAND_SLOW))
+    longer_lines = (
+        (longer.sma_100, _SMA100, "dotted"),
+        (longer.ema_200, _EMA200, "dashed"),
+        (longer.sma_300, _SMA300, "dashdot"),
+    )
+
     addplots = []
-    for series, (_, colour) in zip((band.fast, band.mid, band.slow), _BAND):
+    for series, colour in band_lines:
         if series.notna().any():
             addplots.append(mpf.make_addplot(series, panel=0, color=colour, width=0.8))
-    longer_lines = (longer.sma_100, longer.ema_200, longer.sma_300)
-    for series, (colour, linestyle) in zip(longer_lines, _LONGER):
+    for series, colour, linestyle in longer_lines:
         if series.notna().any():
             addplots.append(
                 mpf.make_addplot(series, panel=0, color=colour, width=0.9, linestyle=linestyle)

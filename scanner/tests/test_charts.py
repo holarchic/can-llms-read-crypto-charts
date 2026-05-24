@@ -5,12 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.charts import (
-    _ma_addplots,
-    _stoch_addplots,
-    cleanup_charts,
-    generate_chart,
-)
+from scanner.charts import cleanup_charts, generate_chart
 from scanner.indicators import build_context
 from scanner.ma_indicators import compute_stoch_rsi
 from scanner.models import Direction, SetupSignal, SetupType
@@ -159,11 +154,12 @@ class TestEnrichmentStructure:
         assert any(a["ylim"] == (0, 100) for a in stoch)
 
     def test_enriched_short_df_skips_longer_set(self, signal, capture_plot, tmp_charts):
-        # 80 bars: SMA100/EMA200/SMA300 all-NaN → skipped; band + Stoch still render.
+        # 80 bars: SMA100/EMA200/SMA300 all-NaN → skipped; full band (3) + envelope render.
         df = _osc_df(80)
         generate_chart(df, "TEST", "4H", signal, output_dir=tmp_charts, enrich=True)
         addplots = capture_plot["addplot"]
         assert len(_panel(addplots, 0)) == 3  # band only, no longer set
+        assert "fill_between" in capture_plot  # both band edges present → envelope
         assert len(_panel(addplots, 2)) == 3  # Stoch pane present
         assert len(capture_plot["panel_ratios"]) == 3
 
@@ -188,13 +184,15 @@ class TestEnrichmentStructure:
         assert "panel_ratios" not in capture_plot
 
     def test_htf_ema_aligned_adds_one_panel0_line(self, long_df, signal, capture_plot, tmp_charts):
-        baseline_n = len(_panel(_ma_addplots(long_df["Close"])[0], 0))
+        generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True)
+        baseline_n = len(_panel(capture_plot["addplot"], 0))  # public-path baseline (no htf)
         htf = pd.Series(long_df["Close"].to_numpy(), index=long_df.index)  # aligned to df.index
         generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True, htf_ema=htf)
         assert len(_panel(capture_plot["addplot"], 0)) == baseline_n + 1
 
     def test_htf_ema_misaligned_is_dropped(self, long_df, signal, capture_plot, tmp_charts):
-        baseline_n = len(_panel(_ma_addplots(long_df["Close"])[0], 0))
+        generate_chart(long_df, "TEST", "1H", signal, output_dir=tmp_charts, enrich=True)
+        baseline_n = len(_panel(capture_plot["addplot"], 0))  # public-path baseline (no htf)
         # Same length, fully disjoint index → reindex(df.index) is all-NaN → no positional line.
         disjoint = long_df.index + pd.Timedelta(days=10_000)
         htf = pd.Series(long_df["Close"].to_numpy(), index=disjoint)
@@ -208,19 +206,3 @@ class TestEnrichmentRender:
         path = generate_chart(long_df, "TEST", "4H", signal, output_dir=tmp_charts, enrich=True)
         assert path.exists()
         assert path.stat().st_size > 1000
-
-
-class TestEnrichmentHelpers:
-    def test_ma_addplots_skips_all_nan_longer_lines(self):
-        # 80 bars: band (13/25/36) present, longer set all-NaN → 3 band addplots only.
-        addplots, fill = _ma_addplots(_osc_df(80)["Close"])
-        assert len(addplots) == 3
-        assert fill is not None  # both band edges have data → envelope emitted
-
-    def test_ma_addplots_sub13_renders_nothing(self):
-        addplots, fill = _ma_addplots(_osc_df(10)["Close"])
-        assert addplots == []
-        assert fill is None
-
-    def test_stoch_addplots_empty_when_too_short(self):
-        assert _stoch_addplots(_osc_df(10)["Close"], 2) == []
