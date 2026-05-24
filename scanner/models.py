@@ -59,6 +59,31 @@ class SRLevel:
 
 
 @dataclass
+class SRLevelV2:
+    """Top-down S/R level (v10 v2 framework, T-019 Chunk 3).
+
+    Additive sibling to the v1 ``SRLevel`` — the v1 record (swing-cluster source,
+    ``direction_tests``/``degraded``) stays frozen for the live v1 path; this is the
+    v2 analog produced by ``scanner.sr_levels`` and consumed by the v2 setup
+    detectors (Chunk 5b). Two distinct timestamps by design: ``formed_at`` is when
+    the establishing pivot formed (bracket-eligibility reads this); ``last_test`` is
+    the most-recent touch across contributors (quality recency reads this). For a
+    freshly-found single pivot they are equal. ``strength`` is a distinct-TF-lineage
+    confirmation count (``1d``/``3d`` count once); ``quality`` is set at the end of
+    ``derive_sr_levels`` (0.0 until then).
+    """
+
+    price: float
+    tf_source: str          # "1mo" | "1w" | "3d" | "1d" — provenance + rank
+    pivot_type: str         # "high" | "low"
+    strength: int           # distinct-TF-lineage confirmations
+    vrvp_confluence: bool
+    formed_at: datetime
+    last_test: datetime
+    quality: float = 0.0
+
+
+@dataclass
 class MSB:
     index: int
     timestamp: datetime
