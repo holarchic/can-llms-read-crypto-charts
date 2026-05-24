@@ -458,7 +458,7 @@ def _sweep(
     """
     n = len(df)
     high, low, close = df["High"], df["Low"], df["Close"]
-    for i in range(n - 1 - reaction_window, max(0, n - 1 - max_age), -1):
+    for i in range(n - 1 - reaction_window, max(-1, n - 2 - max_age), -1):  # inclusive of age == max_age
         ci, hi, lo = float(close.iloc[i]), float(high.iloc[i]), float(low.iloc[i])
         level, at_sr = _significant_level(ci, hi, "short", sr_levels, range_bounds)
         if level is not None and all(close.iloc[j] < level for j in range(i + 1, i + 1 + reaction_window)):
@@ -580,6 +580,13 @@ def detect_rsi_divergence_range(
     if div is None:
         return []
     direction, swing, ref_rsi = div
+    # Reject a stale divergence: price must not have run past the reacting swing's
+    # wick (else the hard stop would sit on the wrong side of entry — the divergence
+    # is already invalidated).
+    if direction is Direction.SHORT and not swing.price > price:
+        return []
+    if direction is Direction.LONG and not swing.price < price:
+        return []
     # The rotation context is the regime gate above (not TRENDING); the divergence
     # swing is itself a local extreme, so no separate classify_structure==RANGING gate
     # — that requirement is jointly infeasible with the no-50-reset rule (a RANGING

@@ -6,12 +6,10 @@ builders (``_zig`` / ``_grind`` / ``_broaden``) replace RNG.
 
 Two detector properties drive the fixture shapes and are asserted as the contract:
 
-- **gap_fill geometry ⟹ stall.** A counter-trend reclaim that is still short of the
-  100MA (the geometry) is by definition an incomplete bounce, so the local stack is
-  FLAT — i.e. ``regime.f2_gapfill_stall`` holds. A bounce strong enough to turn the
-  local stack UP overshoots the 100MA and breaks the geometry. So the operative
-  branch is the stall; an RSI divergence (when present) adds confluence rather than
-  being an independent trigger.
+- **gap_fill = geometry AND (divergence OR stall).** A counter-trend reclaim short of
+  the 100MA fires via either branch: a *stalled* dip flattens the local stack
+  (``regime.f2_gapfill_stall``), while a still-trending dip keeps the local stack UP/
+  DOWN and fires via an RSI divergence with ``f2`` False. Both branches are covered.
 - **RSI divergence needs no 50-reset, which forbids a deep pullback.** A 14-period
   RSI drops below 50 on any real pullback, so a valid (no-50-reset) divergence lives
   in a strong grind with shallow pullbacks — not a deep-lowed RANGING structure
@@ -109,6 +107,16 @@ def _continuation_uptrend():
     return [line(i) - (4 if (i % 12 == 0 and i > 0) else 0) for i in range(280)] + [line(280 + j) for j in range(30)]
 
 
+def _gap_fill_divergence():
+    """Strong uptrend (htf UP) with a bearish-divergence top, then a sharp 5-bar dip
+    that keeps the local stack UP (so f2 is False) while price drops below the ribbon
+    but stays above the 100MA — the divergence-only gap_fill branch."""
+    base = [50 + 0.8 * i for i in range(300)]
+    s, t = base[:], base[-1]
+    s += _seg(t, t + 10, 3) + _seg(t + 10, t + 7, 3) + _seg(t + 7, t + 12, 6) + _seg(t + 12, 272.0, 5)
+    return s
+
+
 # --- gap_fill -----------------------------------------------------------------
 
 def test_gap_fill_emits_on_stalled_counter_trend_bounce():
@@ -133,6 +141,19 @@ def test_gap_fill_suppressed_without_dominant_htf_trend():
 def test_gap_fill_suppressed_without_counter_trend_geometry():
     df = _frame(_continuation_uptrend())  # htf UP but price ABOVE the ribbon (with-trend) → no geometry
     assert detect_gap_fill(setup_context_from_df(df), _substrate(df), []) == []
+
+
+def test_gap_fill_emits_on_divergence_branch_without_stall():
+    df = _frame(_gap_fill_divergence())  # still-trending dip → f2 False; divergence is the trigger
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert sub.regime.f2_gapfill_stall is False  # not the stall branch
+    sig = detect_gap_fill(ctx, sub, [])
+    assert len(sig) == 1
+    s = sig[0]
+    assert s.direction is Direction.SHORT  # counter-trend to the uptrend
+    assert {ConfluenceFactor.COUNTER_TREND, ConfluenceFactor.DIVERGENCE} <= s.confluence
+    assert ConfluenceFactor.GAPFILL_STALL not in s.confluence
+    assert s.hard_stop > s.entry
 
 
 # --- sfp_range ----------------------------------------------------------------
@@ -180,6 +201,19 @@ def test_sfp_suppressed_on_mid_range_sweep():
     assert detect_sfp_range(setup_context_from_df(df), _substrate(df), []) == []
 
 
+def test_sfp_detects_sweep_at_max_age_boundary():
+    # Sweep bar at index 110 with 8 trailing bars → age exactly max_age (the inclusive
+    # boundary the range()-stop fencepost previously dropped).
+    closes = _zig(110, 95, 105, 8) + [102.0, 101.0, 100.0, 101.0, 102.0, 101.0, 100.0, 101.0, 102.0]
+    highs = [c + 0.4 for c in closes]
+    highs[110] = 108.0
+    df = _frame(closes, highs=highs)
+    assert len(df) - 1 - 110 == 8  # the sweep is exactly max_age bars old
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert detect_sfp_range(ctx, sub, [], max_age=8)  # inclusive of age == max_age
+    assert detect_sfp_range(ctx, sub, [], max_age=7) == []  # one tighter excludes it
+
+
 # --- rsi_divergence_range -----------------------------------------------------
 
 def test_rsi_divergence_emits_on_higher_high_lower_rsi():
@@ -211,6 +245,13 @@ def test_rsi_divergence_suppressed_in_trending_regime():
     sub = _substrate(df)
     assert sub.regime.regime.value == "trending"
     assert detect_rsi_divergence_range(setup_context_from_df(df), sub, []) == []
+
+
+def test_rsi_divergence_suppressed_when_stale():
+    # Price has run above the reacting swing's wick → the divergence is invalidated and
+    # the hard stop would sit on the wrong side of entry; must not emit.
+    df = _frame(_grind() + [103.0, 105.0, 107.0, 109.0, 111.0])
+    assert detect_rsi_divergence_range(setup_context_from_df(df), _substrate(df), []) == []
 
 
 # --- degradation --------------------------------------------------------------
