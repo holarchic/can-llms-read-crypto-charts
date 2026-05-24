@@ -185,7 +185,9 @@ class SoftStop:
     """The two-level-invalidation soft stop: a *rule* (mode) plus a current reference
     price, so downstream exit logic re-evaluates the rule live rather than freezing a
     level. ``TREND_RECLAIM_AGAINST`` ends the trade when the local trend reclaims
-    against the position; ``reference`` is the EMA36 at detection."""
+    against the position (trend setups; ``reference`` is the EMA36 at detection).
+    ``LEVEL_RECLAIM_AGAINST`` ends it when price reclaims back through the basis level
+    (range setups; ``reference`` is the swept level / divergence basis)."""
 
     mode: SoftStopMode
     reference: float
@@ -195,11 +197,12 @@ class SoftStop:
 class SetupSignalV2:
     """A v10 the framework setup signal (T-019 Chunk 5). Additive sibling to the v1
     ``SetupSignal``; produced by ``scanner.setups_v2`` detectors — pure (no LLM/DB).
-    The local trend (EMA 13/25/36) is both basis and invalidation (the framework): ``basis_price``
-    is the trend reference; ``hard_stop`` is the price-level stop and ``soft_stop`` the
-    trend-reclaim-against rule (whichever hits first ends the trade). No
-    ``setup_quality`` — that is the LLM's additive judgment (Decision #32), set
-    downstream, never by a detector."""
+    ``basis_price`` is the setup's reference level — trend-derived (EMA36) for the
+    trend detectors, or level-derived (the swept level / divergence body) for the
+    range detectors. ``hard_stop`` is the price-level stop and ``soft_stop`` the
+    reclaim-against rule (trend- or level-reclaim per its mode); whichever hits first
+    ends the trade. No ``setup_quality`` — that is the LLM's additive judgment
+    (Decision #32), set downstream, never by a detector."""
 
     setup_type: SetupTypeV2
     direction: Direction
