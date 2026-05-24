@@ -385,6 +385,7 @@ def _gap_fill_geometry(
 
 def _rsi_divergence(
     df: pd.DataFrame, swings: list[SwingPoint], *, rsi_len: int, max_gap: int,
+    want: Direction | None = None,
 ) -> tuple[Direction, SwingPoint, float] | None:
     """Price/RSI divergence on the last two confirmed same-type swings.
 
@@ -396,25 +397,33 @@ def _rsi_divergence(
     the overbought/oversold confluence (a corroborating factor, NOT an emit gate: the
     reacting peak of a real divergence has fading, i.e. sub-extreme, RSI, and a
     structural range mechanically caps the 14-period RSI well below 70).
+
+    Both directions are evaluated; ``want`` restricts to one (gap_fill asks for its
+    geometry direction), else the candidate with the most-recent reacting swing wins
+    (so a stale opposite-side pair never pre-empts a fresher one).
     """
     rsi = compute_rsi(df["Close"], rsi_len)
     highs = [s for s in swings if s.type == "high"]
     lows = [s for s in swings if s.type == "low"]
-    if len(highs) >= 2:
+    cands: list[tuple[int, Direction, SwingPoint, float]] = []
+    if len(highs) >= 2 and want in (None, Direction.SHORT):
         a, b = highs[-2], highs[-1]
         ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
         if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
                 and b.body_price > a.body_price and rb < ra
                 and float(rsi.iloc[a.index:b.index + 1].min()) >= 50.0):
-            return (Direction.SHORT, b, ra)
-    if len(lows) >= 2:
+            cands.append((b.index, Direction.SHORT, b, ra))
+    if len(lows) >= 2 and want in (None, Direction.LONG):
         a, b = lows[-2], lows[-1]
         ra, rb = float(rsi.iloc[a.index]), float(rsi.iloc[b.index])
         if (not pd.isna(ra) and not pd.isna(rb) and b.index - a.index <= max_gap
                 and b.body_price < a.body_price and rb > ra
                 and float(rsi.iloc[a.index:b.index + 1].max()) <= 50.0):
-            return (Direction.LONG, b, ra)
-    return None
+            cands.append((b.index, Direction.LONG, b, ra))
+    if not cands:
+        return None
+    _, direction, swing, ref = max(cands, key=lambda c: c[0])  # most-recent reacting swing
+    return (direction, swing, ref)
 
 
 def _significant_level(
@@ -490,8 +499,8 @@ def detect_gap_fill(
     if not geom_ok:
         return []
     stall = substrate.regime.f2_gapfill_stall
-    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap)
-    has_div = div is not None and div[0] is direction
+    div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap, want=direction)
+    has_div = div is not None
     if not (has_div or stall):
         return []
     ema36 = _latest(substrate.bands.slow)

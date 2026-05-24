@@ -107,6 +107,15 @@ def _continuation_uptrend():
     return [line(i) - (4 if (i % 12 == 0 and i > 0) else 0) for i in range(280)] + [line(280 + j) for j in range(30)]
 
 
+def _coexisting_divergences():
+    """An older bearish (high) divergence then a newer bullish (low) divergence — the
+    most-recent reacting swing must win (the bearish pair is checked first internally)."""
+    s = _grind()  # bearish divergence in the highs
+    t = s[-1]
+    s += _seg(t, 60, 40) + _seg(60, 54, 3) + _seg(54, 57, 3) + _seg(57, 52, 5) + _seg(52, 58, 6)
+    return s
+
+
 def _gap_fill_divergence():
     """Strong uptrend (htf UP) with a bearish-divergence top, then a sharp 5-bar dip
     that keeps the local stack UP (so f2 is False) while price drops below the ribbon
@@ -245,6 +254,13 @@ def test_rsi_divergence_suppressed_in_trending_regime():
     sub = _substrate(df)
     assert sub.regime.regime.value == "trending"
     assert detect_rsi_divergence_range(setup_context_from_df(df), sub, []) == []
+
+
+def test_rsi_divergence_returns_most_recent_when_both_directions_present():
+    df = _frame(_coexisting_divergences())  # older bearish high pair + newer bullish low pair
+    sig = detect_rsi_divergence_range(setup_context_from_df(df), _substrate(df), [])
+    assert len(sig) == 1
+    assert sig[0].direction is Direction.LONG  # the newer bullish low, not the stale short
 
 
 def test_rsi_divergence_suppressed_when_stale():
