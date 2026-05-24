@@ -10,6 +10,7 @@ import mplfinance as mpf
 import pandas as pd
 
 from .config import CHARTS_DIR
+from .ma_indicators import compute_ema_band, compute_longer_set, compute_stoch_rsi
 from .models import SetupSignal
 
 # Light theme — better LLM visual acuity on white backgrounds
@@ -23,6 +24,71 @@ STYLE = mpf.make_mpf_style(
         volume={"up": "#26a69a80", "down": "#ef535080"},
     ),
 )
+
+# v10 enrichment palette (light theme). The band fades fast→slow; the longer set
+# is distinguished by linestyle so three lines stay legible in greyscale too.
+_BAND = ((13, "#1565c0"), (25, "#42a5f5"), (36, "#90caf9"))  # (period, colour) fast→slow
+_ENVELOPE = {"color": "#90a4ae", "alpha": 0.15}
+_LONGER = (("#fb8c00", "dotted"), ("#8e24aa", "dashed"), ("#455a64", "dashdot"))  # 100/200/300
+_HTF_COLOR = "#d81b60"
+_STOCH_K, _STOCH_D, _STOCH_MID = "#3949ab", "#ef6c00", "#9e9e9e"
+_STOCH_PANEL = 2  # price=0, volume=1, Stoch RSI=2
+_ENRICHED_FIGSIZE = (13.5, 9)  # taller than the plain (13.5, 8) to fit the sub-pane
+_ENRICHED_PANEL_RATIOS = (6, 1.4, 2)  # price / volume / Stoch, only when the pane exists
+
+
+def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
+    """Panel-0 MA overlays (EMA band + longer set) and the band's envelope fill.
+
+    Returns ``(addplots, fill_between | None)``. Every line is skipped unless it has at
+    least one non-NaN value — a too-short ``close`` warms up the edges at different bars
+    (fast 13, mid 25, slow 36; longer set 100/200/300), and mplfinance errors on an
+    all-NaN addplot. The envelope is emitted only when both band edges have data, with a
+    numpy-array payload (mplfinance's top-level ``fill_between`` rejects bare Series).
+    """
+    band = compute_ema_band(close)
+    longer = compute_longer_set(close)
+
+    addplots = []
+    for series, (_, colour) in zip((band.fast, band.mid, band.slow), _BAND):
+        if series.notna().any():
+            addplots.append(mpf.make_addplot(series, panel=0, color=colour, width=0.8))
+    longer_lines = (longer.sma_100, longer.ema_200, longer.sma_300)
+    for series, (colour, linestyle) in zip(longer_lines, _LONGER):
+        if series.notna().any():
+            addplots.append(
+                mpf.make_addplot(series, panel=0, color=colour, width=0.9, linestyle=linestyle)
+            )
+
+    fill = None
+    if band.fast.notna().any() and band.slow.notna().any():
+        fill = {"y1": band.fast.to_numpy(), "y2": band.slow.to_numpy(), **_ENVELOPE}
+    return addplots, fill
+
+
+def _stoch_addplots(close: pd.Series, panel: int) -> list:
+    """Stoch-RSI sub-pane addplots (%K, %D, and a constant 50 midline) on ``panel``.
+
+    Returns ``[]`` when Stoch RSI is all-NaN (close too short / flat) so no empty
+    sub-panel is created. The 50 midline carries no data, so it is added only when the
+    pane already exists — it is not independently guarded.
+    """
+    stoch = compute_stoch_rsi(close)
+    addplots = []
+    if stoch.k.notna().any():
+        addplots.append(
+            mpf.make_addplot(
+                stoch.k, panel=panel, color=_STOCH_K, width=0.9, ylabel="Stoch RSI", ylim=(0, 100)
+            )
+        )
+    if stoch.d.notna().any():
+        addplots.append(mpf.make_addplot(stoch.d, panel=panel, color=_STOCH_D, width=0.7))
+    if addplots:
+        midline = pd.Series(50.0, index=close.index)
+        addplots.append(
+            mpf.make_addplot(midline, panel=panel, color=_STOCH_MID, width=0.6, linestyle="dotted")
+        )
+    return addplots
 
 
 def _sr_hlines(sr_levels: list, df: pd.DataFrame) -> dict | None:
@@ -60,8 +126,19 @@ def generate_chart(
     signal: SetupSignal,
     sr_levels: list | None = None,
     output_dir: Path | None = None,
+    *,
+    enrich: bool = False,
+    htf_ema: pd.Series | None = None,
 ) -> Path:
-    """Generate a single chart PNG. Returns the file path."""
+    """Generate a single chart PNG. Returns the file path.
+
+    ``enrich=False`` (default) renders the v1 blind chart — candles + volume + S/R lines,
+    no indicator overlays (Decision #5). ``enrich=True`` adds the v10 substrate: the EMA-band
+    "ribbon" + envelope, the longer MA set, an optional cross-TF anchor EMA, and a Stoch-RSI
+    sub-pane. ``htf_ema`` is a pre-aligned higher-TF line (the 4H-200 EMA on LTF charts); it is
+    reindexed onto ``df.index`` before plotting so a mis-indexed series degrades to NaN rather
+    than rendering positionally wrong (the forward-fill aligner is the data plane's job).
+    """
     out_dir = output_dir or CHARTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +162,25 @@ def generate_chart(
 
     if hlines:
         kwargs["hlines"] = hlines
+
+    if enrich:
+        close = df["Close"]
+        addplots, fill = _ma_addplots(close)
+        if htf_ema is not None:
+            aligned = htf_ema.reindex(df.index)
+            if aligned.notna().any():
+                addplots.append(
+                    mpf.make_addplot(aligned, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
+                )
+        stoch_addplots = _stoch_addplots(close, _STOCH_PANEL)
+        addplots.extend(stoch_addplots)
+        if addplots:
+            kwargs["addplot"] = addplots
+        if fill is not None:
+            kwargs["fill_between"] = fill
+        if stoch_addplots:  # the sub-pane exists → size three panels + grow the figure
+            kwargs["panel_ratios"] = _ENRICHED_PANEL_RATIOS
+            kwargs["figsize"] = _ENRICHED_FIGSIZE
 
     mpf.plot(df, **kwargs)
     return filepath
