@@ -1,11 +1,19 @@
-"""v10 the framework trend-family setup detectors (T-019 Chunk 5a).
+"""v10 the framework setup detectors (T-019 Chunk 5) over the Chunk-1/2/3/4 substrate.
 
-Three pure detectors — ``detect_trend_continuation`` / ``detect_trend_reclaim`` /
-``detect_deviation_reclaim`` — over the Chunk-1/2/3/4 substrate. Each is anchored on
-the local trend (EMA 13/25/36) as both basis AND invalidation (the framework 2026-01-13). No
-pipeline wiring, no LLM, no DB; each returns 0-N ``SetupSignalV2`` (in ``models``).
-Rotational/counter-trend detectors are Chunk 5b (reuse this module's bundles + the
-``models`` signal contract).
+Six pure detectors returning 0-N ``SetupSignalV2`` (in ``models``); no pipeline
+wiring, no LLM, no DB. The trend family is anchored on the local trend (EMA 13/25/36)
+as both basis AND invalidation (the framework 2026-01-13):
+
+- ``detect_trend_continuation`` / ``detect_trend_reclaim`` / ``detect_deviation_reclaim``.
+
+The rotational / counter-trend family reuses the same bundles + signal contract:
+
+- ``detect_gap_fill`` — counter-trend reclaim toward the 100MA (geometry AND
+  (RSI divergence OR the regime F2 stall)).
+- ``detect_sfp_range`` — a swing-failure sweep of a significant level (an S/R level
+  or external liquidity beyond the structural range) with a close-back + reaction.
+- ``detect_rsi_divergence_range`` — a price/RSI divergence (no 50-reset) in a
+  rotational / transitional regime.
 
 Two per-TF bundles live here (NOT in ``models`` — they reference the indicator/regime
 layer, and ``models`` must take no upward deps):
