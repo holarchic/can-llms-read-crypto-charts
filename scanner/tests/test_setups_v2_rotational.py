@@ -237,6 +237,8 @@ def test_rsi_divergence_emits_on_higher_high_lower_rsi():
     assert ConfluenceFactor.OVERSOLD_OVERBOUGHT in s.confluence  # the reference high was overbought
     assert s.hard_stop > s.entry  # beyond the reacting swing's wick
     assert s.soft_stop.mode is SoftStopMode.LEVEL_RECLAIM_AGAINST
+    assert s.soft_stop.reference == s.basis_price  # soft at the basis (body)...
+    assert s.soft_stop.reference != s.hard_stop    # ...distinct from the hard wick stop
 
 
 def test_rsi_divergence_suppressed_by_50_reset():

@@ -615,7 +615,7 @@ def detect_rsi_divergence_range(
         basis_price=swing.body_price,
         entry=price,
         hard_stop=swing.price,  # beyond the reacting swing's wick extreme
-        soft_stop=SoftStop(SoftStopMode.LEVEL_RECLAIM_AGAINST, swing.price),
+        soft_stop=SoftStop(SoftStopMode.LEVEL_RECLAIM_AGAINST, swing.body_price),  # soft at the basis (body), hard at the wick
         confluence=frozenset(factors),
         weakness_flag=_weakness_flag(context.swings, direction),
     )]
