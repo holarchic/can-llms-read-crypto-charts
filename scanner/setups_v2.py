@@ -267,10 +267,18 @@ def detect_trend_reclaim(
     htf_res_tol: float = 1.0,
     sr_tol: float = 0.5,
     retest_tol: float = 0.5,
-    msb_lookback: int = 10,
+    msb_lookback: int = 25,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
-    """Local trend lost then reclaimed (full ribbon + lower-TF 200EMA), MSB-confirmed."""
+    """Local trend lost then reclaimed (full ribbon + lower-TF 200EMA), MSB-confirmed.
+
+    ``msb_lookback`` is deliberately wider than the F1/regime window (25, not 10): the
+    confirming structure break registers when price first closes through a lower high,
+    but the local 13/25/36 stack only *fans* back up — the reclaim this detector keys
+    on — some bars later (the EMA-fanning latency), so by the time the reclaim is
+    visible the break is already ~15-25 bars old. A 10-bar window would make
+    trend_reclaim near-dead on real data. Calibrated in Chunk 8b.
+    """
     ts = substrate.trend_state
     direction = _direction(ts.local_trend_direction)
     if direction is None or len(context.df) < min_bars:

@@ -7,11 +7,12 @@ the AT_SR / HTF-resistance / deviation-support conditions — ``derive_sr_levels
 already tested in Chunk 3). Frames use ``Open == Close`` for clean swing bodies
 except where a directional impulse candle is needed (continuation).
 
-The reclaim fixtures pass ``msb_lookback=25``: a reclaim's confirming structure break
-sits a handful of bars behind the reclaim point, and the threshold is a v1 default
-calibrated in Chunk 8b (the module default of 10 is intentionally tight). Both
-reclaim fixtures carry ≥3 swing highs, so their ``weakness_flag`` assertions exercise
-the real last-two-highs comparison, not the ``len < 2`` fast path.
+The reclaim fixtures use the detector's default ``msb_lookback`` (25): the local
+stack fans back up ~15-25 bars after the confirming MSB break (EMA-fanning latency),
+so the break is already that old by the time the reclaim is visible — a tighter
+window would make trend_reclaim near-dead. Both reclaim fixtures carry ≥3 swing
+highs, so their ``weakness_flag`` assertions exercise the real last-two-highs
+comparison, not the ``len < 2`` fast path.
 """
 
 from datetime import datetime
@@ -149,7 +150,7 @@ def test_trend_continuation_suppressed_by_counter_trend_impulse():
 
 def test_trend_reclaim_emits_on_full_ribbon_reclaim_with_lower_tf_and_msb():
     df = _frame(_RECLAIM)
-    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25)
+    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True)
     assert len(sig) == 1
     s = sig[0]
     assert s.setup_type is SetupTypeV2.TREND_RECLAIM
@@ -161,14 +162,14 @@ def test_trend_reclaim_emits_on_full_ribbon_reclaim_with_lower_tf_and_msb():
 
 def test_trend_reclaim_weakness_flag_set_on_failed_extension():
     df = _frame(_RECLAIM_WEAK)
-    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25)
+    sig = detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True)
     assert len(sig) == 1
     assert sig[0].weakness_flag is True  # most recent swing high failed to exceed the prior
 
 
 def test_trend_reclaim_suppressed_without_lower_tf_reclaim():
     df = _frame(_RECLAIM)
-    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=False, msb_lookback=25) == []
+    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=False) == []
 
 
 def test_trend_reclaim_suppressed_by_nearby_htf_resistance():
@@ -176,12 +177,12 @@ def test_trend_reclaim_suppressed_by_nearby_htf_resistance():
     sub, ctx = _substrate(df), setup_context_from_df(df)
     ema36, atr = sub.bands.slow.iloc[-1], ctx.atr
     resistance = [_lvl(ema36 + 0.5 * atr)]  # within htf_res_tol (1.0·ATR) above the reclaim
-    assert detect_trend_reclaim(ctx, sub, resistance, lower_tf_reclaim=True, msb_lookback=25) == []
+    assert detect_trend_reclaim(ctx, sub, resistance, lower_tf_reclaim=True) == []
 
 
 def test_trend_reclaim_requires_full_ribbon_not_just_above_ema36():
     df = _frame(_d4_inside_df())  # price above EMA36 but still INSIDE the band
-    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True, msb_lookback=25) == []
+    assert detect_trend_reclaim(setup_context_from_df(df), _substrate(df), [], lower_tf_reclaim=True) == []
 
 
 # --- deviation ----------------------------------------------------------------
