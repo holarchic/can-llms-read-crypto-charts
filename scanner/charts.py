@@ -27,7 +27,7 @@ STYLE = mpf.make_mpf_style(
 
 # v10 enrichment palette (light theme). The band fades fast→slow; the longer set is
 # distinguished by linestyle so three lines stay legible in greyscale too. Colours only —
-# the MA periods (13/25/36, 100/200/300) stay owned by ma_indicators, not restated here.
+# each MA's period is owned by its ma_indicators field, never restated here.
 _BAND_FAST, _BAND_MID, _BAND_SLOW = "#1565c0", "#42a5f5", "#90caf9"
 _SMA100, _EMA200, _SMA300 = "#fb8c00", "#8e24aa", "#455a64"
 _ENVELOPE = {"color": "#90a4ae", "alpha": 0.15}
@@ -42,10 +42,10 @@ def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
     """Panel-0 MA overlays (EMA band + longer set) and the band's envelope fill.
 
     Returns ``(addplots, fill_between | None)``. Every line is skipped unless it has at
-    least one non-NaN value — a too-short ``close`` warms up the edges at different bars
-    (fast 13, mid 25, slow 36; longer set 100/200/300), and mplfinance errors on an
-    all-NaN addplot. The envelope is emitted only when both band edges have data, with a
-    numpy-array payload (mplfinance's top-level ``fill_between`` rejects bare Series).
+    least one non-NaN value — a too-short ``close`` warms up the band and longer-set edges
+    at different bar counts, and mplfinance errors on an all-NaN addplot. The envelope is
+    emitted only when both band edges have data, with a numpy-array payload (mplfinance's
+    top-level ``fill_between`` rejects bare Series).
     """
     band = compute_ema_band(close)
     longer = compute_longer_set(close)
@@ -176,7 +176,10 @@ def generate_chart(
         close = df["Close"]
         addplots, fill = _ma_addplots(close)
         if htf_ema is not None:
-            aligned = htf_ema.reindex(df.index)
+            # Drop duplicate source labels first — reindex() raises on them, which would
+            # break the degrade-to-NaN contract for a malformed (non-unique) index.
+            deduped = htf_ema[~htf_ema.index.duplicated()]
+            aligned = deduped.reindex(df.index)
             if aligned.notna().any():
                 addplots.append(
                     mpf.make_addplot(aligned, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
