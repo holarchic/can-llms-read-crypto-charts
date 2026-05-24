@@ -141,6 +141,73 @@ class SetupSignal:
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class SetupTypeV2(Enum):
+    """v10 the framework setup types (T-019 Chunk 5). Lowercase snake_case — additive sibling
+    to the v1 ``SetupType`` (A–G); the two vocabularies coexist during cutover. The
+    three rotational/counter-trend members are declared now (produced in Chunk 5b) so
+    the enum is stable across the 5a/5b split."""
+
+    TREND_CONTINUATION = "trend_continuation"
+    TREND_RECLAIM = "trend_reclaim"
+    DEVIATION_RECLAIM = "deviation_reclaim"
+    GAP_FILL = "gap_fill"
+    SFP_RANGE = "sfp_range"
+    RSI_DIVERGENCE_RANGE = "rsi_divergence_range"
+
+
+class ConfluenceFactor(Enum):
+    """Named confluence factors a v2 detector attaches to a signal (extensible — 5b
+    adds its own). ``SetupSignalV2.confluence_count`` is the floor the Chunk-8a
+    ``setup_validator`` reads."""
+
+    AT_SR = "at_sr"
+    TREND_ALIGNED = "trend_aligned"
+    RETEST = "retest"
+    VERTICAL_ACCUMULATION = "vertical_accumulation"
+    LOWER_TF_CONFIRMED = "lower_tf_confirmed"
+
+
+class SoftStopMode(Enum):
+    """How a signal's soft stop is evaluated downstream."""
+
+    TREND_RECLAIM_AGAINST = "trend_reclaim_against"
+
+
+@dataclass
+class SoftStop:
+    """The two-level-invalidation soft stop: a *rule* (mode) plus a current reference
+    price, so downstream exit logic re-evaluates the rule live rather than freezing a
+    level. ``TREND_RECLAIM_AGAINST`` ends the trade when the local trend reclaims
+    against the position; ``reference`` is the EMA36 at detection."""
+
+    mode: SoftStopMode
+    reference: float
+
+
+@dataclass
+class SetupSignalV2:
+    """A v10 the framework setup signal (T-019 Chunk 5). Additive sibling to the v1
+    ``SetupSignal``; produced by ``scanner.setups_v2`` detectors — pure (no LLM/DB).
+    The local trend (EMA 13/25/36) is both basis and invalidation (the framework): ``basis_price``
+    is the trend reference; ``hard_stop`` is the price-level stop and ``soft_stop`` the
+    trend-reclaim-against rule (whichever hits first ends the trade). No
+    ``setup_quality`` — that is the LLM's additive judgment (Decision #32), set
+    downstream, never by a detector."""
+
+    setup_type: SetupTypeV2
+    direction: Direction
+    basis_price: float
+    entry: float
+    hard_stop: float
+    soft_stop: SoftStop
+    confluence: frozenset[ConfluenceFactor]
+    weakness_flag: bool
+
+    @property
+    def confluence_count(self) -> int:
+        return len(self.confluence)
+
+
 _MB_REQUIRED_NUMERIC = (
     "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
     "confidence", "leverage",
