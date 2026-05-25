@@ -9,6 +9,7 @@ convenience path calls `scanner.db.get_connection` directly (the 2a
 import sqlite3
 
 from .db import get_connection
+from .models import normalize_setup_type
 
 __all__ = [
     "is_duplicate",
@@ -120,7 +121,7 @@ def signal_history(
         params.append(coin.upper())
     if setup_type:
         clauses.append("setup_type = ?")
-        params.append(setup_type.upper())
+        params.append(normalize_setup_type(setup_type))
     if sent_only:
         clauses.append("sent_to_llm = 1")
     if exchange:

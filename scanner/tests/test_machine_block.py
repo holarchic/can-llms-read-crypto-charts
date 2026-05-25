@@ -309,6 +309,18 @@ def test_non_dict_input_rejected():
     assert MachineBlock.from_raw("not a dict") is None
 
 
+def test_from_raw_accepts_v2_setup_type():
+    # v2 (v10) lowercase setup_type passes the union valid-set (7b.1 casing)
+    mb = MachineBlock.from_raw(_valid_block(setup_type="trend_continuation"))
+    assert mb is not None and mb.setup_type == "trend_continuation"
+
+
+def test_from_raw_v1_setup_type_canonical_uppercase():
+    # a v1 letter normalizes to canonical uppercase regardless of input case
+    mb = MachineBlock.from_raw(_valid_block(setup_type="a"))
+    assert mb is not None and mb.setup_type == "A"
+
+
 # --- compat shim parity with a plain dict (removed in C6) -----------------
 
 def test_no_mapping_shim_C6_enforcement():

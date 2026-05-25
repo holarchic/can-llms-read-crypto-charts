@@ -8,6 +8,7 @@ import argparse
 import sys
 
 from ..db import get_connection
+from ..models import normalize_setup_type
 from .store import ensure_baseline, get_strategy, list_strategies, set_disabled_types
 
 
@@ -34,7 +35,7 @@ def cmd_disable(args):
         set_disabled_types(args.strategy_id, "", conn)
         print(f"Cleared disabled types for strategy '{args.strategy_id}'")
     else:
-        types = ",".join(t.strip().upper() for t in args.types.split(",") if t.strip())
+        types = ",".join(normalize_setup_type(t) for t in args.types.split(",") if t.strip())
         set_disabled_types(args.strategy_id, types, conn)
         print(f"Disabled types for strategy '{args.strategy_id}': {types}")
 

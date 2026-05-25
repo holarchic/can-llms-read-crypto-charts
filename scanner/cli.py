@@ -35,7 +35,7 @@ Examples:
     parser.add_argument("--signals", action="store_true", help="View screener signal history")
     parser.add_argument("--signal-stats", action="store_true", help="Screener performance summary")
     parser.add_argument("--days", type=int, default=7, help="Days of history (default: 7)")
-    parser.add_argument("--type", dest="setup_type", help="Filter by setup type (A-G)")
+    parser.add_argument("--type", dest="setup_type", help="Filter by setup type (v1 A-G or v2 snake_case)")
     parser.add_argument("--sent-only", action="store_true", help="Only show signals sent to LLM")
     parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output")
 

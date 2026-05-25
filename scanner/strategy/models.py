@@ -8,14 +8,16 @@ here.
 
 from dataclasses import dataclass
 
+from scanner.models import normalize_setup_type
+
 
 @dataclass
 class Strategy:
     strategy_id: str
-    disabled_types: str = ""  # comma-separated, e.g. "A,E"
+    disabled_types: str = ""  # comma-separated, e.g. "A,E" (v1) or "gap_fill" (v2)
 
     @property
     def disabled_types_set(self) -> set[str]:
         if not self.disabled_types:
             return set()
-        return {t.strip().upper() for t in self.disabled_types.split(",") if t.strip()}
+        return {normalize_setup_type(t) for t in self.disabled_types.split(",") if t.strip()}

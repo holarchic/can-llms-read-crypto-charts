@@ -155,6 +155,18 @@ class SetupTypeV2(Enum):
     RSI_DIVERGENCE_RANGE = "rsi_divergence_range"
 
 
+# v2 (v10) display names — extend the shared SETUP_NAMES map now that
+# SetupTypeV2 exists, so the alert/store renderers resolve both vocabularies.
+SETUP_NAMES.update({
+    SetupTypeV2.TREND_CONTINUATION: "Trend Continuation",
+    SetupTypeV2.TREND_RECLAIM: "Trend Reclaim",
+    SetupTypeV2.DEVIATION_RECLAIM: "Deviation Reclaim",
+    SetupTypeV2.GAP_FILL: "Gap Fill",
+    SetupTypeV2.SFP_RANGE: "SFP / Range Sweep",
+    SetupTypeV2.RSI_DIVERGENCE_RANGE: "RSI Divergence (Range)",
+})
+
+
 class ConfluenceFactor(Enum):
     """Named confluence factors a v2 detector attaches to a signal (extensible — 5b
     adds its own). ``SetupSignalV2.confluence_count`` is the floor the Chunk-8a
@@ -224,6 +236,18 @@ _MB_REQUIRED_NUMERIC = (
 )
 _MB_VALID_TRIGGERS = ("candle_close_above", "candle_close_below", "limit_at")
 _MB_VALID_SETUP_TYPES = ("A", "B", "C", "D", "E", "F", "G")
+_V2_SETUP_TYPES = frozenset(t.value for t in SetupTypeV2)
+
+
+def normalize_setup_type(raw: str) -> str:
+    """Canonical case for a ``setup_type`` token — the single source of truth for
+    setup_type casing during the v1/v2 cutover: v1 (``A``–``G``) uppercase, v2
+    (snake_case) lowercase. Pure case-canonicalization; does NOT validate
+    membership (``MachineBlock.from_raw`` does that against the union set)."""
+    s = raw.strip()
+    return s.upper() if s.upper() in _MB_VALID_SETUP_TYPES else s.lower()
+
+
 # The full modeled key set — anything outside this goes to `extra` (passthrough).
 _MB_MODELED = (
     "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
@@ -324,8 +348,8 @@ class MachineBlock:
         if "setup_type" in data:
             if not isinstance(data["setup_type"], str):
                 return None
-            st = data["setup_type"].strip().upper()
-            if st not in _MB_VALID_SETUP_TYPES:
+            st = normalize_setup_type(data["setup_type"])
+            if st not in _MB_VALID_SETUP_TYPES and st not in _V2_SETUP_TYPES:
                 return None
             data["setup_type"] = st
         if "confluence_score" in data:
