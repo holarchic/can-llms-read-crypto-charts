@@ -29,6 +29,7 @@ from .setup_validator import REJECT_CONFLUENCE_FLOOR, validate_confirms
 
 __all__ = [
     "EmitDistribution",
+    "LabeledConfirm",
     "FloorReport",
     "CalibrationRecord",
     "emit_distribution",
@@ -38,6 +39,15 @@ __all__ = [
     "recommend_floor",
     "calibration_record",
 ]
+
+
+@dataclass(frozen=True)
+class LabeledConfirm:
+    """A seeded confirm for the floor sweep, with its ground-truth label named (not a positional
+    ``(result, bool)`` tuple): ``over_eager`` True = a confirm the floor SHOULD demote."""
+
+    result: ScanResult
+    over_eager: bool
 
 
 # --- emit distribution (Acceptance #9a) ----------------------------------------
@@ -110,23 +120,24 @@ class FloorReport:
 
 
 def floor_sweep(
-    labeled: list[tuple[ScanResult, bool]],
+    labeled: list[LabeledConfirm],
     floors: list[int],
-    base_config: ScannerConfig | None = None,
+    base_config: ScannerConfig,
 ) -> list[FloorReport]:
     """Score each candidate floor by running the REAL ``validate_confirms`` (single owner of the
     floor rule) on a deep copy of the results, so the harness validates the live gate rather than
-    a re-implementation. ``labeled`` is ``(result, is_over_eager)``; the input is never mutated."""
-    base = base_config or ScannerConfig()
+    a re-implementation. The input is never mutated. ``base_config`` is passed explicitly — the
+    harness never constructs config from ambient env (it stays env-independent / pure); ``replace``
+    only overrides the two fields the gate reads."""
     reports: list[FloorReport] = []
     for floor in floors:
-        cfg = replace(base, setup_version="v2", v2_min_confluence=floor)
-        results = [copy.deepcopy(r) for r, _ in labeled]
+        cfg = replace(base_config, setup_version="v2", v2_min_confluence=floor)
+        results = [copy.deepcopy(lc.result) for lc in labeled]
         validate_confirms(results, cfg)
         oe_demoted = oe_total = legit_demoted = legit_total = 0
-        for (_orig, is_over_eager), res in zip(labeled, results):
+        for lc, res in zip(labeled, results):
             demoted = res.validator_verdict == REJECT_CONFLUENCE_FLOOR
-            if is_over_eager:
+            if lc.over_eager:
                 oe_total += 1
                 oe_demoted += int(demoted)
             else:
@@ -169,9 +180,9 @@ def calibration_record(
     signals: list[BoundarySignal],
     universe_size: int,
     baseline_rate: float,
-    labeled: list[tuple[ScanResult, bool]],
+    labeled: list[LabeledConfirm],
     floors: list[int],
-    base_config: ScannerConfig | None = None,
+    base_config: ScannerConfig,
     tolerance: float = 1.5,
 ) -> CalibrationRecord:
     """Assemble the go/no-go: over-emission guard (#9a) AND a separating confluence floor (#9b).

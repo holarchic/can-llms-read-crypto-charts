@@ -7,6 +7,7 @@ live `setup_validator.validate_confirms` — the harness must validate the real 
 from datetime import datetime, timezone
 
 from scanner.calibration_v2 import (
+    LabeledConfirm,
     calibration_record,
     emit_distribution,
     emit_rate,
@@ -14,6 +15,7 @@ from scanner.calibration_v2 import (
     over_emission_ok,
     recommend_floor,
 )
+from scanner.config import ScannerConfig
 from scanner.models import (
     BoundarySignal,
     ConfluenceFactor,
@@ -27,6 +29,7 @@ from scanner.models import (
 from scanner.setup_validator import REJECT_CONFLUENCE_FLOOR
 
 _FACTORS = list(ConfluenceFactor)  # 10 members → confluence counts 0..10
+_CFG = ScannerConfig()  # base config passed explicitly (the harness never reads env itself)
 
 
 # --- builders ------------------------------------------------------------------
@@ -114,13 +117,13 @@ def test_over_emission_guard():
 
 def _labeled():
     # over-eager: a CONFIRM with a single confluence factor; legit: a CONFIRM with three.
-    over_eager = (_result(n_confluence=1, coin="OE"), True)
-    legit = (_result(n_confluence=3, coin="LG"), False)
+    over_eager = LabeledConfirm(_result(n_confluence=1, coin="OE"), over_eager=True)
+    legit = LabeledConfirm(_result(n_confluence=3, coin="LG"), over_eager=False)
     return [over_eager, legit]
 
 
 def test_floor_sweep_drives_real_validator():
-    reports = {r.floor: r for r in floor_sweep(_labeled(), floors=[1, 2, 3, 4])}
+    reports = {r.floor: r for r in floor_sweep(_labeled(), floors=[1, 2, 3, 4], base_config=_CFG)}
     # floor 1: nothing below 1 → neither demoted
     assert reports[1].over_eager_demoted == 0 and reports[1].legit_demoted == 0
     # floor 2: over-eager (1<2) demoted, legit (3>=2) kept
@@ -133,30 +136,34 @@ def test_floor_sweep_drives_real_validator():
 
 def test_floor_sweep_does_not_mutate_input():
     labeled = _labeled()
-    floor_sweep(labeled, floors=[2, 4])
+    floor_sweep(labeled, floors=[2, 4], base_config=_CFG)
     # the originals are untouched — still CONFIRM, no validator verdict (deep-copied internally)
-    for res, _ in labeled:
-        assert res.decision == "CONFIRM"
-        assert res.validator_verdict is None
+    for lc in labeled:
+        assert lc.result.decision == "CONFIRM"
+        assert lc.result.validator_verdict is None
 
 
 def test_floor_sweep_demotion_carries_verdict():
     # anti-vacuity: a demotion is the REAL validator's verdict, not a re-implementation
-    [report] = floor_sweep([(_result(n_confluence=1), True)], floors=[2])
+    labeled = [LabeledConfirm(_result(n_confluence=1), over_eager=True)]
+    [report] = floor_sweep(labeled, floors=[2], base_config=_CFG)
     assert report.over_eager_demoted == 1
     # confirm the live constant is what the validator stamps (sweep counts that, not a private rule)
     assert REJECT_CONFLUENCE_FLOOR == "REJECT_CONFLUENCE_FLOOR"
 
 
 def test_recommend_floor_smallest_separating():
-    reports = floor_sweep(_labeled(), floors=[1, 2, 3, 4])
+    reports = floor_sweep(_labeled(), floors=[1, 2, 3, 4], base_config=_CFG)
     assert recommend_floor(reports) == 2  # smallest that catches all over-eager, demotes no legit
 
 
 def test_recommend_floor_none_when_inseparable():
     # over-eager and legit both at confluence 2 → no floor separates them
-    labeled = [(_result(n_confluence=2, coin="OE"), True), (_result(n_confluence=2, coin="LG"), False)]
-    assert recommend_floor(floor_sweep(labeled, floors=[1, 2, 3, 4])) is None
+    labeled = [
+        LabeledConfirm(_result(n_confluence=2, coin="OE"), over_eager=True),
+        LabeledConfirm(_result(n_confluence=2, coin="LG"), over_eager=False),
+    ]
+    assert recommend_floor(floor_sweep(labeled, floors=[1, 2, 3, 4], base_config=_CFG)) is None
 
 
 # --- go/no-go record -----------------------------------------------------------
@@ -166,7 +173,7 @@ def test_calibration_record_go():
     signals = [_bsig() for _ in range(10)]  # rate 0.10 over 100
     rec = calibration_record(
         signals, universe_size=100, baseline_rate=0.20,
-        labeled=_labeled(), floors=[1, 2, 3, 4],
+        labeled=_labeled(), floors=[1, 2, 3, 4], base_config=_CFG,
     )
     assert rec.go is True
     assert rec.over_emission_ok is True
@@ -178,17 +185,20 @@ def test_calibration_record_nogo_over_emission():
     signals = [_bsig() for _ in range(40)]  # rate 0.40 over 100, baseline 0.20 → over
     rec = calibration_record(
         signals, universe_size=100, baseline_rate=0.20,
-        labeled=_labeled(), floors=[1, 2, 3, 4],
+        labeled=_labeled(), floors=[1, 2, 3, 4], base_config=_CFG,
     )
     assert rec.go is False
     assert any("over-emission" in r for r in rec.reasons)
 
 
 def test_calibration_record_nogo_no_separating_floor():
-    labeled = [(_result(n_confluence=2, coin="OE"), True), (_result(n_confluence=2, coin="LG"), False)]
+    labeled = [
+        LabeledConfirm(_result(n_confluence=2, coin="OE"), over_eager=True),
+        LabeledConfirm(_result(n_confluence=2, coin="LG"), over_eager=False),
+    ]
     rec = calibration_record(
         [_bsig()], universe_size=100, baseline_rate=0.20,
-        labeled=labeled, floors=[1, 2, 3, 4],
+        labeled=labeled, floors=[1, 2, 3, 4], base_config=_CFG,
     )
     assert rec.go is False
     assert rec.recommended_floor is None
