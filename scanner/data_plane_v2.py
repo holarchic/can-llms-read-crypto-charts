@@ -39,6 +39,19 @@ from scanner.setups_v2 import SetupContext, TFSubstrate, setup_context_from_df
 from scanner.sr_levels import derive_sr_levels
 from scanner.trend_state import derive_trend_state
 
+__all__ = [
+    "CANONICAL_TFS",
+    "SETUP_TFS",
+    "MIN_SUBSTRATE_BARS",
+    "V2_CANDLE_COUNTS",
+    "MarketContextV2",
+    "resample_ohlcv",
+    "fetch_multi_tf",
+    "build_tf_substrate",
+    "build_market_context_v2",
+    "htf_ema_for_chart",
+]
+
 # The 7 canonical timeframe keys, HTF→LTF (Chunk-0 contract).
 CANONICAL_TFS: tuple[str, ...] = ("1mo", "1w", "3d", "1d", "4h", "1h", "15m")
 
@@ -143,7 +156,7 @@ def fetch_multi_tf(
         out[key] = _drop_forming_bar(df)
     for key, (src_key, rule, period_bars) in _RESAMPLE_RULE.items():
         out[key] = resample_ohlcv(out[src_key], rule, counts[key], period_bars)
-    return out
+    return {key: out[key] for key in CANONICAL_TFS}  # canonical HTF→LTF order
 
 
 def build_tf_substrate(df: pd.DataFrame) -> TFSubstrate:

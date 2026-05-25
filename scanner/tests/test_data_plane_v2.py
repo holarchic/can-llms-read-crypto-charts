@@ -138,8 +138,8 @@ def test_fetch_multi_tf_records_normalizes_and_isolates_v1():
 
     out = fetch_multi_tf("BTC", config=cfg, fetcher=mock_fetcher)
 
-    # all 7 canonical keys returned
-    assert set(out) == set(CANONICAL_TFS)
+    # all 7 canonical keys returned, in canonical HTF→LTF order
+    assert list(out) == list(CANONICAL_TFS)
     # native keys requested at the V2 depth with the right ccxt interval (1mo→1M)
     recorded = {interval: count for (_, interval, count) in calls}
     assert recorded == {
