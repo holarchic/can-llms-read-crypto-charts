@@ -11,6 +11,7 @@ from scanner.models import (
     MarketContext,
     SetupSignal,
     SetupType,
+    SpineContext,
     Structure,
 )
 from scanner.scan_queries import signal_distribution, signal_history, signal_stats
@@ -325,10 +326,12 @@ def test_boundary_signal_v1_adapter_preserves_fields():
     """The Option-C v1 adapter copies every v1 field verbatim; v2-only fields empty."""
     s = _make_signal(coin="ETH", confidence=0.55, key_level=3000.0)
     s.max_leverage = 20
-    b = BoundarySignal.from_setup_signal(s)
+    b = BoundarySignal.from_setup_signal(s, "4h")
     for f in ("coin", "setup_type", "direction", "confidence", "key_level",
-              "context", "description", "max_leverage", "score_components", "detected_at"):
+              "description", "max_leverage", "score_components", "detected_at"):
         assert getattr(b, f) == getattr(s, f), f"adapter dropped/changed {f}"
+    # context projects to the version-neutral SpineContext (same field values)
+    assert b.context == SpineContext.from_market_context(s.context)
     assert b.setup_tf == "4h"
     assert b.entry is None and b.hard_stop is None and b.soft_stop is None
     assert b.confluence == frozenset() and b.weakness_flag is False
@@ -339,7 +342,7 @@ def test_save_signals_setupsignal_vs_boundary_byte_identical(db_conn):
     identical row for a v1 SetupSignal and its BoundarySignal lift (equivalence gate)."""
     s = _make_signal(coin="SOL", confidence=0.6, key_level=150.0, current_price=152.0,
                      atr=3.0, structure=Structure.BULLISH, range_bounds=(140.0, 160.0))
-    b = BoundarySignal.from_setup_signal(s)
+    b = BoundarySignal.from_setup_signal(s, "4h")
     save_signals([s], "batchA", 1, db_conn)
     save_signals([b], "batchB", 1, db_conn)
     rows = db_conn.execute("SELECT * FROM signals ORDER BY batch_id").fetchall()

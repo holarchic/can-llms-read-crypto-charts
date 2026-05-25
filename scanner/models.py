@@ -231,22 +231,58 @@ class SetupSignalV2:
 
 
 @dataclass
+class SpineContext:
+    """Version-neutral structural context the stage-2→4 spine consumes — exactly the
+    `MarketContext` fields read downstream of stage 1, projected off the producer's
+    full context so the boundary depends on neither v1 `MarketContext` nor v2
+    `MarketContextV2`. Field names match the v1 `MarketContext` subset, so consumers'
+    `signal.context.X` access is unchanged across the cutover (swings/msbs are dropped
+    — no stage-2→4 consumer reads them)."""
+
+    structure: Structure
+    sr_levels: list[SRLevel]
+    range_bounds: tuple[float, float] | None
+    atr: float
+    current_price: float
+    fib_levels: FibLevels | None
+    vol_percentile: float = 0.0
+    efficiency_ratio: float = 0.0
+    regime: str = ""
+
+    @classmethod
+    def from_market_context(cls, ctx: MarketContext) -> "SpineContext":
+        """Project a v1 `MarketContext` onto the spine context (the v1 mapping)."""
+        return cls(
+            structure=ctx.structure,
+            sr_levels=ctx.sr_levels,
+            range_bounds=ctx.range_bounds,
+            atr=ctx.atr,
+            current_price=ctx.current_price,
+            fib_levels=ctx.fib_levels,
+            vol_percentile=ctx.vol_percentile,
+            efficiency_ratio=ctx.efficiency_ratio,
+            regime=ctx.regime,
+        )
+
+
+@dataclass
 class BoundarySignal:
-    """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Both the v1
-    adapter (`from_setup_signal`) and the v2 producer (Chunk 7b.2b) target this one
-    type, so the LLM → alert → storage → execution spine is version-agnostic. The v1
-    fields mirror `SetupSignal` (same names → consumers unchanged); the v2-only
-    execution/confluence fields are empty on the v1 path and populated by the v2
-    producer. `setup_tf` is the originating timeframe (v1 scans 4H)."""
+    """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Genuinely
+    version-agnostic: both the v1 adapter (`from_setup_signal`) and the v2 producer
+    (Chunk 7b.2b) target this one type, and `context` is the neutral `SpineContext`
+    projection — not v1 `MarketContext` / v2 `MarketContextV2`. The v1 fields mirror
+    `SetupSignal`'s names so consumers are unchanged; the v2-only execution/confluence
+    fields are empty on the v1 path and populated by the v2 producer. `setup_tf` is the
+    originating timeframe, supplied explicitly at the lift/producer site (single owner)."""
 
     coin: str
     setup_type: SetupType | SetupTypeV2
     direction: Direction
     confidence: float
     key_level: float
-    context: MarketContext
+    context: SpineContext
     description: str
-    setup_tf: str = "4h"
+    setup_tf: str
     max_leverage: int | None = None
     score_components: ScoreComponents | None = None
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -259,16 +295,17 @@ class BoundarySignal:
     weakness_flag: bool = False
 
     @classmethod
-    def from_setup_signal(cls, sig: SetupSignal, setup_tf: str = "4h") -> "BoundarySignal":
+    def from_setup_signal(cls, sig: SetupSignal, setup_tf: str) -> "BoundarySignal":
         """Lift a v1 `SetupSignal` into the boundary record (the Option-C v1 adapter):
-        a field-for-field copy of the v1 fields; the v2-only fields stay empty."""
+        v1 fields copy across, `context` projects to `SpineContext`, v2-only fields stay
+        empty. `setup_tf` is supplied by the caller — the lift site owns that decision."""
         return cls(
             coin=sig.coin,
             setup_type=sig.setup_type,
             direction=sig.direction,
             confidence=sig.confidence,
             key_level=sig.key_level,
-            context=sig.context,
+            context=SpineContext.from_market_context(sig.context),
             description=sig.description,
             setup_tf=setup_tf,
             max_leverage=sig.max_leverage,
