@@ -41,13 +41,14 @@ REJECT_CONFLUENCE_FLOOR = "REJECT_CONFLUENCE_FLOOR"
 def validate_confirms(
     results: list[ScanResult],
     config: ScannerConfig,
-    *,
-    verbose: bool = False,
 ) -> list[ScanResult]:
     """Demote each over-eager v2 CONFIRM in place; return the same list.
 
     No-op (returns ``results`` unchanged) on the v1 path and for any non-CONFIRM
-    result. A demotion sets ``decision='REJECT'`` + ``validator_verdict``.
+    result. A demotion sets ``decision='REJECT'`` + ``validator_verdict``. Pure
+    compute — the demotion is surfaced at the pipeline boundary via the summary's
+    ``validator_rejects`` count (``_print_summary``/``_post_scan_ops_log``), not
+    logged here (arch-pass R3).
     """
     if config.setup_version != "v2":
         return results
@@ -57,6 +58,4 @@ def validate_confirms(
         if len(r.setup_signal.confluence) < config.v2_min_confluence:
             r.decision = "REJECT"
             r.validator_verdict = REJECT_CONFLUENCE_FLOOR
-            if verbose:
-                print(f"  setup_validator demoted {r.coin}: {REJECT_CONFLUENCE_FLOOR}")
     return results

@@ -656,8 +656,9 @@ def run_scan(
                                  prefetched_candles=candle_map)
 
     # Post-LLM structural gate (v2 only) — demote over-eager CONFIRMs so they neither
-    # alert (stage 3) nor execute (stage 4). No-op on v1 (SPEC #33).
-    results = validate_confirms(results, cfg, verbose=verbose)
+    # alert (stage 3) nor execute (stage 4). No-op on v1 (SPEC #33). The demotion count
+    # surfaces in the scan summary (`validator_rejects`).
+    results = validate_confirms(results, cfg)
 
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)
