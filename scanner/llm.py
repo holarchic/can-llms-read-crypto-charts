@@ -358,8 +358,11 @@ Setup Quality is the PRIMARY judgment — emit it on every CONFIRM:
   present AND confluence meets the floor. A clean, no-compromise instance.
 - **variant:** the setup is genuinely present with EXACTLY ONE named compromise
   (weaker confluence, a less-clean S/R level, partial acceptance, or a
-  counter-trend context).
+  counter-trend context — a with-trend setup taken against the dominant trend).
 - **Two or more compromises ⇒ REJECT.** Do not CONFIRM.
+- **`gap_fill`** is the dedicated counter-trend vehicle — its counter-trend
+  nature is its definition, NOT a compromise. A textbook `gap_fill` meets all
+  its (counter-trend) preconditions.
 
 LLM Confidence (1-10) is retained but SECONDARY — let the textbook/variant
 binary carry the judgment; do not anchor confidence at a baseline.

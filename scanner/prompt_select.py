@@ -23,13 +23,22 @@ from .llm import (
     load_strategy,
 )
 
-# setup_version → (system prompt, scanner-mode suffix). The ruleset file comes from
-# SETUP_VERSION_REGISTRY; this map owns the version-branched prose. The single place a
-# cutover (or a new version) adds its prompt pair.
-_PROMPT_CONSTANTS: dict[str, tuple[str, str]] = {
+# setup_version → (system prompt, scanner-mode suffix). The per-version PROSE that can't live
+# in `config.SETUP_VERSION_REGISTRY` (which holds the persisted version + ruleset path) without a
+# config→llm cycle. `config.SETUP_VERSION_REGISTRY` stays authoritative for "which versions exist";
+# this map is pinned to it by the assertion below so the two cannot drift.
+_PROMPT_PROSE: dict[str, tuple[str, str]] = {
     "v1": (SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
     "v2": (SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
 }
+
+# Single-source-of-truth guard: every registered version has exactly one prose pair, and vice
+# versa. A version added to one map but not the other fails loudly at import — never silently the
+# wrong cohort at scan time.
+assert set(_PROMPT_PROSE) == set(SETUP_VERSION_REGISTRY), (
+    f"_PROMPT_PROSE versions {sorted(_PROMPT_PROSE)} out of sync with "
+    f"SETUP_VERSION_REGISTRY {sorted(SETUP_VERSION_REGISTRY)}"
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,6 @@ def select_prompt(setup_version: str) -> PromptSpec:
     (fail-closed) — `config` already validates the flag, so a miss here is a programmer error,
     never silently the v1 cohort."""
     prompt_version, ruleset_path = SETUP_VERSION_REGISTRY[setup_version]
-    system_prompt, scanner_suffix = _PROMPT_CONSTANTS[setup_version]
+    system_prompt, scanner_suffix = _PROMPT_PROSE[setup_version]
     system_text = system_prompt.format(ruleset=load_strategy(ruleset_path)) + scanner_suffix
     return PromptSpec(prompt_version=prompt_version, system_text=system_text)

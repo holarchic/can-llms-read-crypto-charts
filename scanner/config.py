@@ -11,11 +11,14 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
 STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
-# The single registry of supported SETUP_VERSIONs → their static prompt artifacts
+# The authoritative registry of supported SETUP_VERSIONs → their static prompt artifacts
 # (persisted prompt_version, ruleset file). The ONE owner of "which versions exist":
-# config validation derives its allowed set from these keys and `prompt_select` reads
-# the artifacts from here — no second version map anywhere. (config is dependency-neutral
-# — it imports nothing from the prompt layer — so this is a safe shared home.)
+# config validation derives its allowed set from these keys (`SETUP_VERSIONS`). config is
+# dependency-neutral (it imports nothing from the prompt layer), so the per-version system-
+# prompt/scanner-suffix PROSE — which lives in `scanner/llm.py` — cannot live here without a
+# config→llm cycle; `prompt_select._PROMPT_PROSE` holds those pairs and asserts at import that
+# its key set equals this registry's, so the two cannot drift (a version added here without a
+# prose pair fails loudly at load, never at scan time).
 SETUP_VERSION_REGISTRY: dict[str, tuple[str, Path]] = {
     "v1": ("9.11", STRATEGY_PATH),
     "v2": ("10.00", STRATEGY_PATH_V2),

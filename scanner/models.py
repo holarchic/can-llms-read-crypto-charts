@@ -413,8 +413,8 @@ class MachineBlock:
         """Normalize a raw machine_block dict, or None on exactly the inputs
         `parse_machine_block` rejects today (structural ∪ business-rule).
 
-        Mirrors scanner/llm.py:205-289 step-for-step. Operates on a copy;
-        never mutates the caller's dict.
+        Mirrors `scanner.llm.parse_machine_block`'s pre-C3 step sequence. Operates
+        on a copy; never mutates the caller's dict.
         """
         if not isinstance(d, dict):
             return None
@@ -499,7 +499,7 @@ class MachineBlock:
         extra = {k: v for k, v in data.items() if k not in _MB_MODELED}
         candidate = cls(**modeled, extra=extra)
 
-        # Final business-rule gate — identical to parse_machine_block:287-289.
+        # Final business-rule gate — identical to the pre-C3 parse_machine_block tail.
         # validate_execution_params is now typed (T-016 C3), so it runs on the
         # constructed candidate. Function-level import: models.py stays
         # app-dependency-free at module load (llm.py imports models.py); this
