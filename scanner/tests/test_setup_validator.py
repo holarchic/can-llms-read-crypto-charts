@@ -26,7 +26,6 @@ from scanner.pipeline import _build_summary, _print_summary
 from scanner.setup_validator import (
     REJECT_CONFLUENCE_FLOOR,
     REJECT_DEGRADED_CONTEXT,
-    REJECT_REGIME,
     REJECT_VALIDATOR_ERROR,
     validate_confirms,
 )
@@ -124,37 +123,22 @@ def test_floor_respects_configured_threshold():
     assert r.validator_verdict == REJECT_CONFLUENCE_FLOOR
 
 
-# --- 2. regime recheck (table-driven, mirrors detector gates) ------------------
-
-
-@pytest.mark.parametrize("setup_type", [SetupTypeV2.SFP_RANGE, SetupTypeV2.RSI_DIVERGENCE_RANGE])
-@pytest.mark.parametrize("regime", ["rotational", "transitional"])
-def test_rotational_setups_pass_in_rotational_regimes(setup_type, regime):
-    r = _run(_result(setup_type=setup_type, n_confluence=2, regime=regime))
-    assert r.is_confirm
-
-
-@pytest.mark.parametrize("setup_type", [SetupTypeV2.SFP_RANGE, SetupTypeV2.RSI_DIVERGENCE_RANGE])
-def test_rotational_setups_demoted_in_trending_regime(setup_type):
-    r = _run(_result(setup_type=setup_type, n_confluence=2, regime="trending"))
-    assert r.validator_verdict == REJECT_REGIME
-
-
-def test_trend_continuation_requires_trending():
-    assert _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, regime="trending")).is_confirm
-    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, regime="rotational"))
-    assert r.validator_verdict == REJECT_REGIME
+# --- 2. regime is NOT a validator gate (pure-integrity recheck only) -----------
 
 
 @pytest.mark.parametrize(
     "setup_type",
-    [SetupTypeV2.TREND_RECLAIM, SetupTypeV2.DEVIATION_RECLAIM, SetupTypeV2.GAP_FILL],
+    [SetupTypeV2.TREND_CONTINUATION, SetupTypeV2.SFP_RANGE, SetupTypeV2.RSI_DIVERGENCE_RANGE,
+     SetupTypeV2.TREND_RECLAIM, SetupTypeV2.DEVIATION_RECLAIM, SetupTypeV2.GAP_FILL],
 )
 @pytest.mark.parametrize("regime", ["trending", "transitional", "rotational"])
-def test_unconstrained_setups_pass_any_regime(setup_type, regime):
-    # absent from _SETUP_REGIMES (their detectors have no regime gate)
+def test_any_setup_passes_any_nonempty_regime(setup_type, regime):
+    # Per arch-pass R1: the validator does NOT re-assert per-setup regime policy (the
+    # detector already hard-gates it; a within-scan recheck is a tautology). Any setup
+    # with a non-empty regime + enough confluence stands.
     r = _run(_result(setup_type=setup_type, n_confluence=2, regime=regime))
     assert r.is_confirm
+    assert r.validator_verdict is None
 
 
 # --- 3. structural-integrity guards (fail-closed) ------------------------------
@@ -182,9 +166,9 @@ def test_empty_regime_demoted():
 # --- 4. floor precedence -------------------------------------------------------
 
 
-def test_floor_takes_precedence_over_regime():
-    # fails BOTH the floor and the regime gate → floor verdict wins (evaluated first)
-    r = _run(_result(setup_type=SetupTypeV2.SFP_RANGE, n_confluence=1, regime="trending"))
+def test_floor_takes_precedence_over_integrity():
+    # fails BOTH the floor and the integrity check → floor verdict wins (evaluated first)
+    r = _run(_result(n_confluence=1, atr=float("nan")))
     assert r.validator_verdict == REJECT_CONFLUENCE_FLOOR
 
 
@@ -270,15 +254,11 @@ def test_print_and_ops_surfaces_show_only_when_nonzero(capsys):
     assert "Validator-rejected" not in capsys.readouterr().out
 
 
-# --- 9. table fidelity (single-owner contract mirrors detectors) ---------------
+# --- 9. config boundary validation ---------------------------------------------
 
 
-def test_setup_regimes_table_mirrors_detector_gates():
-    from scanner.setup_validator import _SETUP_REGIMES
-
-    assert _SETUP_REGIMES[SetupTypeV2.TREND_CONTINUATION] == frozenset({"trending"})
-    assert _SETUP_REGIMES[SetupTypeV2.SFP_RANGE] == frozenset({"rotational", "transitional"})
-    assert _SETUP_REGIMES[SetupTypeV2.RSI_DIVERGENCE_RANGE] == frozenset({"rotational", "transitional"})
-    # the three with no detector regime gate are absent → unconstrained
-    for st in (SetupTypeV2.TREND_RECLAIM, SetupTypeV2.DEVIATION_RECLAIM, SetupTypeV2.GAP_FILL):
-        assert st not in _SETUP_REGIMES
+def test_config_rejects_floor_below_one():
+    with pytest.raises(ValueError, match="v2_min_confluence"):
+        ScannerConfig(v2_min_confluence=0)
+    # 1 is valid (inert), 2 is the active default
+    assert ScannerConfig(v2_min_confluence=1).v2_min_confluence == 1

@@ -20,14 +20,16 @@ Two gates, evaluated floor-first:
    Chunk-8b placeholder ranker). v2-only: the v1 ``confidence`` is the anti-predictive
    screener score (decision #2); the v2 confluence count is a structural measure.
 
-2. **Structural-precondition recheck** — a fail-closed integrity + decoupled
-   regime-contract assertion over the carried ``SpineContext``: non-finite
-   ``confidence`` / ``atr`` ≤0 / ``current_price`` ≤0 / empty ``regime`` →
-   ``REJECT_DEGRADED_CONTEXT``; a regime-gated setup whose ``regime`` is outside its
-   allowed set → ``REJECT_REGIME``. ``_SETUP_REGIMES`` mirrors each detector's actual
-   gate exactly (so the recheck never false-rejects a valid signal — only a degraded /
-   corrupt projection); a setup absent from it is regime-unconstrained, matching a
-   detector with no regime gate. The band/trend-state MA preconditions are NOT
+2. **Structural-precondition recheck** — a fail-closed integrity guard over the
+   carried ``SpineContext``: non-finite ``confidence`` / ``atr`` ≤0 / ``current_price``
+   ≤0 / empty ``regime`` → ``REJECT_DEGRADED_CONTEXT``. This catches a degraded /
+   default-constructed projection that cannot stand behind a CONFIRM (no risk
+   geometry, unclassified regime). It is *pure integrity* — it deliberately does NOT
+   re-assert each setup's regime contract: the detector already hard-gates regime
+   (``setups_v2`` returns ``[]`` on a wrong regime) and ``context.regime`` is fixed at
+   detection, so a per-setup regime recheck would be a within-scan tautology whose only
+   possible effect is a false reject on policy drift — duplicated detector policy, not
+   added safety (arch-pass R1). The band/trend-state MA preconditions are likewise not
    re-checkable here — they are not projected onto ``SpineContext``.
 
 Fail-closed: any unexpected exception while evaluating a CONFIRM demotes it
@@ -41,33 +43,18 @@ Chunk 8b against seeded over-eager confirms (Acceptance #9 b).
 import math
 
 from .config import ScannerConfig
-from .models import BoundarySignal, ScanResult, SetupTypeV2
-from .regime import Regime
+from .models import BoundarySignal, ScanResult
 
 __all__ = [
     "validate_confirms",
     "REJECT_CONFLUENCE_FLOOR",
-    "REJECT_REGIME",
     "REJECT_DEGRADED_CONTEXT",
     "REJECT_VALIDATOR_ERROR",
 ]
 
 REJECT_CONFLUENCE_FLOOR = "REJECT_CONFLUENCE_FLOOR"
-REJECT_REGIME = "REJECT_REGIME"
 REJECT_DEGRADED_CONTEXT = "REJECT_DEGRADED_CONTEXT"
 REJECT_VALIDATOR_ERROR = "REJECT_VALIDATOR_ERROR"
-
-_TREND = frozenset({Regime.TRENDING.value})
-_ROTATION = frozenset({Regime.ROTATIONAL.value, Regime.TRANSITIONAL.value})
-# Single owner of the setup→allowed-regime contract, mirroring each detector's gate
-# (verified against setups_v2.py: trend_continuation gates TRENDING; sfp_range and
-# rsi_divergence_range gate {ROTATIONAL, TRANSITIONAL}; trend_reclaim / deviation_reclaim
-# / gap_fill have no regime gate). A setup absent here is regime-unconstrained.
-_SETUP_REGIMES: dict[SetupTypeV2, frozenset[str]] = {
-    SetupTypeV2.TREND_CONTINUATION: _TREND,
-    SetupTypeV2.SFP_RANGE: _ROTATION,
-    SetupTypeV2.RSI_DIVERGENCE_RANGE: _ROTATION,
-}
 
 
 def _finite_pos(x: float) -> bool:
@@ -88,9 +75,6 @@ def _structural_verdict(sig: BoundarySignal) -> str | None:
         return REJECT_DEGRADED_CONTEXT
     if not ctx.regime:
         return REJECT_DEGRADED_CONTEXT
-    allowed = _SETUP_REGIMES.get(sig.setup_type)
-    if allowed is not None and ctx.regime not in allowed:
-        return REJECT_REGIME
     return None
 
 

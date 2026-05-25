@@ -127,7 +127,7 @@ class ScannerConfig:
     v2_min_confluence: int = DEFAULT_V2_MIN_CONFLUENCE
 
     def __post_init__(self):
-        """Validate the exchange identifier and the setup-version flag."""
+        """Validate the exchange identifier, setup-version flag, and validator floor."""
         if self.exchange not in EXCHANGE_META:
             raise ValueError(
                 f"Unknown exchange: '{self.exchange}'. "
@@ -136,4 +136,11 @@ class ScannerConfig:
         if self.setup_version not in SETUP_VERSIONS:
             raise ValueError(
                 f"Unknown setup_version: '{self.setup_version}'. Supported: {', '.join(SETUP_VERSIONS)}"
+            )
+        # Floor < 1 would silently disable the gate (every signal has ≥1 confluence
+        # factor). 1 is the valid inert setting; 2+ is active. (SPEC #33; arch-pass R1.)
+        if self.v2_min_confluence < 1:
+            raise ValueError(
+                f"v2_min_confluence must be >= 1 (got {self.v2_min_confluence}); "
+                "a floor below 1 silently disables the validator."
             )
