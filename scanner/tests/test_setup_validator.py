@@ -1,10 +1,10 @@
 """Tests for scanner/setup_validator.py — the post-LLM structural gate (Chunk 8a, SPEC #33).
 
 Real `BoundarySignal`/`SpineContext`/`ScanResult` fixtures (no mocks) so the deep path
-runs: the confluence-count floor, the table-driven regime recheck, the fail-closed
-integrity guards, the v1 no-op, the demotion mechanics, the fail-closed exception path,
-and the summary-surface partitioning. The `_SETUP_REGIMES` table is asserted against
-every detector's actual gate.
+runs: the confluence-count floor, the v1 no-op, the demotion mechanics, that the
+validator trusts its typed input (no downstream re-validation of producer-enforced
+preconditions — arch-pass R1/R2), the config-boundary validation, and the
+summary-surface partitioning.
 """
 
 from datetime import datetime, timezone
@@ -23,12 +23,7 @@ from scanner.models import (
     Structure,
 )
 from scanner.pipeline import _build_summary, _print_summary
-from scanner.setup_validator import (
-    REJECT_CONFLUENCE_FLOOR,
-    REJECT_DEGRADED_CONTEXT,
-    REJECT_VALIDATOR_ERROR,
-    validate_confirms,
-)
+from scanner.setup_validator import REJECT_CONFLUENCE_FLOOR, validate_confirms
 
 _FACTORS = list(ConfluenceFactor)  # 10 members → counts 0..10
 
@@ -123,7 +118,7 @@ def test_floor_respects_configured_threshold():
     assert r.validator_verdict == REJECT_CONFLUENCE_FLOOR
 
 
-# --- 2. regime is NOT a validator gate (pure-integrity recheck only) -----------
+# --- 2. validator trusts typed input (no downstream re-validation) -------------
 
 
 @pytest.mark.parametrize(
@@ -132,44 +127,26 @@ def test_floor_respects_configured_threshold():
      SetupTypeV2.TREND_RECLAIM, SetupTypeV2.DEVIATION_RECLAIM, SetupTypeV2.GAP_FILL],
 )
 @pytest.mark.parametrize("regime", ["trending", "transitional", "rotational"])
-def test_any_setup_passes_any_nonempty_regime(setup_type, regime):
+def test_any_setup_passes_any_regime(setup_type, regime):
     # Per arch-pass R1: the validator does NOT re-assert per-setup regime policy (the
-    # detector already hard-gates it; a within-scan recheck is a tautology). Any setup
-    # with a non-empty regime + enough confluence stands.
+    # detector hard-gates it at construction; a within-scan recheck is a tautology).
     r = _run(_result(setup_type=setup_type, n_confluence=2, regime=regime))
     assert r.is_confirm
     assert r.validator_verdict is None
 
 
-# --- 3. structural-integrity guards (fail-closed) ------------------------------
-
-
-@pytest.mark.parametrize("atr", [0.0, -1.0, float("nan")])
-def test_bad_atr_demoted(atr):
-    assert _run(_result(atr=atr)).validator_verdict == REJECT_DEGRADED_CONTEXT
-
-
-@pytest.mark.parametrize("price", [0.0, -5.0, float("nan")])
-def test_bad_price_demoted(price):
-    assert _run(_result(price=price)).validator_verdict == REJECT_DEGRADED_CONTEXT
-
-
-def test_nan_confidence_demoted():
-    assert _run(_result(confidence=float("nan"))).validator_verdict == REJECT_DEGRADED_CONTEXT
-
-
-def test_empty_regime_demoted():
-    # empty regime degrades for an unconstrained setup too (integrity check is universal)
-    assert _run(_result(setup_type=SetupTypeV2.GAP_FILL, regime="")).validator_verdict == REJECT_DEGRADED_CONTEXT
-
-
-# --- 4. floor precedence -------------------------------------------------------
-
-
-def test_floor_takes_precedence_over_integrity():
-    # fails BOTH the floor and the integrity check → floor verdict wins (evaluated first)
-    r = _run(_result(n_confluence=1, atr=float("nan")))
-    assert r.validator_verdict == REJECT_CONFLUENCE_FLOOR
+@pytest.mark.parametrize(
+    "ctx_kwargs",
+    [{"atr": float("nan")}, {"atr": 0.0}, {"price": 0.0}, {"confidence": float("nan")}, {"regime": ""}],
+)
+def test_degraded_context_is_not_revalidated(ctx_kwargs):
+    # Per arch-pass R2: the structural preconditions (finite ATR/price, regime) are
+    # enforced at the detector/producer boundary; the validator trusts its typed input
+    # and re-checks NONE of them — only the confluence-count floor gates. A degraded
+    # context with sufficient confluence is preserved (pins the no-re-validation call).
+    r = _run(_result(n_confluence=3, **ctx_kwargs))
+    assert r.is_confirm
+    assert r.validator_verdict is None
 
 
 # --- 5. v1 untouched + non-CONFIRM untouched -----------------------------------
@@ -186,18 +163,6 @@ def test_non_confirm_results_untouched(decision):
     r = _run(_result(decision=decision, n_confluence=1))  # would fail floor if CONFIRM
     assert r.decision == decision
     assert r.validator_verdict is None
-
-
-# --- 6. fail-closed on unexpected exception ------------------------------------
-
-
-def test_exception_demotes_fail_closed(capsys):
-    r = _result(n_confluence=2)
-    r.setup_signal.confluence = None  # len(None) raises inside _floor_verdict
-    out = _run(r)
-    assert out.decision == "REJECT"
-    assert out.validator_verdict == REJECT_VALIDATOR_ERROR
-    assert "setup_validator error on BTC" in capsys.readouterr().out
 
 
 # --- 7. batch + demotion mechanics ---------------------------------------------
