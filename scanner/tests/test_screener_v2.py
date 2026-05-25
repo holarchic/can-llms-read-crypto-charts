@@ -165,6 +165,7 @@ def test_to_boundary_maps_v2_fields():
     assert isinstance(b.context, SpineContext)
     assert all(isinstance(lvl, SpineLevel) for lvl in b.context.sr_levels)
     assert b.context.fib_levels is None                  # v2 carries no fib
+    assert b.context.vol_percentile is None              # unknown → NULL, not a fake 0.0
     assert b.context.regime == "trending"
 
 
@@ -264,6 +265,37 @@ def test_screen_v2_disabled_type_never_lifts(conn, monkeypatch):
     )
     assert len(survivors) == 1
     assert survivors[0].setup_type is SetupTypeV2.TREND_CONTINUATION  # gap_fill dropped pre-rank
+
+
+def test_screen_v2_bad_coin_isolated(conn, monkeypatch):
+    """A detector/lift failure on one coin is logged + skipped, never aborts the scan or
+    half-emits — the per-coin production is one guarded, atomically-committed unit."""
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+
+    def boom_or_sig(ctx2):
+        if ctx2.coin == "BAD":
+            raise RuntimeError("detector blew up")
+        return [("4h", _v2sig(n_confluence=2))]
+
+    monkeypatch.setattr(screener_v2, "_run_detectors", boom_or_sig)
+    survivors, bundle = screen_v2(
+        ["BAD", "BTC"], {"BAD": 5, "BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
+    )
+    assert [b.coin for b in survivors] == ["BTC"]      # BTC still emits — scan not aborted
+    assert "BAD" not in bundle and "BTC" in bundle     # the bad coin is not even bundled
+
+
+def test_select_one_per_coin_dedup_error_isolated(conn, monkeypatch):
+    """A per-coin is_duplicate failure skips that coin, never the whole selection."""
+    def maybe_boom(coin, *a, **k):
+        if coin == "BAD":
+            raise RuntimeError("db down for this coin")
+        return False
+
+    monkeypatch.setattr(screener_v2, "is_duplicate", maybe_boom)
+    cands = [_bsig(coin="BAD", confidence=0.9), _bsig(coin="ETH", confidence=0.7)]
+    out = _select_one_per_coin(cands, ScannerConfig(setup_version="v2"), conn, verbose=False)
+    assert [b.coin for b in out] == ["ETH"]            # BAD skipped, ETH still selected
 
 
 def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):

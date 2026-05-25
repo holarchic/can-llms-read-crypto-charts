@@ -258,7 +258,9 @@ class SpineContext:
     top-level shape is producer-neutral (the spine holds no whole v1 `MarketContext`)
     and `sr_levels` is a `SpineLevel` list — the `{price, degraded}` pair the chart
     consumer reads, which both the v1 `SRLevel` and the v2 `SRLevelV2` project onto.
-    `fib_levels` is `| None` (v2 passes None). Field names match the v1 `MarketContext`
+    `fib_levels` and `vol_percentile` are `| None` — v2 has no fib swing / volume-
+    percentile source, so it carries None rather than a fabricated `0.0` (an unknown is
+    NULL, not an observed zeroth percentile). Field names match the v1 `MarketContext`
     subset, so consumers' `signal.context.X` access is unchanged across the cutover
     (swings/msbs dropped — no stage-2→4 consumer reads them)."""
 
@@ -268,7 +270,7 @@ class SpineContext:
     atr: float
     current_price: float
     fib_levels: FibLevels | None
-    vol_percentile: float = 0.0
+    vol_percentile: float | None = 0.0
     efficiency_ratio: float = 0.0
     regime: str = ""
 

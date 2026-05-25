@@ -11,20 +11,15 @@ from .analysis import PROMPT_VERSION, analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
-from .data_plane_v2 import fetch_multi_tf, htf_ema_for_chart
+from .data_plane_v2 import fetch_multi_tf
 from .db import get_connection
 from .indicators import build_context
 from .models import BoundarySignal, ExecutionRequest, ScanResult
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
-from .screener_v2 import screen_v2
+from .screener_v2 import chart_inputs, screen_v2
 from .strategy.store import get_strategy
-
-# Per-chart next-HTF anchor EMA for the v2 enriched charts (Chunk 7b.2b). The renderer
-# skips a line whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d chart),
-# so an absent/all-NaN entry is graceful, not an error.
-_CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h"}
 
 
 def _select_with_diversity(
@@ -208,21 +203,14 @@ def stage1_screen(
 def _v2_chart_inputs(
     signal: BoundarySignal, prefetched_candles: dict | None, config: ScannerConfig,
 ) -> tuple[dict, dict]:
-    """v2 enriched-chart inputs: the 1d/4h/1h closed-bar frames the detectors used (from
-    the stage-1 bundle) plus the next-HTF 200EMA aligned onto each chart's index, so the
-    enriched charts render from the SAME frames as detection (no refetch divergence).
-    Defensive refetch if a coin is unexpectedly absent — the producer bundles every
-    emitted coin, so this only guards a direct/coin-filter call."""
+    """Resolve the coin's stage-1 bundle entry (defensive refetch if absent — the
+    producer bundles every emitted coin) and hand it to the producer-owned
+    `screener_v2.chart_inputs`, which owns the frame/HTF-EMA selection. Stage 2 holds
+    only the bundle-miss I/O recovery, not the bundle's internal shape."""
     candles = (prefetched_candles or {}).get(signal.coin)
     if candles is None:
         candles = fetch_multi_tf(signal.coin, config)
-    candle_sets = {tf: candles[tf] for tf in ["1d", "4h", "1h"] if tf in candles}
-    htf_emas = {}
-    for tf, frame in candle_sets.items():
-        htf = _CHART_HTF.get(tf)
-        if htf and htf in candles:
-            htf_emas[tf] = htf_ema_for_chart(candles[htf], frame.index)
-    return candle_sets, htf_emas
+    return chart_inputs(candles)
 
 
 def _analyze_one(

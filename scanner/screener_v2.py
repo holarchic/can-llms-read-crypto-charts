@@ -29,6 +29,7 @@ from .data_plane_v2 import (
     MarketContextV2,
     build_market_context_v2,
     fetch_multi_tf,
+    htf_ema_for_chart,
 )
 from .models import (
     SETUP_NAMES,
@@ -59,6 +60,11 @@ _TF_RANK: dict[str, int] = {"1d": 3, "4h": 2, "1h": 1, "15m": 0}
 
 # Confluence count at which the deterministic screener rank saturates (pre-8b).
 _SCORE_SATURATION = 5
+
+# Per-chart next-HTF anchor EMA for the v2 enriched charts. The renderer skips a line
+# whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d chart), so an
+# absent/all-NaN entry is graceful, not an error.
+_CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h"}
 
 
 def _latest(series: pd.Series) -> float:
@@ -162,8 +168,8 @@ def _to_boundary(
         range_bounds=sc.range_bounds,
         atr=sc.atr,
         current_price=sc.current_price,
-        fib_levels=None,  # v2 has no fib swing — the spine carries None
-        vol_percentile=0.0,
+        fib_levels=None,        # v2 has no fib swing — the spine carries None
+        vol_percentile=None,    # no v2 volume-percentile source — NULL, not a fake 0.0
         efficiency_ratio=sc.efficiency_ratio,
         regime=sub.regime.regime.value,
     )
@@ -211,15 +217,20 @@ def _select_one_per_coin(
 
     survivors: list[BoundarySignal] = []
     for coin, cs in by_coin.items():
-        cs.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf], b.setup_type.value))
-        for c in cs:
-            if is_duplicate(coin, c.setup_type.value, c.direction.value,
-                            config.dedup_hours, conn, exchange=config.exchange):
-                if verbose:
-                    print(f"  {coin} {c.setup_type.value} — skipped (duplicate)")
-                continue
-            survivors.append(c)
-            break
+        cs.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf],
+                               b.setup_type.value, b.direction.value, _round_sig(b.key_level)))
+        try:
+            for c in cs:
+                if is_duplicate(coin, c.setup_type.value, c.direction.value,
+                                config.dedup_hours, conn, exchange=config.exchange):
+                    if verbose:
+                        print(f"  {coin} {c.setup_type.value} — skipped (duplicate)")
+                    continue
+                survivors.append(c)
+                break
+        except Exception as e:  # a per-coin dedup failure skips that coin, never the scan (matches v1)
+            if verbose:
+                print(f"  {coin} — selection error: {e}")
     return survivors
 
 
@@ -243,28 +254,50 @@ def screen_v2(
     bundles: dict[str, dict[str, pd.DataFrame]] = {}
     candidates: list[BoundarySignal] = []
     for coin in coins:
+        # The whole per-coin production (fetch → build → detectors → lift) is one guarded
+        # unit, committed atomically: any failure logs + skips THIS coin and never aborts
+        # the scan or half-emits (matches v1 `_screen_v1`'s per-coin isolation).
         try:
             candles = fetch_multi_tf(coin, config)
             ctx2 = build_market_context_v2(coin, candles)
-        except Exception as e:  # one bad coin never aborts the scan
+            leverage = leverage_map.get(coin)
+            coin_candidates = [
+                _to_boundary(coin, setup_tf, sig, ctx2, leverage)
+                for setup_tf, sig in _run_detectors(ctx2)
+                if sig.setup_type.value not in disabled  # disabled_types vocab is case-normalized
+            ]
+        except Exception as e:
             if verbose:
                 print(f"  {coin} — error: {e}")
             continue
         bundles[coin] = candles
-        leverage = leverage_map.get(coin)
-        for setup_tf, sig in _run_detectors(ctx2):
-            if sig.setup_type.value in disabled:  # disabled_types vocab is case-normalized
-                continue
-            candidates.append(_to_boundary(coin, setup_tf, sig, ctx2, leverage))
+        candidates.extend(coin_candidates)
 
     # (2) drop 15m-origin setups — deferred to Chunk 8 (no 15m chart in the LLM bundle).
     candidates = [c for c in candidates if c.setup_tf != "15m"]
     # (3) cross-TF dedup → (4) one historically-fresh signal per coin.
     survivors = _select_one_per_coin(_dedup_cross_tf(candidates), config, conn, verbose)
-    # (5) global deterministic order (score desc, higher TF, then stable name keys).
-    survivors.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf], b.coin, b.setup_type.value))
+    # (5) global deterministic order — score desc, higher TF, then stable name/dir/level
+    # keys so the cap is reproducible regardless of upstream insertion order.
+    survivors.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf],
+                                  b.coin, b.setup_type.value, b.direction.value, _round_sig(b.key_level)))
 
     # Prune the bundle to coins that survived — the only frames stage 2 will chart.
     survivor_coins = {b.coin for b in survivors}
     bundle = {coin: bundles[coin] for coin in survivor_coins}
     return survivors, bundle
+
+
+def chart_inputs(candles: dict[str, pd.DataFrame]) -> tuple[dict, dict]:
+    """The v2 enriched-chart inputs from a coin's closed-bar candle dict (a `screen_v2`
+    bundle entry): the 1d/4h/1h frames the detectors used + the next-HTF 200EMA aligned
+    onto each chart's index, so enriched charts render from the SAME frames as detection.
+    Producer-owned so stage 2 consumes one helper rather than reaching into bundle shape.
+    Pure; the renderer skips a line whose HTF frame is too short to seed the 200EMA."""
+    candle_sets = {tf: candles[tf] for tf in ("1d", "4h", "1h") if tf in candles}
+    htf_emas: dict[str, pd.Series] = {}
+    for tf, frame in candle_sets.items():
+        htf = _CHART_HTF.get(tf)
+        if htf and htf in candles:
+            htf_emas[tf] = htf_ema_for_chart(candles[htf], frame.index)
+    return candle_sets, htf_emas
