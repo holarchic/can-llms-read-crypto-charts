@@ -367,7 +367,7 @@ _MB_MODELED = (
     "direction", "confidence", "leverage",
     "tp2", "tp2_exit_pct",
     "entry_trigger", "entry_trigger_price", "invalidation_price", "expiry_candles",
-    "setup_type", "confluence_score", "confirming_event",
+    "setup_type", "confluence_score", "confirming_event", "setup_quality",
 )
 
 
@@ -401,6 +401,11 @@ class MachineBlock:
     setup_type: str | None = None
     confluence_score: int | None = None
     confirming_event: str | None = None
+    # v2 (the framework) LLM primary judgment — "textbook" | "variant" (SPEC #35). Additive/optional:
+    # v1 never emits it. Captured-not-gated (persisted for Chunk-8b calibration; the setup_validator
+    # floors confluence count, not this field), so from_raw coerces an invalid value to None rather
+    # than rejecting the block (unlike the capital-path fields).
+    setup_quality: str | None = None
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -479,6 +484,16 @@ class MachineBlock:
             if not 10 <= len(ev) <= 200:
                 return None
             data["confirming_event"] = ev
+        if "setup_quality" in data:
+            # Lenient: a captured-not-gated research field must never downgrade an otherwise-valid
+            # CONFIRM to machine_block=None over a typo. Drop an invalid value (neither modeled nor
+            # extra); the raw analysis_text is persisted for forensics. Strict-reject stays for the
+            # capital-path fields above (SPEC #35; plan-review R1).
+            sq = data["setup_quality"]
+            if isinstance(sq, str) and sq.strip().lower() in ("textbook", "variant"):
+                data["setup_quality"] = sq.strip().lower()
+            else:
+                del data["setup_quality"]
 
         modeled = {k: data[k] for k in _MB_MODELED if k in data}
         extra = {k: v for k, v in data.items() if k not in _MB_MODELED}
@@ -515,7 +530,7 @@ class MachineBlock:
         for fld in (
             "tp2", "tp2_exit_pct", "entry_trigger", "entry_trigger_price",
             "invalidation_price", "expiry_candles", "setup_type",
-            "confluence_score", "confirming_event",
+            "confluence_score", "confirming_event", "setup_quality",
         ):
             v = getattr(self, fld)
             if v is not None:

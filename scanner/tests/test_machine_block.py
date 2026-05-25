@@ -321,6 +321,41 @@ def test_from_raw_v1_setup_type_canonical_uppercase():
     assert mb is not None and mb.setup_type == "A"
 
 
+# --- setup_quality (SPEC #35, v2 primary judgment; additive/optional) ------
+
+@pytest.mark.parametrize("val", ["textbook", "variant"])
+def test_setup_quality_round_trips(val):
+    # the v2 primary judgment parses + round-trips through to_raw
+    mb = MachineBlock.from_raw(_valid_block(setup_quality=val))
+    assert mb is not None and mb.setup_quality == val
+    assert mb.to_raw()["setup_quality"] == val
+    assert MachineBlock.from_raw(mb.to_raw()) == mb  # idempotent
+
+
+def test_setup_quality_case_insensitive():
+    # "Textbook" / "VARIANT" canonicalize to lowercase
+    mb = MachineBlock.from_raw(_valid_block(setup_quality="Textbook"))
+    assert mb is not None and mb.setup_quality == "textbook"
+
+
+@pytest.mark.parametrize("bad", ["strong", "", 7, None, "textbookish"])
+def test_setup_quality_invalid_coerced_not_rejected(bad):
+    # LENIENT-coerce (SPEC #35): an invalid value on this captured-not-gated field must NOT
+    # downgrade an otherwise-valid CONFIRM to None — the block survives, the field drops to None,
+    # and to_raw omits it (distinct from the strict-reject capital-path fields).
+    mb = MachineBlock.from_raw(_valid_block(setup_quality=bad))
+    assert mb is not None
+    assert mb.setup_quality is None
+    assert "setup_quality" not in mb.to_raw()
+
+
+def test_v1_block_byte_identical_without_setup_quality():
+    # a v1 block (no setup_quality emitted) round-trips with no new key — the byte-identical guarantee
+    mb = MachineBlock.from_raw(_valid_block())
+    assert mb is not None and mb.setup_quality is None
+    assert "setup_quality" not in mb.to_raw()
+
+
 # --- compat shim parity with a plain dict (removed in C6) -----------------
 
 def test_no_mapping_shim_C6_enforcement():
