@@ -30,6 +30,7 @@ def is_duplicate(
     exchange: str = "hyperliquid",
 ) -> bool:
     """Check if the same setup was already detected within `hours` hours."""
+    setup_type = normalize_setup_type(setup_type)  # canonical casing at the seam
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
