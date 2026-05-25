@@ -5,8 +5,9 @@ The `SETUP_VERSION=v2` half of stage 1: per coin, assemble the multi-TF
 setup TF, and lift the resulting `SetupSignalV2`s into the version-neutral
 `BoundarySignal` the stage-2→4 spine consumes (Option C — no lossy down-conversion to
 the v1 type). Selection is deterministic (no shuffle / diversity penalty, unlike v1):
-drop 15m-origin candidates, collapse the same setup across adjacent TFs, then pick one
-historically-fresh signal per coin and order by the screener score.
+collapse the same setup across adjacent TFs, then pick one historically-fresh signal
+per coin and order by the screener score (all four setup TFs incl. 15m — the 15m chart
+is in the LLM bundle as of Chunk 8 / 8.2).
 
 `pipeline.stage1_screen` dispatches here on `config.setup_version == "v2"`; v1 stays
 byte-identical on its own path. The returned bundle is the per-coin closed-bar candle
@@ -64,7 +65,7 @@ _SCORE_SATURATION = 5
 # Per-chart next-HTF anchor EMA for the v2 enriched charts. The renderer skips a line
 # whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d chart), so an
 # absent/all-NaN entry is graceful, not an error.
-_CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h"}
+_CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h", "15m": "1h"}
 
 
 def _latest(series: pd.Series) -> float:
@@ -286,11 +287,10 @@ def screen_v2(
         from .alerts import send_errors_alert
         send_errors_alert(f"v2 screener: all {errors} coins failed in stage 1 — producer likely broken", config)
 
-    # (2) drop 15m-origin setups — deferred to Chunk 8 (no 15m chart in the LLM bundle).
-    candidates = [c for c in candidates if c.setup_tf != "15m"]
-    # (3) cross-TF dedup → (4) one historically-fresh signal per coin.
+    # (2) cross-TF dedup → (3) one historically-fresh signal per coin. 15m-origin
+    # setups flow through — the 15m chart is in the LLM bundle as of Chunk 8 (8.2).
     survivors = _select_one_per_coin(_dedup_cross_tf(candidates), config, conn, verbose)
-    # (5) global deterministic order — score desc, higher TF, then stable name/dir/level
+    # (4) global deterministic order — score desc, higher TF, then stable name/dir/level
     # keys so the cap is reproducible regardless of upstream insertion order.
     survivors.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf],
                                   b.coin, b.setup_type.value, b.direction.value, _round_sig(b.key_level)))
@@ -303,11 +303,11 @@ def screen_v2(
 
 def chart_inputs(candles: dict[str, pd.DataFrame]) -> tuple[dict, dict]:
     """The v2 enriched-chart inputs from a coin's closed-bar candle dict (a `screen_v2`
-    bundle entry): the 1d/4h/1h frames the detectors used + the next-HTF 200EMA aligned
+    bundle entry): the 1d/4h/1h/15m frames the detectors used + the next-HTF 200EMA aligned
     onto each chart's index, so enriched charts render from the SAME frames as detection.
     Producer-owned so stage 2 consumes one helper rather than reaching into bundle shape.
     Pure; the renderer skips a line whose HTF frame is too short to seed the 200EMA."""
-    candle_sets = {tf: candles[tf] for tf in ("1d", "4h", "1h") if tf in candles}
+    candle_sets = {tf: candles[tf] for tf in ("1d", "4h", "1h", "15m") if tf in candles}
     htf_emas: dict[str, pd.Series] = {}
     for tf, frame in candle_sets.items():
         htf = _CHART_HTF.get(tf)

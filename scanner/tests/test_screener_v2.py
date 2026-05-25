@@ -3,7 +3,7 @@
 The detectors' firing behaviour is owned by test_setups_v2*; here we test the NEW
 producer/selection/lift code: deterministic scoring, the lower-TF-reclaim ladder
 (15m floor fail-closed), the v2→BoundarySignal lift, cross-TF dedup, one-per-coin
-historical dedup, 15m-origin suppression, disabled-type filtering, the score-ordered
+historical dedup, 15m-origin setups flowing through (Chunk 8/8.2), disabled-type filtering, the score-ordered
 bundle, and the v2 enriched-chart inputs. Synthetic, fixed-date fixtures; the network
 fetch is monkeypatched, but `build_market_context_v2` runs for real.
 """
@@ -229,11 +229,12 @@ def _patch_pipeline(monkeypatch, run_map):
     monkeypatch.setattr(screener_v2, "_run_detectors", lambda ctx2: run_map.get(ctx2.coin, []))
 
 
-def test_screen_v2_drops_15m_origin(conn, monkeypatch):
+def test_screen_v2_keeps_15m_origin(conn, monkeypatch):
+    # 15m-origin setups are NO LONGER dropped (Chunk 8/8.2 — the 15m chart is in the LLM
+    # bundle): the higher-confluence 15m setup flows through selection and wins per-coin.
     _patch_pipeline(monkeypatch, {"BTC": [("15m", _v2sig(n_confluence=4)), ("4h", _v2sig(n_confluence=2))]})
     survivors, bundle = screen_v2(["BTC"], {"BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False)
-    assert all(b.setup_tf != "15m" for b in survivors)
-    assert len(survivors) == 1 and survivors[0].setup_tf == "4h"
+    assert [b.setup_tf for b in survivors] == ["15m"]
 
 
 def test_screen_v2_order_and_bundle(conn, monkeypatch):
@@ -343,7 +344,7 @@ def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
     survivors, bundle = screen_v2(["BTC"], {"BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False)
     assert isinstance(survivors, list)
     for b in survivors:
-        assert b.setup_tf != "15m" and isinstance(b.setup_type, SetupTypeV2)
+        assert isinstance(b.setup_type, SetupTypeV2)
         assert b.coin in bundle
 
 
@@ -355,10 +356,11 @@ def test_v2_chart_inputs_align_next_htf_ema():
     sig = _bsig(coin="BTC")
     candle_sets, htf_emas = _v2_chart_inputs(sig, {"BTC": candles}, ScannerConfig(setup_version="v2"))
 
-    # the 1d/4h/1h detector frames feed the charts
-    assert set(candle_sets) == {"1d", "4h", "1h"}
+    # the 1d/4h/1h/15m detector frames feed the charts (15m added Chunk 8/8.2)
+    assert set(candle_sets) == {"1d", "4h", "1h", "15m"}
     # each HTF anchor EMA is aligned exactly onto its chart's index (renderer gates on equals)
-    for tf in ("4h", "1h"):
+    for tf in ("4h", "1h", "15m"):
         assert htf_emas[tf].index.equals(candle_sets[tf].index)
-    # the 4h-200 EMA on the 1h chart has real (non-NaN) values
+    # the next-HTF 200 EMA has real (non-NaN) values: 4h-200 on 1h, 1h-200 on 15m
     assert htf_emas["1h"].notna().any()
+    assert htf_emas["15m"].notna().any()

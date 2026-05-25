@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.charts import cleanup_charts, generate_chart
+from scanner.charts import cleanup_charts, generate_chart, generate_charts_for_signal
 from scanner.indicators import build_context
 from scanner.ma_indicators import compute_stoch_rsi
 from scanner.models import Direction, SetupSignal, SetupType
@@ -206,3 +206,21 @@ class TestEnrichmentRender:
         path = generate_chart(long_df, "TEST", "4H", signal, output_dir=tmp_charts, enrich=True)
         assert path.exists()
         assert path.stat().st_size > 1000
+
+
+class TestGenerateChartsForSignal:
+    """The multi-chart bundle (tf_order) — renders whichever of 1d/4h/1h/15m are present."""
+
+    def test_renders_15m_when_present(self, signal, capture_plot, tmp_charts):
+        # v2 bundle: all four frames → four charts, HTF→LTF with 15m last (Chunk 8/8.2).
+        df = _osc_df(320)
+        candle_sets = {tf: df for tf in ("1d", "4h", "1h", "15m")}
+        paths = generate_charts_for_signal(signal, candle_sets, output_dir=tmp_charts)
+        assert [p.stem.split("_")[1] for p in paths] == ["1D", "4H", "1H", "15M"]
+
+    def test_v1_shape_omits_15m(self, signal, capture_plot, tmp_charts):
+        # v1 blind path passes only 1d/4h/1h → 15m never renders (byte-identical to pre-8.2).
+        df = _osc_df(320)
+        candle_sets = {tf: df for tf in ("1d", "4h", "1h")}
+        paths = generate_charts_for_signal(signal, candle_sets, output_dir=tmp_charts)
+        assert [p.stem.split("_")[1] for p in paths] == ["1D", "4H", "1H"]
