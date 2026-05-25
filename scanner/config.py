@@ -11,10 +11,16 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
 STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
-# Canonical SETUP_VERSION set — the one source of the supported versions. Validated at
-# the config boundary here; mapped to per-version prompt artifacts in `prompt_select`
-# (which asserts its registry keys match this set, so the two cannot drift).
-SETUP_VERSIONS = ("v1", "v2")
+# The single registry of supported SETUP_VERSIONs → their static prompt artifacts
+# (persisted prompt_version, ruleset file). The ONE owner of "which versions exist":
+# config validation derives its allowed set from these keys and `prompt_select` reads
+# the artifacts from here — no second version map anywhere. (config is dependency-neutral
+# — it imports nothing from the prompt layer — so this is a safe shared home.)
+SETUP_VERSION_REGISTRY: dict[str, tuple[str, Path]] = {
+    "v1": ("9.11", STRATEGY_PATH),
+    "v2": ("10.00", STRATEGY_PATH_V2),
+}
+SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 DB_PATH = DATA_DIR / "scanner.db"
