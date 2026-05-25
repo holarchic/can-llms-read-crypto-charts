@@ -34,11 +34,13 @@ _PROMPT_PROSE: dict[str, tuple[str, str]] = {
 
 # Single-source-of-truth guard: every registered version has exactly one prose pair, and vice
 # versa. A version added to one map but not the other fails loudly at import — never silently the
-# wrong cohort at scan time.
-assert set(_PROMPT_PROSE) == set(SETUP_VERSION_REGISTRY), (
-    f"_PROMPT_PROSE versions {sorted(_PROMPT_PROSE)} out of sync with "
-    f"SETUP_VERSION_REGISTRY {sorted(SETUP_VERSION_REGISTRY)}"
-)
+# wrong cohort at scan time. An explicit raise (not `assert`, which `python -O` strips) so the
+# invariant holds in every runtime.
+if set(_PROMPT_PROSE) != set(SETUP_VERSION_REGISTRY):
+    raise RuntimeError(
+        f"_PROMPT_PROSE versions {sorted(_PROMPT_PROSE)} out of sync with "
+        f"SETUP_VERSION_REGISTRY {sorted(SETUP_VERSION_REGISTRY)}"
+    )
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ class PromptSpec:
 def select_prompt(setup_version: str) -> PromptSpec:
     """Resolve the prompt artifacts for ``setup_version`` — the persisted version + ruleset
     file from `config.SETUP_VERSION_REGISTRY`, the system-prompt/scanner-suffix pair from
-    `_PROMPT_CONSTANTS`.
+    `_PROMPT_PROSE`.
 
     `load_strategy` injects the per-version ruleset into the per-version system prompt, then
     appends the per-version scanner-mode suffix. An unknown version raises `KeyError`
