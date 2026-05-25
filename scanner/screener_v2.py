@@ -62,9 +62,10 @@ _TF_RANK: dict[str, int] = {"1d": 3, "4h": 2, "1h": 1, "15m": 0}
 # Confluence count at which the deterministic screener rank saturates (pre-8b).
 _SCORE_SATURATION = 5
 
-# Per-chart next-HTF anchor EMA for the v2 enriched charts. The renderer skips a line
-# whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d chart), so an
-# absent/all-NaN entry is graceful, not an error.
+# The single owner of the v2 chartable-TF set: keys = the frames charted (ordered
+# HTF→LTF; `chart_inputs` selects exactly these), values = each frame's next-HTF anchor
+# EMA. The renderer skips a line whose HTF frame is too short to seed the 200EMA (e.g.
+# 1w on a 1d chart), so an absent/all-NaN entry is graceful, not an error.
 _CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h", "15m": "1h"}
 
 
@@ -303,11 +304,14 @@ def screen_v2(
 
 def chart_inputs(candles: dict[str, pd.DataFrame]) -> tuple[dict, dict]:
     """The v2 enriched-chart inputs from a coin's closed-bar candle dict (a `screen_v2`
-    bundle entry): the 1d/4h/1h/15m frames the detectors used + the next-HTF 200EMA aligned
-    onto each chart's index, so enriched charts render from the SAME frames as detection.
-    Producer-owned so stage 2 consumes one helper rather than reaching into bundle shape.
-    Pure; the renderer skips a line whose HTF frame is too short to seed the 200EMA."""
-    candle_sets = {tf: candles[tf] for tf in ("1d", "4h", "1h", "15m") if tf in candles}
+    bundle entry): the chartable frames (HTF→LTF) the detectors used + the next-HTF 200EMA
+    aligned onto each chart's index, so enriched charts render from the SAME frames as
+    detection. `_CHART_HTF` is the single owner of the chartable-TF set (its keys, ordered
+    1d/4h/1h/15m) + each TF's HTF anchor (its values); both the frame selection and the
+    anchor derive from it. Producer-owned so stage 2 consumes one helper rather than
+    reaching into bundle shape. Pure; renderer skips a line whose HTF frame is too short
+    to seed the 200EMA."""
+    candle_sets = {tf: candles[tf] for tf in _CHART_HTF if tf in candles}
     htf_emas: dict[str, pd.Series] = {}
     for tf, frame in candle_sets.items():
         htf = _CHART_HTF.get(tf)

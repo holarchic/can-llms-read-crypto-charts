@@ -216,20 +216,22 @@ def generate_charts_for_signal(
     chart_paths = []
     htf_emas = htf_emas or {}
 
-    # Order: HTF to LTF
-    tf_order = ["1d", "4h", "1h", "15m"]
-    for tf in tf_order:
-        if tf in candle_sets:
-            path = generate_chart(
-                candle_sets[tf],
-                signal.coin,
-                tf.upper(),
-                signal,
-                output_dir=output_dir,
-                enrich=enrich,
-                htf_ema=htf_emas.get(tf),
-            )
-            chart_paths.append(path)
+    # Render exactly what the producer supplied, in the order it supplied it (the
+    # caller builds `candle_sets` HTF→LTF: v2 `screener_v2.chart_inputs`, v1
+    # `pipeline._analyze_one`). The renderer owns no TF whitelist — the chartable-TF
+    # set is the producer's decision, so a TF the producer intends is never silently
+    # dropped here.
+    for tf, df in candle_sets.items():
+        path = generate_chart(
+            df,
+            signal.coin,
+            tf.upper(),
+            signal,
+            output_dir=output_dir,
+            enrich=enrich,
+            htf_ema=htf_emas.get(tf),
+        )
+        chart_paths.append(path)
 
     return chart_paths
 
