@@ -200,9 +200,18 @@ def generate_charts_for_signal(
     signal: BoundarySignal,
     candle_sets: dict[str, pd.DataFrame],
     output_dir: Path | None = None,
+    *,
+    enrich: bool = False,
+    htf_emas: dict[str, pd.Series] | None = None,
 ) -> list[Path]:
-    """Generate all charts (1D, 4H, 1H) for a signal. Returns list of file paths."""
+    """Generate all charts (1D, 4H, 1H) for a signal. Returns list of file paths.
+
+    ``enrich`` / ``htf_emas`` are the v2 dispatch's enriched-chart path (Chunk 7b.2b):
+    when ``enrich=True`` each chart adds the v10 substrate overlays, and ``htf_emas``
+    (per-TF, pre-aligned by the data plane) supplies the next-HTF anchor EMA. The v1
+    path passes neither — default-off keeps the blind contract (Decision #5)."""
     chart_paths = []
+    htf_emas = htf_emas or {}
 
     # Order: HTF to LTF
     tf_order = ["1d", "4h", "1h"]
@@ -214,6 +223,8 @@ def generate_charts_for_signal(
                 tf.upper(),
                 signal,
                 output_dir=output_dir,
+                enrich=enrich,
+                htf_ema=htf_emas.get(tf),
             )
             chart_paths.append(path)
 

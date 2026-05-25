@@ -231,18 +231,39 @@ class SetupSignalV2:
 
 
 @dataclass
+class SpineLevel:
+    """The S/R level the stage-2→4 spine carries — exactly the field pair the chart
+    consumer (`charts._sr_hlines`) reads (`price` + `degraded`), version-neutral so the
+    v1 `SRLevel` and the v2 `SRLevelV2` both project onto it (the nested-S/R
+    neutralization deferred from 7b.2a, arch-pass R2). v2 has no degradation model — a
+    top-down `SRLevelV2` is high-quality by construction — so it maps to
+    `degraded=False` (rendered solid/green)."""
+
+    price: float
+    degraded: bool = False
+
+    @classmethod
+    def from_sr_level(cls, lvl: SRLevel) -> "SpineLevel":
+        return cls(price=lvl.price, degraded=lvl.degraded)
+
+    @classmethod
+    def from_sr_level_v2(cls, lvl: SRLevelV2) -> "SpineLevel":
+        return cls(price=lvl.price, degraded=False)
+
+
+@dataclass
 class SpineContext:
     """The structural context the stage-2→4 spine consumes — exactly the
-    `MarketContext` fields read downstream of stage 1, projected off the producer's
-    full context. The TOP-LEVEL shape is producer-neutral (the spine no longer holds a
-    whole v1 `MarketContext`); its nested payloads (`sr_levels`, `fib_levels`) are still
-    v1-shaped (`SRLevel`/`FibLevels`) today — a neutral nested S/R type + the
-    `MarketContextV2` mapping land with the v2 producer (Chunk 7b.2b). Field names match
-    the v1 `MarketContext` subset, so consumers' `signal.context.X` access is unchanged
-    across the cutover (swings/msbs dropped — no stage-2→4 consumer reads them)."""
+    `MarketContext` fields read downstream of stage 1, version-neutral end to end. The
+    top-level shape is producer-neutral (the spine holds no whole v1 `MarketContext`)
+    and `sr_levels` is a `SpineLevel` list — the `{price, degraded}` pair the chart
+    consumer reads, which both the v1 `SRLevel` and the v2 `SRLevelV2` project onto.
+    `fib_levels` is `| None` (v2 passes None). Field names match the v1 `MarketContext`
+    subset, so consumers' `signal.context.X` access is unchanged across the cutover
+    (swings/msbs dropped — no stage-2→4 consumer reads them)."""
 
     structure: Structure
-    sr_levels: list[SRLevel]
+    sr_levels: list[SpineLevel]
     range_bounds: tuple[float, float] | None
     atr: float
     current_price: float
@@ -256,7 +277,7 @@ class SpineContext:
         """Project a v1 `MarketContext` onto the spine context (the v1 mapping)."""
         return cls(
             structure=ctx.structure,
-            sr_levels=ctx.sr_levels,
+            sr_levels=[SpineLevel.from_sr_level(lvl) for lvl in ctx.sr_levels],
             range_bounds=ctx.range_bounds,
             atr=ctx.atr,
             current_price=ctx.current_price,
@@ -272,7 +293,7 @@ class BoundarySignal:
     """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Both the v1
     adapter (`from_setup_signal`) and the v2 producer (Chunk 7b.2b) target this one
     type; `context` is the `SpineContext` projection rather than a whole v1
-    `MarketContext` (its nested S/R payload is v1-shaped until 7b.2b neutralizes it).
+    `MarketContext` (its nested S/R payload is the version-neutral `SpineLevel`).
     The v1 fields mirror `SetupSignal`'s names so consumers are unchanged; the v2-only
     execution/confluence fields are empty on the v1 path and populated by the v2
     producer. `setup_tf` is the originating timeframe, supplied explicitly at the

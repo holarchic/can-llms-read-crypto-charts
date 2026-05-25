@@ -11,13 +11,20 @@ from .analysis import PROMPT_VERSION, analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
+from .data_plane_v2 import fetch_multi_tf, htf_ema_for_chart
 from .db import get_connection
 from .indicators import build_context
 from .models import BoundarySignal, ExecutionRequest, ScanResult
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
+from .screener_v2 import screen_v2
 from .strategy.store import get_strategy
+
+# Per-chart next-HTF anchor EMA for the v2 enriched charts (Chunk 7b.2b). The renderer
+# skips a line whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d chart),
+# so an absent/all-NaN entry is graceful, not an error.
+_CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h"}
 
 
 def _select_with_diversity(
@@ -56,6 +63,72 @@ def _select_with_diversity(
     return selected + remaining
 
 
+def _screen_v1(
+    coins: list[str],
+    leverage_map: dict[str, int | None],
+    disabled_types: set[str] | None,
+    config: ScannerConfig,
+    conn,
+    verbose: bool,
+) -> tuple[list[BoundarySignal], dict]:
+    """v1 screener: batch-fetch 4H → build_context → detect_all_setups → lift → one
+    non-duplicate signal per coin. The bundle is the 4H candle map (stage-2 reuse)."""
+    if verbose:
+        print(f"Fetching 4H candles for {len(coins)} pairs...")
+    candle_map = fetch_candles_batch(coins, "4h", config.candle_counts["4h"], config)
+    if verbose:
+        print(f"Fetched {len(candle_map)}/{len(coins)} pairs")
+
+    all_signals: list[BoundarySignal] = []
+    for coin in coins:
+        df = candle_map.get(coin)
+        if df is None or len(df) < 50:
+            continue
+
+        try:
+            ctx = build_context(df, config.swing_lookback, config.sr_cluster_pct)
+            signals = detect_all_setups(
+                coin, df, ctx, config.max_setups_per_coin, config.proximity_atr_mult,
+                disabled_types=disabled_types,
+            )
+            # Option C: lift v1 detector output into the version-agnostic spine record
+            # (stage-1 scans 4H). The v2 producer targets the same type via screen_v2.
+            signals = [BoundarySignal.from_setup_signal(s, setup_tf="4h") for s in signals]
+
+            # Pick best non-duplicate signal for this coin
+            for signal in signals:
+                signal.max_leverage = leverage_map.get(coin)
+                if is_duplicate(coin, signal.setup_type.value, signal.direction.value,
+                                config.dedup_hours, conn, exchange=config.exchange):
+                    if verbose:
+                        print(f"  {coin} {signal.setup_type.value} — skipped (duplicate)")
+                    continue
+                all_signals.append(signal)
+                break  # One signal per coin
+
+        except Exception as e:
+            if verbose:
+                print(f"  {coin} — error: {e}")
+
+    return all_signals, candle_map
+
+
+def _btc_daily_structure(config: ScannerConfig, verbose: bool) -> str | None:
+    """BTC Daily swing structure for market context (Daily = filter TF for 4H execution).
+    Version-independent context metadata persisted alongside every signal."""
+    try:
+        btc_daily_df = fetch_candles("BTC", "1d", config.candle_counts["1d"], config)
+        if btc_daily_df is not None and len(btc_daily_df) >= 50:
+            btc_context = build_context(btc_daily_df, config.swing_lookback, config.sr_cluster_pct)
+            if verbose:
+                print(f"BTC Daily structure: {btc_context.structure.value}")
+            return btc_context.structure.value
+    except Exception as e:
+        if verbose:
+            print(f"BTC Daily fetch failed: {e}")
+    return None
+
+
 def stage1_screen(
     config: ScannerConfig,
     coin_filter: str | None = None,
@@ -63,7 +136,12 @@ def stage1_screen(
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
 ) -> tuple[list[BoundarySignal], dict]:
-    """Stage 1: Fetch pairs → batch fetch 4H candles → run screener → dedup."""
+    """Stage 1: resolve pairs → version-dispatch the screener → select + persist.
+
+    `setup_version` selects the producer: v1 (`_screen_v1`, shuffle + diversity) or v2
+    (`screen_v2`, deterministic score order, already one-per-coin). Pairs resolution,
+    BTC-structure context, and persistence are shared; the returned bundle is whatever
+    the producer hands back for stage-2 reuse (v1: 4H map; v2: per-coin candle dict)."""
     conn = get_connection()
 
     # Load strategy for disabled_types
@@ -92,67 +170,25 @@ def stage1_screen(
         if verbose and filtered:
             print(f"  Filtered {filtered} pairs not on testnet ({len(pairs)} remaining)")
 
-    # Batch fetch all 4H candles in parallel
     coins = [p["coin"] for p in pairs]
-    if verbose:
-        print(f"Fetching 4H candles for {len(coins)} pairs...")
-    candle_map = fetch_candles_batch(coins, "4h", config.candle_counts["4h"], config)
-    if verbose:
-        print(f"Fetched {len(candle_map)}/{len(coins)} pairs")
-
-    # Build leverage lookup from pairs data
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
 
-    # Screen each pair — one signal per coin (highest confidence)
-    all_signals = []
-    for coin in coins:
-        df = candle_map.get(coin)
-        if df is None or len(df) < 50:
-            continue
+    if config.setup_version == "v2":
+        all_signals, bundle = screen_v2(coins, leverage_map, disabled_types, config, conn, verbose)
+    else:
+        all_signals, bundle = _screen_v1(coins, leverage_map, disabled_types, config, conn, verbose)
 
-        try:
-            ctx = build_context(df, config.swing_lookback, config.sr_cluster_pct)
-            signals = detect_all_setups(
-                coin, df, ctx, config.max_setups_per_coin, config.proximity_atr_mult,
-                disabled_types=disabled_types,
-            )
-            # Option C: lift v1 detector output into the version-agnostic spine record
-            # (stage-1 scans 4H). The v2 producer targets the same type in 7b.2b.
-            signals = [BoundarySignal.from_setup_signal(s, setup_tf="4h") for s in signals]
+    btc_structure = _btc_daily_structure(config, verbose)
 
-            # Pick best non-duplicate signal for this coin
-            for signal in signals:
-                signal.max_leverage = leverage_map.get(coin)
-                if is_duplicate(coin, signal.setup_type.value, signal.direction.value,
-                                config.dedup_hours, conn, exchange=config.exchange):
-                    if verbose:
-                        print(f"  {coin} {signal.setup_type.value} — skipped (duplicate)")
-                    continue
-                all_signals.append(signal)
-                break  # One signal per coin
-
-        except Exception as e:
-            if verbose:
-                print(f"  {coin} — error: {e}")
-
-    # Compute BTC Daily structure for market context (Daily = filter TF for 4H execution)
-    btc_structure = None
-    try:
-        btc_daily_df = fetch_candles("BTC", "1d", config.candle_counts["1d"], config)
-        if btc_daily_df is not None and len(btc_daily_df) >= 50:
-            btc_context = build_context(btc_daily_df, config.swing_lookback, config.sr_cluster_pct)
-            btc_structure = btc_context.structure.value
-            if verbose:
-                print(f"BTC Daily structure: {btc_structure}")
-    except Exception as e:
-        if verbose:
-            print(f"BTC Daily fetch failed: {e}")
-
-    # Shuffle for unbiased LLM selection (confidence is anti-predictive — see calibration analysis)
-    random.shuffle(all_signals)
-    # Diversity penalty: penalize repeated setup types so underrepresented types get LLM slots
-    all_signals = _select_with_diversity(all_signals, config.max_llm_calls_per_scan)
-    capped = all_signals[:config.max_llm_calls_per_scan]
+    if config.setup_version == "v2":
+        # screen_v2 already ordered by score (one-per-coin); no shuffle/diversity.
+        capped = all_signals[:config.max_llm_calls_per_scan]
+    else:
+        # Shuffle for unbiased LLM selection (confidence is anti-predictive — see calibration analysis)
+        random.shuffle(all_signals)
+        # Diversity penalty: penalize repeated setup types so underrepresented types get LLM slots
+        all_signals = _select_with_diversity(all_signals, config.max_llm_calls_per_scan)
+        capped = all_signals[:config.max_llm_calls_per_scan]
 
     # Persist all signals for backtesting (with scoring components + BTC structure)
     batch_id = uuid4().hex[:8]
@@ -166,7 +202,27 @@ def stage1_screen(
     if verbose:
         print(f"Stage 1 complete: {len(capped)} signals (from {len(all_signals)} pre-cap)")
 
-    return capped, candle_map
+    return capped, bundle
+
+
+def _v2_chart_inputs(
+    signal: BoundarySignal, prefetched_candles: dict | None, config: ScannerConfig,
+) -> tuple[dict, dict]:
+    """v2 enriched-chart inputs: the 1d/4h/1h closed-bar frames the detectors used (from
+    the stage-1 bundle) plus the next-HTF 200EMA aligned onto each chart's index, so the
+    enriched charts render from the SAME frames as detection (no refetch divergence).
+    Defensive refetch if a coin is unexpectedly absent — the producer bundles every
+    emitted coin, so this only guards a direct/coin-filter call."""
+    candles = (prefetched_candles or {}).get(signal.coin)
+    if candles is None:
+        candles = fetch_multi_tf(signal.coin, config)
+    candle_sets = {tf: candles[tf] for tf in ["1d", "4h", "1h"] if tf in candles}
+    htf_emas = {}
+    for tf, frame in candle_sets.items():
+        htf = _CHART_HTF.get(tf)
+        if htf and htf in candles:
+            htf_emas[tf] = htf_ema_for_chart(candles[htf], frame.index)
+    return candle_sets, htf_emas
 
 
 def _analyze_one(
@@ -176,14 +232,18 @@ def _analyze_one(
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
-        candle_sets = {}
-        for tf in ["1d", "4h", "1h"]:
-            if tf == "4h" and prefetched_candles and signal.coin in prefetched_candles:
-                candle_sets[tf] = prefetched_candles[signal.coin]
-            else:
-                candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
+        if config.setup_version == "v2":
+            candle_sets, htf_emas = _v2_chart_inputs(signal, prefetched_candles, config)
+            chart_paths = generate_charts_for_signal(signal, candle_sets, enrich=True, htf_emas=htf_emas)
+        else:
+            candle_sets = {}
+            for tf in ["1d", "4h", "1h"]:
+                if tf == "4h" and prefetched_candles and signal.coin in prefetched_candles:
+                    candle_sets[tf] = prefetched_candles[signal.coin]
+                else:
+                    candle_sets[tf] = fetch_candles(signal.coin, tf, config.candle_counts[tf], config)
+            chart_paths = generate_charts_for_signal(signal, candle_sets)
 
-        chart_paths = generate_charts_for_signal(signal, candle_sets)
         result = analyze_for_scanner(signal, chart_paths, config)
         return result
     except Exception as e:
