@@ -101,10 +101,19 @@ class ScannerConfig:
     # Rate limiting
     api_sleep_ms: int = 100
 
+    # Setup detection version — "v1" (A–G screener, default) or "v2" (v10
+    # framework). The cutover flag for T-019 / Decision #32; default v1 keeps the
+    # live path byte-identical until the v2 dispatch (Chunk 7b) lands.
+    setup_version: str = field(default_factory=lambda: os.getenv("SETUP_VERSION", "v1"))
+
     def __post_init__(self):
-        """Validate exchange identifier against EXCHANGE_META."""
+        """Validate the exchange identifier and the setup-version flag."""
         if self.exchange not in EXCHANGE_META:
             raise ValueError(
                 f"Unknown exchange: '{self.exchange}'. "
                 f"Supported: {', '.join(EXCHANGE_META)}"
+            )
+        if self.setup_version not in ("v1", "v2"):
+            raise ValueError(
+                f"Unknown setup_version: '{self.setup_version}'. Supported: v1, v2"
             )
