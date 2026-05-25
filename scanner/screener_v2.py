@@ -253,10 +253,15 @@ def screen_v2(
 
     bundles: dict[str, dict[str, pd.DataFrame]] = {}
     candidates: list[BoundarySignal] = []
+    errors = 0
     for coin in coins:
         # The whole per-coin production (fetch → build → detectors → lift) is one guarded
         # unit, committed atomically: any failure logs + skips THIS coin and never aborts
-        # the scan or half-emits (matches v1 `_screen_v1`'s per-coin isolation).
+        # the scan or half-emits (matches v1 `_screen_v1`'s per-coin isolation). The catch
+        # is broad by design — a ~200-coin cron scan over a flaky exchange must survive any
+        # one coin's failure, and an exchange/pandas exception allowlist would inevitably
+        # miss a type and abort the whole scan (a worse failure than skipping one coin).
+        # Silent masking is the real risk, so a TOTAL wipeout is surfaced loudly below.
         try:
             candles = fetch_multi_tf(coin, config)
             ctx2 = build_market_context_v2(coin, candles)
@@ -267,11 +272,19 @@ def screen_v2(
                 if sig.setup_type.value not in disabled  # disabled_types vocab is case-normalized
             ]
         except Exception as e:
+            errors += 1
             if verbose:
                 print(f"  {coin} — error: {e}")
             continue
         bundles[coin] = candles
         candidates.extend(coin_candidates)
+
+    # A few per-coin failures are ordinary scan noise; EVERY coin failing means the v2
+    # producer is systematically broken (a bug / bad deploy / wrong data shape), not a
+    # quiet "no setups today" — alert distinctly so it can't hide as scan noise.
+    if errors and errors == len(coins):
+        from .alerts import send_errors_alert
+        send_errors_alert(f"v2 screener: all {errors} coins failed in stage 1 — producer likely broken", config)
 
     # (2) drop 15m-origin setups — deferred to Chunk 8 (no 15m chart in the LLM bundle).
     candidates = [c for c in candidates if c.setup_tf != "15m"]

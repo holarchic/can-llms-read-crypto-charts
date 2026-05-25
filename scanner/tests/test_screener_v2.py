@@ -298,6 +298,44 @@ def test_select_one_per_coin_dedup_error_isolated(conn, monkeypatch):
     assert [b.coin for b in out] == ["ETH"]            # BAD skipped, ETH still selected
 
 
+def test_screen_v2_total_wipeout_alerts(conn, monkeypatch):
+    """Every coin failing → one distinct error alert (systematic producer breakage is
+    surfaced loudly, never masked as a quiet 'no setups today')."""
+    import scanner.alerts as alerts
+    sent = []
+    monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
+
+    def boom(coin, config):
+        raise RuntimeError("everything is broken")
+
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", boom)
+    survivors, bundle = screen_v2(
+        ["BTC", "ETH"], {"BTC": 5, "ETH": 5}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
+    )
+    assert survivors == [] and bundle == {}
+    assert len(sent) == 1 and "all 2 coins failed" in sent[0]
+
+
+def test_screen_v2_partial_failure_no_alert(conn, monkeypatch):
+    """A subset of coins failing is ordinary scan noise — no systemic alert."""
+    import scanner.alerts as alerts
+    sent = []
+    monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+
+    def boom_or_sig(ctx2):
+        if ctx2.coin == "BAD":
+            raise RuntimeError("one bad coin")
+        return [("4h", _v2sig(n_confluence=2))]
+
+    monkeypatch.setattr(screener_v2, "_run_detectors", boom_or_sig)
+    survivors, _ = screen_v2(
+        ["BAD", "BTC"], {"BAD": 5, "BTC": 5}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
+    )
+    assert [b.coin for b in survivors] == ["BTC"]
+    assert sent == []  # partial failure is not systemic — no alert
+
+
 def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
     """The REAL detector path (fetch → build_market_context_v2 → 6 detectors → select)
     runs end-to-end on a realistic fixture without raising; emits 0+ well-formed signals."""
