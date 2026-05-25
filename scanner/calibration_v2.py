@@ -21,10 +21,20 @@ is wired. This harness scores whatever emit/labeled sets that run produces.
 """
 
 import copy
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 
 from .config import ScannerConfig
-from .models import BoundarySignal, ScanResult
+from .models import (
+    BoundarySignal,
+    ConfluenceFactor,
+    Direction,
+    ScanResult,
+    SetupTypeV2,
+    SpineContext,
+    Structure,
+)
 from .setup_validator import REJECT_CONFLUENCE_FLOOR, validate_confirms
 
 __all__ = [
@@ -38,6 +48,10 @@ __all__ = [
     "floor_sweep",
     "recommend_floor",
     "calibration_record",
+    "seed_labeled_confirms",
+    "floor_impact",
+    "run_calibration",
+    "collect_v2_signals",
 ]
 
 
@@ -208,3 +222,106 @@ def calibration_record(
         floor_reports=reports,
         reasons=reasons,
     )
+
+
+# --- operational run (the Chunk-8b RUN — wires the live screener into the harness) ----
+
+
+def _confirm_result(signal: BoundarySignal) -> ScanResult:
+    """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads only
+    ``decision`` + ``setup_signal.confluence``; the rest are inert placeholders (this never
+    persists — it is a transient probe for the floor sweep)."""
+    return ScanResult(
+        scan_id=f"cal-{signal.coin}-{len(signal.confluence)}",
+        coin=signal.coin,
+        timestamp=datetime.now(timezone.utc),
+        setup_signal=signal,
+        decision="CONFIRM",
+        confluence_score=None,
+        analysis_text="",
+        parsed_decision={},
+        chart_paths=[],
+        cost_usd=0.0,
+    )
+
+
+def _synthetic_signal(setup_type: SetupTypeV2, n_confluence: int, coin: str) -> BoundarySignal:
+    """A synthetic v2 signal carrying exactly ``n_confluence`` factors — the only property the
+    confluence-count floor reads. Context is an inert placeholder."""
+    ctx = SpineContext(
+        structure=Structure.BULLISH, sr_levels=[], range_bounds=None,
+        atr=1.0, current_price=1.0, fib_levels=None, regime="trending",
+    )
+    return BoundarySignal(
+        coin=coin, setup_type=setup_type, direction=Direction.LONG, confidence=0.5,
+        key_level=1.0, context=ctx, description="seed", setup_tf="4h",
+        confluence=frozenset(list(ConfluenceFactor)[:n_confluence]),
+    )
+
+
+def seed_labeled_confirms() -> list[LabeledConfirm]:
+    """The canonical seeded set the floor is validated against (Acceptance #9b): over-eager confirms
+    (confluence 0-1 — the floor SHOULD demote) and legit confirms (confluence 2-4 — the floor should
+    keep), spread across setup types. Deterministic / pure; the smallest separating floor over this
+    set is 2 (= the shipped `v2_min_confluence` default)."""
+    types = list(SetupTypeV2)
+    seeds: list[LabeledConfirm] = []
+    for i, n in enumerate((0, 1)):
+        st = types[i % len(types)]
+        seeds.append(LabeledConfirm(_confirm_result(_synthetic_signal(st, n, f"OE{n}")), over_eager=True))
+    for i, n in enumerate((2, 3, 4)):
+        st = types[i % len(types)]
+        seeds.append(LabeledConfirm(_confirm_result(_synthetic_signal(st, n, f"LG{n}")), over_eager=False))
+    return seeds
+
+
+def floor_impact(
+    signals: list[BoundarySignal],
+    floors: Sequence[int],
+    base_config: ScannerConfig,
+) -> list[FloorReport]:
+    """How aggressively each candidate floor bites REAL emissions: each emitted signal is wrapped as
+    a CONFIRM and run through the live validator. Every real signal is labeled legit, so each
+    `FloorReport.legit_demoted` is the count of real emissions that floor would demote (its bite).
+    Pure — reuses the single-owner `floor_sweep`."""
+    labeled = [LabeledConfirm(_confirm_result(s), over_eager=False) for s in signals]
+    return floor_sweep(labeled, list(floors), base_config)
+
+
+def run_calibration(
+    signals: list[BoundarySignal],
+    universe_size: int,
+    baseline_rate: float,
+    base_config: ScannerConfig,
+    floors: Sequence[int] = (1, 2, 3, 4),
+    tolerance: float = 1.5,
+) -> CalibrationRecord:
+    """The go/no-go over a real v2 emit run: #9a over-emission (real ``signals`` vs ``baseline_rate``)
+    + #9b floor recommendation (the canonical seeded set). Pure given the emitted signals."""
+    return calibration_record(
+        signals, universe_size, baseline_rate,
+        labeled=seed_labeled_confirms(), floors=list(floors),
+        base_config=base_config, tolerance=tolerance,
+    )
+
+
+def collect_v2_signals(config: ScannerConfig, *, verbose: bool = True) -> tuple[list[BoundarySignal], int]:
+    """Impure boundary: resolve the live universe + run the real v2 screener → (emitted signals,
+    universe_size). The only part of this module that touches the exchange/DB; function-local imports
+    keep the pure-harness import surface light. Needs exchange access (run on the VM)."""
+    from .data import fetch_pairs_with_volume
+    from .db import get_connection
+    from .screener_v2 import screen_v2
+    from .strategy.store import get_strategy
+
+    conn = get_connection()
+    try:
+        strategy = get_strategy("v0", conn)
+        disabled = strategy.disabled_types_set if strategy else None
+        pairs = fetch_pairs_with_volume(config)
+        coins = [p["coin"] for p in pairs]
+        leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
+        signals, _bundle = screen_v2(coins, leverage_map, disabled, config, conn, verbose)
+        return signals, len(coins)
+    finally:
+        conn.close()

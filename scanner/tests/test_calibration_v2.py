@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from scanner.calibration_v2 import (
     LabeledConfirm,
     calibration_record,
+    collect_v2_signals,
     emit_distribution,
     emit_rate,
+    floor_impact,
     floor_sweep,
     over_emission_ok,
     recommend_floor,
+    run_calibration,
+    seed_labeled_confirms,
 )
 from scanner.config import ScannerConfig
 from scanner.models import (
@@ -203,3 +207,67 @@ def test_calibration_record_nogo_no_separating_floor():
     assert rec.go is False
     assert rec.recommended_floor is None
     assert any("no confluence floor separates" in r for r in rec.reasons)
+
+
+# --- operational run: seed / floor_impact / run_calibration / collect ----------
+
+
+def test_seed_labeled_confirms_separates_at_floor_2():
+    seed = seed_labeled_confirms()
+    over = [lc for lc in seed if lc.over_eager]
+    legit = [lc for lc in seed if not lc.over_eager]
+    # over-eager confluence 0-1, legit 2-4 — confirm the labels match the counts
+    assert {len(lc.result.setup_signal.confluence) for lc in over} == {0, 1}
+    assert {len(lc.result.setup_signal.confluence) for lc in legit} == {2, 3, 4}
+    # the canonical seed's smallest separating floor is 2 (= the shipped default)
+    assert recommend_floor(floor_sweep(seed, [1, 2, 3, 4], base_config=_CFG)) == 2
+
+
+def test_floor_impact_counts_real_emission_demotions():
+    # real emissions at confluence counts 1, 2, 3 — floor 2 should demote only the count-1 one
+    signals = [_bsig(n_confluence=1), _bsig(n_confluence=2), _bsig(n_confluence=3)]
+    impact = {fr.floor: fr for fr in floor_impact(signals, [1, 2, 3], base_config=_CFG)}
+    assert impact[1].legit_demoted == 0            # nothing below 1
+    assert impact[2].legit_demoted == 1            # only the count-1 emission
+    assert impact[3].legit_demoted == 2            # counts 1 and 2
+    assert impact[2].legit_total == 3              # all real emissions counted
+
+
+def test_run_calibration_go_over_real_signals():
+    signals = [_bsig() for _ in range(10)]  # rate 0.10 over 100, baseline 0.20 → OK
+    rec = run_calibration(signals, universe_size=100, baseline_rate=0.20, base_config=_CFG)
+    assert rec.go is True
+    assert rec.recommended_floor == 2  # from the canonical seed
+
+
+def test_run_calibration_nogo_on_over_emission():
+    signals = [_bsig() for _ in range(40)]  # rate 0.40 over 100, baseline 0.20 → over
+    rec = run_calibration(signals, universe_size=100, baseline_rate=0.20, base_config=_CFG)
+    assert rec.go is False
+    assert any("over-emission" in r for r in rec.reasons)
+
+
+def test_collect_v2_signals_wires_screener(monkeypatch):
+    # patch the function-local imports at their SOURCE modules (deferred-import mock rule)
+    import types as _types
+
+    closed = {"v": False}
+
+    class _Conn:
+        def close(self):
+            closed["v"] = True
+
+    monkeypatch.setattr("scanner.db.get_connection", lambda: _Conn())
+    monkeypatch.setattr("scanner.strategy.store.get_strategy",
+                        lambda sid, conn: _types.SimpleNamespace(disabled_types_set=set()))
+    monkeypatch.setattr("scanner.data.fetch_pairs_with_volume",
+                        lambda config: [{"coin": "BTC", "max_leverage": 10},
+                                        {"coin": "ETH", "max_leverage": 20}])
+    sentinel = [_bsig(coin="BTC")]
+    monkeypatch.setattr("scanner.screener_v2.screen_v2",
+                        lambda coins, lev, disabled, config, conn, verbose: (sentinel, {}))
+
+    signals, universe = collect_v2_signals(_CFG, verbose=False)
+    assert signals is sentinel
+    assert universe == 2          # two coins resolved
+    assert closed["v"] is True    # conn closed in finally
