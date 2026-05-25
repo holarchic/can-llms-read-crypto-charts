@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .alerts import COLOR_OK, COLOR_WARN, format_alert_text, send_alert, send_ops_log
-from .analysis import PROMPT_VERSION, analyze_for_scanner
+from .analysis import analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
@@ -289,7 +289,7 @@ def stage2_analyze(
                         preview = (result.analysis_text or '')[:200].replace('\n', ' ')
                         print(f"    ⚠ Parse failed. Raw output: {preview}")
                 save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange,
-                           prompt_version=PROMPT_VERSION)
+                           prompt_version=result.prompt_version)
                 results.append(result)
 
     conn.close()

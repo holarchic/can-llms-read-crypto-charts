@@ -10,6 +10,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
+STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 DB_PATH = DATA_DIR / "scanner.db"

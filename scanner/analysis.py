@@ -1,7 +1,5 @@
 """LLM deep analysis — orchestrates chart analysis via Claude vision API."""
 
-PROMPT_VERSION = "9.11"
-
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -13,13 +11,12 @@ log = logging.getLogger(__name__)
 
 from .config import ScannerConfig
 from .llm import (
-    SYSTEM_PROMPT,
     encode_image,
-    load_strategy,
     parse_decision_block,
     parse_machine_block,
 )
 from .models import BoundarySignal, ScanResult
+from .prompt_select import select_prompt
 
 
 def _build_scanner_content(
@@ -86,105 +83,8 @@ def analyze_for_scanner(
     """Run LLM deep analysis on a screener signal. Returns ScanResult."""
     cfg = config or ScannerConfig()
 
-    strategy = load_strategy()
-    system_text = SYSTEM_PROMPT.format(ruleset=strategy) + (
-        "\n\n## SCANNER MODE\n"
-        "Scans run every 4 hours. Put analysis in thinking tokens; the written\n"
-        "response is the decision block only.\n\n"
-
-        "## ENTRY TYPE — pick one\n"
-        "Default to CONDITIONAL. Use IMMEDIATE only when the confirming event\n"
-        "is already complete on the last closed candle. **Exceptions** (see\n"
-        "SETUP-SPECIFIC RULES):\n"
-        "- Setup B (breakout): IMMEDIATE on the confirming close OR\n"
-        "  `limit_at` on a retest. No `candle_close_above/below` or\n"
-        "  `deviation_reclaim`.\n"
-        "- Setup F (deviation): IMMEDIATE only on the confirming close. No\n"
-        "  future trigger.\n\n"
-
-        "**CONDITIONAL (default):** Setup is valid; a specific future event\n"
-        "must print before entry. The monitor watches 1H closes (or polls\n"
-        "spot price for `limit_at`), enters on trigger, kills on invalidation,\n"
-        "or expires.\n"
-        "- entry_trigger: 'candle_close_above', 'candle_close_below', or\n"
-        "  'limit_at'. (For Setup F: none of these — F is IMMEDIATE-only.\n"
-        "  For Setup B: 'limit_at' on a retest only; no `candle_close_*`.)\n"
-        "- entry_trigger_price: the 1H close level (or limit_at price) that\n"
-        "  confirms entry\n"
-        "- invalidation_price: kills the setup before the trigger fires.\n"
-        "  Place it between stop_loss and entry — closer to entry than\n"
-        "  stop_loss, never past it. Pre-entry must be at least as\n"
-        "  cautious as the post-fill stop. Common error: setting inv as\n"
-        "  a wider buffer than stop. That's backward — inv triggers\n"
-        "  FIRST (smaller adverse move).\n"
-        "    LONG  entry 100, stop 95  → inv 95-100 valid; inv 90 invalid\n"
-        "    SHORT entry 100, stop 105 → inv 100-105 valid; inv 110 invalid\n"
-        "- expiry_candles: 1H candles to wait (1-24; match thesis speed)\n"
-        "- entry_low/entry_high: bracket entry_trigger_price (±0.2-0.5%);\n"
-        "  execution re-brackets at trigger time\n\n"
-        "Examples of CONDITIONAL confirming events:\n"
-        "- LONG pullback (C): 1H close above a broken resistance that is now support\n"
-        "- SHORT pullback (C): 1H close below a broken support that is now resistance\n"
-        "- LONG OTE retrace (D): 1H close inside the 0.618-0.786 zone after bullish MSB\n"
-        "- B retest: `limit_at` at the broken level (no `candle_close_*` trigger)\n\n"
-
-        "**IMMEDIATE (exception):** The confirming event already printed on\n"
-        "the last closed candle. Name it in Confirming Event.\n"
-        "Examples:\n"
-        "- MSB just confirmed on the last 4H close\n"
-        "- Deviation reclaim just printed on the last 1H close\n"
-        "- Rejection wick off a level with the body closing back on the\n"
-        "  working side\n"
-        "- Structural break in LTF anchoring a HTF setup\n\n"
-        "Fields:\n"
-        "- entry_low/entry_high: bracket current price (within 0.5% of last\n"
-        "  candle close)\n"
-        "- Omit entry_trigger, entry_trigger_price, invalidation_price,\n"
-        "  expiry_candles\n\n"
-
-        "Price at a level without confirmation yet = CONDITIONAL. Specify\n"
-        "the candle close that confirms it. Setup B and Setup F are\n"
-        "exceptions — see SETUP-SPECIFIC RULES (above).\n\n"
-
-        "## INVALIDATION FIELDS (CONFIRM only)\n"
-        "- **Expected Hold:** trade duration estimate (e.g. '1-2 days')\n"
-        "- **Time Invalidation:** abandon point if neither SL nor TP hits\n\n"
-
-        "## MACHINE BLOCK (CONFIRM only)\n"
-        "Append JSON after the decision block:\n\n"
-        '<!-- MACHINE_BLOCK\n'
-        '{"entry_low": 61500.0, "entry_high": 62000.0, '
-        '"stop_loss": 59800.0, "tp1": 65000.0, "tp1_exit_pct": 40, '
-        '"tp2": 68000.0, "tp2_exit_pct": 40, "direction": "LONG", '
-        '"confidence": 7, "leverage": 5, '
-        '"entry_trigger": "candle_close_above", '
-        '"entry_trigger_price": 62000.0, '
-        '"invalidation_price": 60500.0, "expiry_candles": 8}\n'
-        "MACHINE_BLOCK -->\n\n"
-
-        "Field rules:\n"
-        "- Prices: plain numbers, no $ or commas\n"
-        "- tp1_exit_pct: 30-50 (TP1 is the conservative FTA — §6.4)\n"
-        "- tp2_exit_pct: 30-50 (when multi-target)\n"
-        "- invalidation_price (CONDITIONAL only): hard constraint —\n"
-        "    LONG  : invalidation_price >= stop_loss (between stop and entry)\n"
-        "    SHORT : invalidation_price <= stop_loss (between entry and stop)\n"
-        "  Setting inv past stop in the adverse direction is auto-rejected.\n"
-        "- IMMEDIATE: omit the four conditional fields above\n"
-        "- Trailing TP: execution trails post-TP1 — provide a concrete TP1\n"
-        "  to anchor the trail\n\n"
-
-        "## CORE RULES (recap)\n"
-        "- Default to CONDITIONAL. IMMEDIATE requires a confirming event on\n"
-        "  the last closed candle.\n"
-        "- **Setup B:** IMMEDIATE on the confirming close OR `limit_at` on\n"
-        "  a retest. No `candle_close_above/below` or `deviation_reclaim`.\n"
-        "- **Setup F:** IMMEDIATE only on the confirming close. No future\n"
-        "  trigger at all.\n"
-        "- Name the confirming event in every CONFIRM.\n"
-        "- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n"
-        "  REJECT — except for B/F (above).\n"
-    )
+    spec = select_prompt(cfg.setup_version)
+    system_text = spec.system_text
     user_content = _build_scanner_content(chart_paths, signal)
     messages = [{"role": "user", "content": user_content}]
 
@@ -262,4 +162,5 @@ def analyze_for_scanner(
         llm_confidence=llm_confidence,
         machine_block=machine_block,
         detected_at=signal.detected_at if signal else None,
+        prompt_version=spec.prompt_version,
     )

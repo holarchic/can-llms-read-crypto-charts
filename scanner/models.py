@@ -570,6 +570,7 @@ class ScanResult:
     llm_confidence: int | None = None
     machine_block: "MachineBlock | None" = None
     detected_at: datetime | None = None
+    prompt_version: str | None = None  # the version-gated prompt that produced this result (7b.3)
 
     @property
     def is_confirm(self) -> bool:
