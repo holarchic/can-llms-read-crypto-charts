@@ -232,12 +232,14 @@ class SetupSignalV2:
 
 @dataclass
 class SpineContext:
-    """Version-neutral structural context the stage-2→4 spine consumes — exactly the
+    """The structural context the stage-2→4 spine consumes — exactly the
     `MarketContext` fields read downstream of stage 1, projected off the producer's
-    full context so the boundary depends on neither v1 `MarketContext` nor v2
-    `MarketContextV2`. Field names match the v1 `MarketContext` subset, so consumers'
-    `signal.context.X` access is unchanged across the cutover (swings/msbs are dropped
-    — no stage-2→4 consumer reads them)."""
+    full context. The TOP-LEVEL shape is producer-neutral (the spine no longer holds a
+    whole v1 `MarketContext`); its nested payloads (`sr_levels`, `fib_levels`) are still
+    v1-shaped (`SRLevel`/`FibLevels`) today — a neutral nested S/R type + the
+    `MarketContextV2` mapping land with the v2 producer (Chunk 7b.2b). Field names match
+    the v1 `MarketContext` subset, so consumers' `signal.context.X` access is unchanged
+    across the cutover (swings/msbs dropped — no stage-2→4 consumer reads them)."""
 
     structure: Structure
     sr_levels: list[SRLevel]
@@ -267,13 +269,14 @@ class SpineContext:
 
 @dataclass
 class BoundarySignal:
-    """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Genuinely
-    version-agnostic: both the v1 adapter (`from_setup_signal`) and the v2 producer
-    (Chunk 7b.2b) target this one type, and `context` is the neutral `SpineContext`
-    projection — not v1 `MarketContext` / v2 `MarketContextV2`. The v1 fields mirror
-    `SetupSignal`'s names so consumers are unchanged; the v2-only execution/confluence
-    fields are empty on the v1 path and populated by the v2 producer. `setup_tf` is the
-    originating timeframe, supplied explicitly at the lift/producer site (single owner)."""
+    """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Both the v1
+    adapter (`from_setup_signal`) and the v2 producer (Chunk 7b.2b) target this one
+    type; `context` is the `SpineContext` projection rather than a whole v1
+    `MarketContext` (its nested S/R payload is v1-shaped until 7b.2b neutralizes it).
+    The v1 fields mirror `SetupSignal`'s names so consumers are unchanged; the v2-only
+    execution/confluence fields are empty on the v1 path and populated by the v2
+    producer. `setup_tf` is the originating timeframe, supplied explicitly at the
+    lift/producer site (single owner)."""
 
     coin: str
     setup_type: SetupType | SetupTypeV2
