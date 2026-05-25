@@ -64,6 +64,12 @@ DEFAULT_SR_CLUSTER_PCT = 0.015
 DEFAULT_PROXIMITY_ATR_MULT = 1.5
 DEFAULT_MAX_SETUPS_PER_COIN = 3
 
+# Post-LLM `setup_validator` (T-019 Chunk 8a, SPEC #33) — the v2-path confluence-COUNT
+# floor: a CONFIRM whose detector confluence-factor count is below this is demoted
+# before alert AND execute. Placeholder pending Chunk-8b calibration; v2-only, inert
+# until the Chunk-9 cutover (the v1 path never runs the validator).
+DEFAULT_V2_MIN_CONFLUENCE = 2
+
 
 @dataclass
 class ScannerConfig:
@@ -116,6 +122,9 @@ class ScannerConfig:
     # framework). The cutover flag for T-019 / Decision #32; default v1 keeps the
     # live path byte-identical until the v2 dispatch (Chunk 7b) lands.
     setup_version: str = field(default_factory=lambda: os.getenv("SETUP_VERSION", "v1"))
+
+    # Post-LLM structural-gate floor (Chunk 8a / SPEC #33) — v2 path only.
+    v2_min_confluence: int = DEFAULT_V2_MIN_CONFLUENCE
 
     def __post_init__(self):
         """Validate the exchange identifier and the setup-version flag."""

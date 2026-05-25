@@ -19,6 +19,7 @@ from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
 from .screener_v2 import chart_inputs, screen_v2
+from .setup_validator import validate_confirms
 from .strategy.store import get_strategy
 
 
@@ -546,17 +547,24 @@ def _build_summary(signals, results, exec_results, alerted, elapsed):
     """
     total_cost = sum(r.cost_usd for r in results)
     n_executed = sum(1 for er in exec_results if er.executed) if exec_results else 0
-    return {
+    # `validator_verdict` is set only by the v2 post-LLM gate (SPEC #33). `rejects`
+    # stays LLM-rejects-only; validator demotions partition into `validator_rejects`,
+    # added as a CONDITIONAL key (>0 only) so the v1 summary shape is byte-identical.
+    n_validator_rejects = sum(1 for r in results if r.validator_verdict)
+    summary = {
         "signals": len(signals),
         "results": len(results),
         "confirms": sum(1 for r in results if r.is_confirm),
-        "rejects": sum(1 for r in results if r.is_reject),
+        "rejects": sum(1 for r in results if r.is_reject and not r.validator_verdict),
         "waits": sum(1 for r in results if r.is_wait),
         "alerted": alerted,
         "executed": n_executed,
         "cost_usd": round(total_cost, 4),
         "elapsed_sec": round(elapsed, 1),
     }
+    if n_validator_rejects:
+        summary["validator_rejects"] = n_validator_rejects
+    return summary
 
 
 def _print_summary(summary, elapsed):
@@ -569,7 +577,10 @@ def _print_summary(summary, elapsed):
     print(f"\n{'=' * 60}")
     print(f"Scan complete in {elapsed:.0f}s")
     print(f"  Signals: {summary['signals']} | Analyzed: {summary['results']}")
-    print(f"  CONFIRM: {summary['confirms']} | REJECT: {summary['rejects']} | WAIT: {summary['waits']}")
+    decision_line = f"  CONFIRM: {summary['confirms']} | REJECT: {summary['rejects']} | WAIT: {summary['waits']}"
+    if summary.get("validator_rejects", 0):
+        decision_line += f" | Validator-rejected: {summary['validator_rejects']}"
+    print(decision_line)
     print(f"  Alerted: {summary['alerted']} | Cost: ${summary['cost_usd']:.4f}")
 
 
@@ -589,6 +600,8 @@ def _post_scan_ops_log(summary, results, exchange_label, cfg):
     }
     if parse_fails:
         ops_fields["Parse Fails"] = str(parse_fails)
+    if summary.get("validator_rejects", 0):
+        ops_fields["Validator Rejected"] = str(summary["validator_rejects"])
     send_ops_log(f"Scan Complete [{exchange_label}]", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
 
 
@@ -641,6 +654,10 @@ def run_scan(
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
                                  prefetched_candles=candle_map)
+
+    # Post-LLM structural gate (v2 only) — demote over-eager CONFIRMs so they neither
+    # alert (stage 3) nor execute (stage 4). No-op on v1 (SPEC #33).
+    results = validate_confirms(results, cfg, verbose=verbose)
 
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)

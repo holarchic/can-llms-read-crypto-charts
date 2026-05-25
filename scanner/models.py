@@ -571,6 +571,11 @@ class ScanResult:
     machine_block: "MachineBlock | None" = None
     detected_at: datetime | None = None
     prompt_version: str | None = None  # the version-gated prompt that produced this result (7b.3)
+    # In-memory only (NOT persisted) — set by the post-LLM `setup_validator` when it
+    # demotes a v2 CONFIRM (Chunk 8a, SPEC #33). None ⇒ not evaluated / passed. The
+    # demoted `decision` becomes `"REJECT"`; this tag carries the why so an LLM REJECT
+    # and a validator demotion stay distinguishable (and partition the scan summary).
+    validator_verdict: str | None = None
 
     @property
     def is_confirm(self) -> bool:

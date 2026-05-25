@@ -378,6 +378,7 @@ class TestPhase4bHelpers:
         class _R:
             decision: str | None
             cost_usd: float
+            validator_verdict: str | None = None  # mirrors ScanResult (SPEC #33)
             @property
             def is_confirm(self) -> bool: return self.decision == "CONFIRM"
             @property
