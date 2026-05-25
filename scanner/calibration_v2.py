@@ -226,15 +226,19 @@ def calibration_record(
 
 # --- operational run (the Chunk-8b RUN — wires the live screener into the harness) ----
 
+# Fixed timestamp for synthetic probe records so seed_labeled_confirms() is deterministic/pure
+# (the validator ignores timestamps; a wall-clock `now()` would only break that property).
+_SEED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
 
 def _confirm_result(signal: BoundarySignal) -> ScanResult:
     """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads only
     ``decision`` + ``setup_signal.confluence``; the rest are inert placeholders (this never
-    persists — it is a transient probe for the floor sweep)."""
+    persists — it is a transient probe for the floor sweep). Fixed timestamp keeps it pure."""
     return ScanResult(
         scan_id=f"cal-{signal.coin}-{len(signal.confluence)}",
         coin=signal.coin,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=_SEED_TS,
         setup_signal=signal,
         decision="CONFIRM",
         confluence_score=None,
@@ -256,6 +260,7 @@ def _synthetic_signal(setup_type: SetupTypeV2, n_confluence: int, coin: str) -> 
         coin=coin, setup_type=setup_type, direction=Direction.LONG, confidence=0.5,
         key_level=1.0, context=ctx, description="seed", setup_tf="4h",
         confluence=frozenset(list(ConfluenceFactor)[:n_confluence]),
+        detected_at=_SEED_TS,  # fixed → seed_labeled_confirms() is deterministic
     )
 
 

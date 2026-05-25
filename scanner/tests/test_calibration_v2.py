@@ -221,6 +221,8 @@ def test_seed_labeled_confirms_separates_at_floor_2():
     assert {len(lc.result.setup_signal.confluence) for lc in legit} == {2, 3, 4}
     # the canonical seed's smallest separating floor is 2 (= the shipped default)
     assert recommend_floor(floor_sweep(seed, [1, 2, 3, 4], base_config=_CFG)) == 2
+    # deterministic/pure — two calls build equal objects (fixed timestamps, no wall clock)
+    assert seed_labeled_confirms() == seed_labeled_confirms()
 
 
 def test_floor_impact_counts_real_emission_demotions():
