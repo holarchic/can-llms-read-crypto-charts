@@ -19,12 +19,12 @@ from .llm import (
     parse_decision_block,
     parse_machine_block,
 )
-from .models import ScanResult, SetupSignal
+from .models import BoundarySignal, ScanResult
 
 
 def _build_scanner_content(
     chart_paths: list[Path],
-    signal: SetupSignal,
+    signal: BoundarySignal,
 ) -> list[dict]:
     """Build user content blocks with chart images. No screener context — LLM analyzes blind."""
     content = []
@@ -79,7 +79,7 @@ def _estimate_cost(usage, model: str) -> float:
 
 
 def analyze_for_scanner(
-    signal: SetupSignal,
+    signal: BoundarySignal,
     chart_paths: list[Path],
     config: ScannerConfig | None = None,
 ) -> ScanResult:

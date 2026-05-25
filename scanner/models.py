@@ -230,6 +230,53 @@ class SetupSignalV2:
         return len(self.confluence)
 
 
+@dataclass
+class BoundarySignal:
+    """The v1/v2 stage-2→4 boundary record (T-019 Chunk 7b, Option C). Both the v1
+    adapter (`from_setup_signal`) and the v2 producer (Chunk 7b.2b) target this one
+    type, so the LLM → alert → storage → execution spine is version-agnostic. The v1
+    fields mirror `SetupSignal` (same names → consumers unchanged); the v2-only
+    execution/confluence fields are empty on the v1 path and populated by the v2
+    producer. `setup_tf` is the originating timeframe (v1 scans 4H)."""
+
+    coin: str
+    setup_type: SetupType | SetupTypeV2
+    direction: Direction
+    confidence: float
+    key_level: float
+    context: MarketContext
+    description: str
+    setup_tf: str = "4h"
+    max_leverage: int | None = None
+    score_components: ScoreComponents | None = None
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # v2-only — empty on the v1 path, populated by the v2 producer (Chunk 7b.2b)
+    basis_price: float | None = None
+    entry: float | None = None
+    hard_stop: float | None = None
+    soft_stop: SoftStop | None = None
+    confluence: frozenset[ConfluenceFactor] = frozenset()
+    weakness_flag: bool = False
+
+    @classmethod
+    def from_setup_signal(cls, sig: SetupSignal, setup_tf: str = "4h") -> "BoundarySignal":
+        """Lift a v1 `SetupSignal` into the boundary record (the Option-C v1 adapter):
+        a field-for-field copy of the v1 fields; the v2-only fields stay empty."""
+        return cls(
+            coin=sig.coin,
+            setup_type=sig.setup_type,
+            direction=sig.direction,
+            confidence=sig.confidence,
+            key_level=sig.key_level,
+            context=sig.context,
+            description=sig.description,
+            setup_tf=setup_tf,
+            max_leverage=sig.max_leverage,
+            score_components=sig.score_components,
+            detected_at=sig.detected_at,
+        )
+
+
 _MB_REQUIRED_NUMERIC = (
     "entry_low", "entry_high", "stop_loss", "tp1", "tp1_exit_pct",
     "confidence", "leverage",
@@ -449,7 +496,7 @@ class ScanResult:
     scan_id: str
     coin: str
     timestamp: datetime
-    setup_signal: SetupSignal
+    setup_signal: BoundarySignal
     decision: str | None  # CONFIRM/REJECT/WAIT
     confluence_score: str | None
     analysis_text: str | None

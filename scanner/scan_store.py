@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .db import get_connection
-from .models import SETUP_NAMES, ScanResult, SetupSignal
+from .models import SETUP_NAMES, BoundarySignal, ScanResult
 
 __all__ = ["save_result", "mark_alerted", "save_signals", "save_scan_universe"]
 
@@ -113,7 +113,7 @@ def mark_alerted(scan_id: str, conn: sqlite3.Connection | None = None) -> None:
 
 
 def save_signals(
-    signals: list[SetupSignal],
+    signals: list[BoundarySignal],
     batch_id: str,
     sent_to_llm_count: int,
     conn: sqlite3.Connection | None = None,

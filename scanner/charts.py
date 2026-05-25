@@ -11,7 +11,7 @@ import pandas as pd
 
 from .config import CHARTS_DIR
 from .ma_indicators import compute_ema_band, compute_longer_set, compute_stoch_rsi
-from .models import SetupSignal
+from .models import BoundarySignal
 
 # Light theme — better LLM visual acuity on white backgrounds
 STYLE = mpf.make_mpf_style(
@@ -132,7 +132,7 @@ def generate_chart(
     df: pd.DataFrame,
     coin: str,
     timeframe: str,
-    signal: SetupSignal,
+    signal: BoundarySignal,
     sr_levels: list | None = None,
     output_dir: Path | None = None,
     *,
@@ -197,7 +197,7 @@ def generate_chart(
 
 
 def generate_charts_for_signal(
-    signal: SetupSignal,
+    signal: BoundarySignal,
     candle_sets: dict[str, pd.DataFrame],
     output_dir: Path | None = None,
 ) -> list[Path]:

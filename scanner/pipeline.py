@@ -13,7 +13,7 @@ from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
 from .db import get_connection
 from .indicators import build_context
-from .models import ExecutionRequest, ScanResult, SetupSignal
+from .models import BoundarySignal, ExecutionRequest, ScanResult
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
@@ -21,8 +21,8 @@ from .strategy.store import get_strategy
 
 
 def _select_with_diversity(
-    signals: list[SetupSignal], max_count: int, decay: float = 0.85,
-) -> list[SetupSignal]:
+    signals: list[BoundarySignal], max_count: int, decay: float = 0.85,
+) -> list[BoundarySignal]:
     """Greedy selection with diminishing returns per setup type.
 
     Scores each candidate as confidence * decay^n where n = number of that
@@ -37,7 +37,7 @@ def _select_with_diversity(
         return signals
 
     type_counts: dict[str, int] = {}
-    selected: list[SetupSignal] = []
+    selected: list[BoundarySignal] = []
     remaining = list(signals)
 
     while remaining and len(selected) < max_count:
@@ -62,7 +62,7 @@ def stage1_screen(
     verbose: bool = True,
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
-) -> tuple[list[SetupSignal], dict]:
+) -> tuple[list[BoundarySignal], dict]:
     """Stage 1: Fetch pairs → batch fetch 4H candles → run screener → dedup."""
     conn = get_connection()
 
@@ -116,6 +116,9 @@ def stage1_screen(
                 coin, df, ctx, config.max_setups_per_coin, config.proximity_atr_mult,
                 disabled_types=disabled_types,
             )
+            # Option C: lift v1 detector output into the version-agnostic spine record
+            # (stage-1 scans 4H). The v2 producer targets the same type in 7b.2b.
+            signals = [BoundarySignal.from_setup_signal(s, setup_tf="4h") for s in signals]
 
             # Pick best non-duplicate signal for this coin
             for signal in signals:
@@ -167,7 +170,7 @@ def stage1_screen(
 
 
 def _analyze_one(
-    signal: SetupSignal,
+    signal: BoundarySignal,
     config: ScannerConfig,
     prefetched_candles: dict | None = None,
 ) -> ScanResult | None:
@@ -191,7 +194,7 @@ def _analyze_one(
 
 
 def stage2_analyze(
-    signals: list[SetupSignal],
+    signals: list[BoundarySignal],
     config: ScannerConfig,
     verbose: bool = True,
     strategy_id: str = "v0",

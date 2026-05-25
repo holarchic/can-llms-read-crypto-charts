@@ -5,6 +5,7 @@ import pytest
 
 from scanner.db import get_connection
 from scanner.models import (
+    BoundarySignal,
     Direction,
     FibLevels,
     MarketContext,
@@ -313,3 +314,36 @@ def test_storage_split_move_completeness():
         assert callable(getattr(s, name))
     for name in queries_all:
         assert callable(getattr(q, name))
+
+
+# --- T-019 Chunk 7b.2a: BoundarySignal spine equivalence ----------------------
+
+_VARYING_COLS = {"id", "signal_id", "batch_id", "created_at", "timestamp", "rowid"}
+
+
+def test_boundary_signal_v1_adapter_preserves_fields():
+    """The Option-C v1 adapter copies every v1 field verbatim; v2-only fields empty."""
+    s = _make_signal(coin="ETH", confidence=0.55, key_level=3000.0)
+    s.max_leverage = 20
+    b = BoundarySignal.from_setup_signal(s)
+    for f in ("coin", "setup_type", "direction", "confidence", "key_level",
+              "context", "description", "max_leverage", "score_components", "detected_at"):
+        assert getattr(b, f) == getattr(s, f), f"adapter dropped/changed {f}"
+    assert b.setup_tf == "4h"
+    assert b.entry is None and b.hard_stop is None and b.soft_stop is None
+    assert b.confluence == frozenset() and b.weakness_flag is False
+
+
+def test_save_signals_setupsignal_vs_boundary_byte_identical(db_conn):
+    """save_signals — the heaviest spine consumer (reads context deeply) — writes an
+    identical row for a v1 SetupSignal and its BoundarySignal lift (equivalence gate)."""
+    s = _make_signal(coin="SOL", confidence=0.6, key_level=150.0, current_price=152.0,
+                     atr=3.0, structure=Structure.BULLISH, range_bounds=(140.0, 160.0))
+    b = BoundarySignal.from_setup_signal(s)
+    save_signals([s], "batchA", 1, db_conn)
+    save_signals([b], "batchB", 1, db_conn)
+    rows = db_conn.execute("SELECT * FROM signals ORDER BY batch_id").fetchall()
+    assert len(rows) == 2
+    ra, rb = dict(rows[0]), dict(rows[1])
+    diffs = {k: (ra[k], rb[k]) for k in ra if k not in _VARYING_COLS and ra[k] != rb[k]}
+    assert not diffs, f"save_signals diverged for BoundarySignal vs SetupSignal: {diffs}"
