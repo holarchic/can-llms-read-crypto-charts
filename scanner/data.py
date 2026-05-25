@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import ccxt
+import numpy as np
 import pandas as pd
 
 from .config import ScannerConfig, get_exchange_meta
@@ -214,6 +215,10 @@ def fetch_candles(
 
     Column names are capitalized (Open, High, Low, Close, Volume) for mplfinance compatibility.
     exchange_id overrides config.exchange when fetching from a non-primary exchange.
+
+    Raises on a structurally-invalid response — an empty frame, or a non-finite / non-positive
+    O/H/L/C price (`ValueError`; a non-numeric payload surfaces as `TypeError`). The exchange is
+    an untrusted boundary and a degenerate frame would degrade every downstream consumer silently.
     """
     cfg = config or ScannerConfig()
     eid = exchange_id or cfg.exchange
@@ -237,6 +242,20 @@ def fetch_candles(
     df = pd.DataFrame(candles, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df.set_index("timestamp", inplace=True)
+
+    # The exchange is an untrusted boundary: a delisted symbol returns an empty frame and
+    # feed/gap glitches surface as non-finite or non-positive prices. Such a frame would
+    # propagate silently into the MA substrate, enriched charts, and the BTC-regime path, so
+    # fail loud here (callers absorb the raise per their own policy — SPEC #34 caller matrix).
+    # Length-sufficiency stays downstream (MIN_SUBSTRATE_BARS); volume is not gated (0 is
+    # legitimate on an illiquid bar); validation runs after the transient-retry loop.
+    if df.empty:
+        raise ValueError(f"fetch_candles({coin}, {interval}): empty OHLCV response")
+    prices = df[["Open", "High", "Low", "Close"]].to_numpy()
+    if not np.isfinite(prices).all() or (prices <= 0).any():
+        raise ValueError(
+            f"fetch_candles({coin}, {interval}): malformed OHLCV (non-finite or non-positive price)"
+        )
     return df
 
 

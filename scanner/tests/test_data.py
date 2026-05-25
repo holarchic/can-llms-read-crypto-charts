@@ -80,6 +80,59 @@ class TestGetExchangeThreadSafe:
         assert mock_exchange.fetch_ohlcv.call_count == 5
 
 
+class TestFetchCandlesValidation:
+    """`fetch_candles` validates the ccxt response at the untrusted ingestion boundary —
+    an empty frame or a non-finite / non-positive O/H/L/C price raises (decision #34)."""
+
+    def setup_method(self):
+        data._exchanges.clear()
+        data._exchange_locks.clear()
+        data._exchange_failures.clear()
+
+    def _fetch_with(self, rows):
+        """Run fetch_candles against a mocked exchange returning ``rows``."""
+        mock_exchange = MagicMock()
+        mock_exchange.fetch_ohlcv.return_value = rows
+        data._exchanges["hyperliquid"] = mock_exchange
+        data._exchange_locks["hyperliquid"] = threading.Lock()
+        with patch("scanner.data.get_exchange_meta", return_value={
+            "ccxt_class": "hyperliquid",
+            "symbol_template": "{coin}/USDC:USDC",
+        }):
+            with patch("scanner.data.time.sleep"):
+                return data.fetch_candles("BTC", "4h", 2)
+
+    def test_fetch_candles_empty_raises(self):
+        with pytest.raises(ValueError, match="empty OHLCV"):
+            self._fetch_with([])
+
+    def test_fetch_candles_nan_ohlc_raises(self):
+        rows = [
+            [1000000, 1.0, 2.0, 0.5, 1.5, 100.0],
+            [1000001, 1.5, float("nan"), 1.0, 2.0, 200.0],  # NaN High
+        ]
+        with pytest.raises(ValueError, match="non-finite or non-positive"):
+            self._fetch_with(rows)
+
+    def test_fetch_candles_nonpositive_price_raises(self):
+        """A non-positive O/H/L (not just Close) is malformed — Low <= 0 here."""
+        rows = [
+            [1000000, 1.0, 2.0, 0.5, 1.5, 100.0],
+            [1000001, 1.5, 2.5, 0.0, 2.0, 200.0],  # Low == 0
+        ]
+        with pytest.raises(ValueError, match="non-finite or non-positive"):
+            self._fetch_with(rows)
+
+    def test_fetch_candles_valid_passes(self):
+        rows = [
+            [1000000, 1.0, 2.0, 0.5, 1.5, 100.0],
+            [1000001, 1.5, 2.5, 1.0, 2.0, 200.0],
+        ]
+        df = self._fetch_with(rows)
+        assert len(df) == 2
+        assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
 class TestIsTransientCcxt:
     """_is_transient_ccxt decides whether an error warrants retry.
 
