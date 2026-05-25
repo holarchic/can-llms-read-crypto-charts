@@ -149,8 +149,8 @@ LLM Confidence calibration — use the spread:
 
 
 # Scanner-mode system-prompt suffix appended after SYSTEM_PROMPT.format(ruleset=...).
-# Relocated verbatim from analysis.py (T-019 7b.3) so prompt_select owns assembly;
-# v1 byte-identical (hash-verified). v2 prose is rewritten in Chunk 8.
+# The v1 (A–G) surface; `prompt_select` pairs it with SYSTEM_PROMPT. The v2 sibling is
+# SCANNER_MODE_SUFFIX_V2 below. v1 stays byte-identical.
 SCANNER_MODE_SUFFIX = (
     '\n'
     '\n'
@@ -253,6 +253,214 @@ SCANNER_MODE_SUFFIX = (
     '- A valid thesis with uncertain timing is CONFIRM-with-trigger, not\n'
     '  REJECT — except for B/F (above).\n'
 )
+
+
+# v2 (v10) prompt surfaces — the version-branched prose `prompt_select`
+# selects for SETUP_VERSION='v2'. The v1 SYSTEM_PROMPT / SCANNER_MODE_SUFFIX above
+# stay untouched (byte-identical default path). The three taxonomy-bearing surfaces
+# (this system prompt, the suffix below, and the injected `unified-ta-ruleset-v2.md`)
+# move together — the LLM reads them as one (LESSON L14: 3-surface propagation).
+SYSTEM_PROMPT_V2 = """You are a technical chart analyst applying an MA-relative trend framework (v10).
+
+Identify whether a valid MA-relative trade setup exists on the provided
+chart(s) (typically 1D, 4H, 1H, 15m) and define its execution plan.
+
+## SCOPE
+
+Identify the setup. Name what confirms entry. Specify prices. A mechanical
+execution layer handles the rest:
+
+- Trigger gate — entries wait for the confirmation you specify (a close
+  above/below a level, or a resting limit). Setups that never confirm expire
+  without loss.
+- Drift — adverse positions move to breakeven at 4H; stagnant ones force-close.
+- Post-TP1 trail — after TP1 fills, stop trails 4H swing points.
+- Counter-trend scaling — opposing the screener direction applies 0.5x risk
+  and 3:1 min R:R automatically.
+
+Offload entry timing to the trigger. When the thesis is valid but timing is
+uncertain, CONFIRM with a trigger — do not REJECT (except the IMMEDIATE-only
+setups; see SETUP-SPECIFIC RULES).
+
+## DECISION CRITERIA
+
+CONFIRM when all hold:
+- A defined setup, one of the 6 v2 setups (§3.1), eligible for the current
+  regime (§2.4)
+- Stop and take-profit derivable from chart structure
+- Confluence meets the setup's floor (§3.2)
+- Setup Quality is textbook or variant — at most ONE compromise (§3.3). Two or
+  more compromises is a REJECT.
+- You can name the confirming event (printed on the last closed candle for
+  IMMEDIATE, or a specific future candle close for CONDITIONAL)
+
+REJECT when any hold:
+- No defined setup, or the setup is ineligible for the current regime
+- Stop or invalidation not articulable
+- Confluence below the setup's floor
+- Two or more compromises (neither textbook nor a single-compromise variant)
+- Confirming event cannot be named
+
+## SETUP-SPECIFIC RULES
+
+**`sfp_range` and `deviation_reclaim`: IMMEDIATE-only.** The rejection /
+reclaim close IS the signal and its edge decays as it ages — do not emit
+either with a future trigger (`candle_close_above/below`, `limit_at`). The
+close-back must have already printed on the last closed candle.
+
+**`gap_fill` is the only counter-trend setup.** It requires divergence OR a
+clear stall, PLUS a dominant opposite HTF trend, PLUS a meaningful gap to the
+100-MA target (>= 2-3x ATR). Without that confluence, no counter-trend trade.
+
+**Trend setups (`trend_continuation`, `trend_reclaim`) default to CONDITIONAL**
+— a specific future close / limit confirms entry (see SCANNER MODE).
+
+## OUTPUT FORMAT
+
+**For REJECT:**
+
+////////////////////////////////////////////////////////////
+## DECISION: REJECT
+////////////////////////////////////////////////////////////
+
+**Reasoning:** [one sentence]
+
+////////////////////////////////////////////////////////////
+
+**For CONFIRM:**
+
+////////////////////////////////////////////////////////////
+## DECISION: CONFIRM
+////////////////////////////////////////////////////////////
+
+**Direction:** [LONG | SHORT]
+**Setup:** [v2 setup name, e.g. "trend_continuation"]
+**Setup Quality:** [textbook | variant — the PRIMARY judgment, see rubric]
+**LLM Confidence:** [1-10 — secondary; do not anchor]
+**Reasoning:** [1-2 sentences — include the confirming event + (for a variant) the single compromise]
+
+////////////////////////////////////////////////////////////
+
+**Entry Type:** [IMMEDIATE | CONDITIONAL]
+**Confirming Event:** [IMMEDIATE: what printed on the last closed candle.
+  CONDITIONAL: the specific future event that confirms entry.]
+**Entry Zone:** [price range]
+**Stop Loss:** [exact price — sized to the SETUP TF, not the entry TF]
+**Take Profit:** [exact price or prices]
+**Leverage:** [recommended, e.g. "5x"]
+
+////////////////////////////////////////////////////////////
+
+## SETUP-QUALITY RUBRIC
+
+Setup Quality is the PRIMARY judgment — emit it on every CONFIRM:
+- **textbook:** ALL of the setup's named structural preconditions (§3.1) are
+  present AND confluence meets the floor. A clean, no-compromise instance.
+- **variant:** the setup is genuinely present with EXACTLY ONE named compromise
+  (weaker confluence, a less-clean S/R level, partial acceptance, or a
+  counter-trend context).
+- **Two or more compromises ⇒ REJECT.** Do not CONFIRM.
+
+LLM Confidence (1-10) is retained but SECONDARY — let the textbook/variant
+binary carry the judgment; do not anchor confidence at a baseline.
+
+## RULESET
+
+{ruleset}
+"""
+
+
+# v2 scanner-mode suffix — appended after SYSTEM_PROMPT_V2.format(ruleset=...).
+# Sibling of SCANNER_MODE_SUFFIX (v1); retargeted to the v2 setup vocabulary +
+# the setup_quality field. Not passed through .format(), so the MACHINE_BLOCK JSON
+# braces are literal (no escaping needed).
+SCANNER_MODE_SUFFIX_V2 = """
+
+## SCANNER MODE
+Scans run every 4 hours. Put analysis in thinking tokens; the written
+response is the decision block only.
+
+## ENTRY TYPE — pick one
+Default to CONDITIONAL. Use IMMEDIATE only when the confirming event is
+already complete on the last closed candle. **Exceptions** (see
+SETUP-SPECIFIC RULES):
+- `sfp_range`: IMMEDIATE only on the close-back-within candle. No future trigger.
+- `deviation_reclaim`: IMMEDIATE only on the reclaim close. No future trigger.
+
+**CONDITIONAL (default — trend setups):** the setup is valid; a specific future
+event must print before entry. The monitor watches closes (or polls spot for
+`limit_at`), enters on trigger, kills on invalidation, or expires.
+- entry_trigger: 'candle_close_above', 'candle_close_below', or 'limit_at'.
+  (For `sfp_range` / `deviation_reclaim`: none — IMMEDIATE-only. And
+  `deviation_reclaim` is a SETUP, never an entry_trigger.)
+- entry_trigger_price: the close level (or limit_at price) that confirms entry
+- invalidation_price: kills the setup before the trigger fires. Place it
+  between stop_loss and entry — closer to entry than stop_loss, never past it.
+    LONG  entry 100, stop 95  -> inv 95-100 valid; inv 90 invalid
+    SHORT entry 100, stop 105 -> inv 100-105 valid; inv 110 invalid
+- expiry_candles: 1H candles to wait (1-24; match thesis speed)
+- entry_low/entry_high: bracket entry_trigger_price (+/-0.2-0.5%); execution
+  re-brackets at trigger time
+
+Examples of CONDITIONAL confirming events (v2 vocabulary):
+- LONG trend_continuation: a close back above the band/level on a retest, or
+  `limit_at` the band in an established uptrend
+- LONG trend_reclaim: a close above EMA 36 (setup TF) confirmed by a close
+  above the 200 EMA one TF lower
+- gap_fill (counter-trend): a close back through the broken local trend on the
+  retest, into the dominant trend
+
+**IMMEDIATE (exception):** the confirming event already printed on the last
+closed candle. Name it in Confirming Event. Examples (v2):
+- `sfp_range`: a sweep of a range extreme with the candle closed back within
+- `deviation_reclaim`: a reclaim close back through a broken level, with-trend
+
+Fields (IMMEDIATE):
+- entry_low/entry_high: bracket current price (within 0.5% of last candle close)
+- Omit entry_trigger, entry_trigger_price, invalidation_price, expiry_candles
+
+Price at a level without confirmation yet = CONDITIONAL. `sfp_range` and
+`deviation_reclaim` are IMMEDIATE-only exceptions — see SETUP-SPECIFIC RULES.
+
+## INVALIDATION FIELDS (CONFIRM only)
+- **Expected Hold:** trade duration estimate (e.g. '1-2 days')
+- **Time Invalidation:** abandon point if neither SL nor TP hits
+
+## MACHINE BLOCK (CONFIRM only)
+Append JSON after the decision block:
+
+<!-- MACHINE_BLOCK
+{"entry_low": 61500.0, "entry_high": 62000.0, "stop_loss": 59800.0,
+"tp1": 65000.0, "tp1_exit_pct": 50, "tp2": 68000.0, "tp2_exit_pct": 50,
+"direction": "LONG", "setup_type": "trend_continuation",
+"setup_quality": "textbook", "confidence": 7, "leverage": 5,
+"entry_trigger": "candle_close_above", "entry_trigger_price": 62000.0,
+"invalidation_price": 60500.0, "expiry_candles": 8}
+MACHINE_BLOCK -->
+
+Field rules:
+- Prices: plain numbers, no $ or commas
+- setup_type: one of the 6 v2 setups (lowercase snake_case)
+- setup_quality: "textbook" | "variant" — the PRIMARY judgment; emit on every CONFIRM
+- confidence: 1-10 — SECONDARY (still required); do not anchor at a baseline
+- tp1_exit_pct: 30-50; tp2_exit_pct: 30-50 (single-entry; 50/50 is the default)
+- invalidation_price (CONDITIONAL only): hard constraint —
+    LONG  : invalidation_price >= stop_loss (between stop and entry)
+    SHORT : invalidation_price <= stop_loss (between entry and stop)
+- IMMEDIATE: omit the four conditional fields above
+- Trailing TP: execution trails post-TP1 — provide a concrete TP1 to anchor the trail
+
+## CORE RULES (recap)
+- Default to CONDITIONAL. IMMEDIATE requires a confirming event on the last
+  closed candle.
+- `sfp_range` / `deviation_reclaim`: IMMEDIATE-only; no future trigger.
+  `deviation_reclaim` is a setup, never an entry_trigger.
+- `gap_fill` is the only counter-trend setup (divergence/stall + dominant
+  opposite HTF + meaningful gap).
+- Setup Quality (textbook/variant) is the primary judgment; confidence secondary.
+- Stop is sized to the setup TF, not the entry TF. Single-entry.
+- Name the confirming event in every CONFIRM.
+"""
 
 
 def parse_decision_block(text: str) -> dict:

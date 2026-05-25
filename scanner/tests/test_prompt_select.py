@@ -1,17 +1,27 @@
 """Tests for scanner/prompt_select.py + version-gated prompt persistence (T-019 7b.3)."""
 
+import json
+import re
 from datetime import datetime, timezone
 
 import pytest
 
 from scanner.config import STRATEGY_PATH, STRATEGY_PATH_V2
 from scanner.db import get_connection
-from scanner.llm import SCANNER_MODE_SUFFIX, SYSTEM_PROMPT, load_strategy
+from scanner.llm import (
+    SCANNER_MODE_SUFFIX,
+    SCANNER_MODE_SUFFIX_V2,
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_V2,
+    load_strategy,
+)
 from scanner.models import (
     BoundarySignal,
     Direction,
+    MachineBlock,
     ScanResult,
     SetupType,
+    SetupTypeV2,
     SpineContext,
     Structure,
 )
@@ -39,6 +49,65 @@ def test_v2_injects_v2_ruleset_not_v1():
     assert v2.system_text != v1.system_text
     assert load_strategy(STRATEGY_PATH_V2) in v2.system_text       # the v2 ruleset is what's injected
     assert "v10" in v2.system_text or "the framework" in v2.system_text
+
+
+def test_v2_system_text_is_v2prompt_plus_v2suffix():
+    """The v2 selector assembles exactly SYSTEM_PROMPT_V2.format(ruleset=v2) +
+    SCANNER_MODE_SUFFIX_V2 — all three taxonomy-bearing surfaces are the v2 prose (Chunk 8d)."""
+    spec = select_prompt("v2")
+    assert spec.system_text == (
+        SYSTEM_PROMPT_V2.format(ruleset=load_strategy(STRATEGY_PATH_V2)) + SCANNER_MODE_SUFFIX_V2
+    )
+
+
+def test_v2_three_surface_vocabulary_coherent():
+    """All 6 v2 setups appear across the assembled v2 surfaces; no v1 A–G setup tokens leak in;
+    deviation_reclaim appears as a setup, never as an entry_trigger enum value."""
+    text = select_prompt("v2").system_text
+    for st in SetupTypeV2:
+        assert st.value in text, st.value
+    # v1 A–G decision-criteria / setup-specific tokens must not survive into v2
+    assert "A-G per ruleset" not in text
+    assert "Setup B (breakout)" not in text and "Setup F (deviation)" not in text
+    # deviation_reclaim is a SETUP, not a trigger: the entry_trigger enum line excludes it
+    trigger_line = next(ln for ln in text.splitlines() if ln.strip().startswith("- entry_trigger:"))
+    assert "deviation_reclaim" not in trigger_line
+    # the setup_quality rubric is present
+    assert "setup_quality" in text and "SETUP-QUALITY RUBRIC" in text
+
+
+def test_v2_keeps_numeric_confidence_required():
+    """Demoting confidence in the v2 prose must not let the LLM drop the still-required field:
+    the visible format keeps **LLM Confidence:**, the machine-block surface keeps "confidence"."""
+    sys_text = SYSTEM_PROMPT_V2  # the system-prompt surface
+    assert "**LLM Confidence:**" in sys_text
+    assert '"confidence":' in SCANNER_MODE_SUFFIX_V2          # the example JSON + field rule
+    # confidence present in the assembled whole too
+    assert '"confidence"' in select_prompt("v2").system_text
+
+
+def test_v1_free_of_v2_vocabulary():
+    """The v1 default path must stay clean of v2 vocabulary (byte separation undergirds the
+    flag-reversible cutover). `deviation_reclaim` is the known cross-namespace collision — it
+    appears in v1 as the *deprecated entry-trigger* name (the Setup-F rules forbid it), NOT as a
+    v2 setup — so it is excluded from this check; all other v2 vocabulary must be absent."""
+    text = select_prompt("v1").system_text
+    assert "setup_quality" not in text
+    v2_exclusive = [st.value for st in SetupTypeV2 if st is not SetupTypeV2.DEVIATION_RECLAIM]
+    for tok in v2_exclusive:
+        assert tok not in text, tok
+
+
+def test_v2_example_machine_block_parses_and_validates():
+    """The MACHINE_BLOCK example embedded in the v2 scanner suffix must be a valid block
+    (so the LLM has a correct template) — including the new setup_quality + v2 setup_type."""
+    text = select_prompt("v2").system_text
+    m = re.search(r"<!--\s*MACHINE_BLOCK\s*\n(.+?)\nMACHINE_BLOCK\s*-->", text, re.DOTALL)
+    assert m is not None
+    mb = MachineBlock.from_raw(json.loads(m.group(1).strip()))
+    assert mb is not None
+    assert mb.setup_quality == "textbook"
+    assert mb.setup_type == "trend_continuation"
 
 
 def test_load_strategy_paths():
