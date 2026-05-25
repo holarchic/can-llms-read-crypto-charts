@@ -234,7 +234,8 @@ class TestScanUniverse:
 
 class TestPromptVersion:
     def test_prompt_version_roundtrips(self, db_conn, sample_result):
-        save_result(sample_result, db_conn, prompt_version="2")
+        sample_result.prompt_version = "2"  # provenance lives on the result now
+        save_result(sample_result, db_conn)
         row = db_conn.execute("SELECT prompt_version FROM scans WHERE scan_id = ?", ("test1234",)).fetchone()
         assert row["prompt_version"] == "2"
 

@@ -288,8 +288,7 @@ def stage2_analyze(
                     if not result.decision:
                         preview = (result.analysis_text or '')[:200].replace('\n', ' ')
                         print(f"    ⚠ Parse failed. Raw output: {preview}")
-                save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange,
-                           prompt_version=result.prompt_version)
+                save_result(result, conn, strategy_id=strategy_id, exchange=config.exchange)
                 results.append(result)
 
     conn.close()

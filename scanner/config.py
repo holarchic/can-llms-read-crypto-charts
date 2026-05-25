@@ -11,6 +11,10 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
 STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
+# Canonical SETUP_VERSION set — the one source of the supported versions. Validated at
+# the config boundary here; mapped to per-version prompt artifacts in `prompt_select`
+# (which asserts its registry keys match this set, so the two cannot drift).
+SETUP_VERSIONS = ("v1", "v2")
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 DB_PATH = DATA_DIR / "scanner.db"
@@ -114,7 +118,7 @@ class ScannerConfig:
                 f"Unknown exchange: '{self.exchange}'. "
                 f"Supported: {', '.join(EXCHANGE_META)}"
             )
-        if self.setup_version not in ("v1", "v2"):
+        if self.setup_version not in SETUP_VERSIONS:
             raise ValueError(
-                f"Unknown setup_version: '{self.setup_version}'. Supported: v1, v2"
+                f"Unknown setup_version: '{self.setup_version}'. Supported: {', '.join(SETUP_VERSIONS)}"
             )

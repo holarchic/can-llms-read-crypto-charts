@@ -24,9 +24,10 @@ def save_result(
     conn: sqlite3.Connection | None = None,
     strategy_id: str = "v0",
     exchange: str = "hyperliquid",
-    prompt_version: str | None = None,
 ) -> None:
-    """Save a scan result to the database."""
+    """Save a scan result to the database. `prompt_version` is the result's own
+    provenance (`result.prompt_version`, set by the version-gated selector) — persisted
+    here so the save site cannot override what the producer recorded."""
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -67,7 +68,7 @@ def save_result(
         exchange,
         result.llm_confidence,
         _json.dumps(result.machine_block.to_raw()) if result.machine_block else None,
-        prompt_version,
+        result.prompt_version,
         datetime.now(timezone.utc).isoformat(),
     )
 

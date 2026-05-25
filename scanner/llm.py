@@ -10,16 +10,13 @@ import re
 import sys
 from pathlib import Path
 
-from .config import STRATEGY_PATH, STRATEGY_PATH_V2
 from .models import MachineBlock
 
-_RULESET_PATH = {"v1": STRATEGY_PATH, "v2": STRATEGY_PATH_V2}
 
-
-def load_strategy(setup_version: str = "v1") -> str:
-    """Read the ruleset markdown for ``setup_version`` (v1 → the A–G ruleset, v2 → the
-    v10 ruleset). Both files are shipped, so the v2 branch is fail-closed-safe."""
-    path = _RULESET_PATH.get(setup_version, STRATEGY_PATH)
+def load_strategy(path: Path) -> str:
+    """Read a ruleset markdown file. The caller (`prompt_select`) resolves the
+    per-version path from the single prompt-artifact registry; this is the thin reader
+    (fail-fast on a missing file — both ruleset files are shipped)."""
     if not path.exists():
         print(f"Error: Strategy file not found at {path}", file=sys.stderr)
         sys.exit(1)
