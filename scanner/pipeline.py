@@ -18,7 +18,7 @@ from .models import BoundarySignal, ExecutionRequest, ScanResult
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
-from .screener_v2 import chart_inputs, screen_v2
+from .screener_v2 import Stage1ArtifactsV2, chart_inputs, screen_v2
 from .setup_validator import validate_confirms
 from .strategy.store import get_strategy
 
@@ -131,13 +131,14 @@ def stage1_screen(
     verbose: bool = True,
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
-) -> tuple[list[BoundarySignal], dict]:
+) -> tuple[list[BoundarySignal], Stage1ArtifactsV2 | dict]:
     """Stage 1: resolve pairs → version-dispatch the screener → select + persist.
 
     `setup_version` selects the producer: v1 (`_screen_v1`, shuffle + diversity) or v2
     (`screen_v2`, deterministic score order, already one-per-coin). Pairs resolution,
-    BTC-structure context, and persistence are shared; the returned bundle is whatever
-    the producer hands back for stage-2 reuse (v1: 4H map; v2: per-coin candle dict)."""
+    BTC-structure context, and persistence are shared; the returned bundle is the
+    producer's stage-2 handoff: v2 wraps a typed `Stage1ArtifactsV2`; v1 keeps its
+    untyped 4H candle_map dict (the v1-side retires at the cutover)."""
     conn = get_connection()
 
     # Load strategy for disabled_types
@@ -202,13 +203,13 @@ def stage1_screen(
 
 
 def _v2_chart_inputs(
-    signal: BoundarySignal, prefetched_candles: dict | None, config: ScannerConfig,
+    signal: BoundarySignal, prefetched: Stage1ArtifactsV2 | None, config: ScannerConfig,
 ) -> tuple[dict, dict]:
     """Resolve the coin's stage-1 bundle entry (defensive refetch if absent — the
     producer bundles every emitted coin) and hand it to the producer-owned
     `screener_v2.chart_inputs`, which owns the frame/HTF-EMA selection. Stage 2 holds
     only the bundle-miss I/O recovery, not the bundle's internal shape."""
-    candles = (prefetched_candles or {}).get(signal.coin)
+    candles = prefetched.candles_by_coin.get(signal.coin) if prefetched else None
     if candles is None:
         candles = fetch_multi_tf(signal.coin, config)
     return chart_inputs(candles)
@@ -217,7 +218,7 @@ def _v2_chart_inputs(
 def _analyze_one(
     signal: BoundarySignal,
     config: ScannerConfig,
-    prefetched_candles: dict | None = None,
+    prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
@@ -247,7 +248,7 @@ def stage2_analyze(
     config: ScannerConfig,
     verbose: bool = True,
     strategy_id: str = "v0",
-    prefetched_candles: dict | None = None,
+    prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
     conn = get_connection()

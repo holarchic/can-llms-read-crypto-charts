@@ -29,6 +29,7 @@ from scanner.models import (
 )
 from scanner.pipeline import _v2_chart_inputs
 from scanner.screener_v2 import (
+    Stage1ArtifactsV2,
     _dedup_cross_tf,
     _lower_tf_reclaim,
     _round_sig,
@@ -251,8 +252,21 @@ def test_screen_v2_order_and_bundle(conn, monkeypatch):
     assert survivors[0].confidence > survivors[1].confidence
     assert survivors[1].max_leverage == 25
     # bundle pruned to survivor coins, carries the closed-bar candle dicts for charting
-    assert set(bundle) == {"BTC", "ETH"}
-    assert set(bundle["BTC"]) >= {"1d", "4h", "1h"}
+    assert set(bundle.candles_by_coin) == {"BTC", "ETH"}
+    assert set(bundle.candles_by_coin["BTC"]) >= {"1d", "4h", "1h"}
+
+
+def test_screen_v2_returns_typed_stage1_artifacts(conn, monkeypatch):
+    """The stage-1→2 seam is a named record (`Stage1ArtifactsV2`), not a bare dict
+    (Chunk-10 typed-seam cleanup) — consumers read `.candles_by_coin`, never index it
+    as a dict. The v1 path retires at the cutover, so v1's untyped 4H map stays."""
+    _patch_pipeline(monkeypatch, {"BTC": [("4h", _v2sig(n_confluence=2))]})
+    _, bundle = screen_v2(
+        ["BTC"], {"BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
+    )
+    assert isinstance(bundle, Stage1ArtifactsV2)
+    assert set(bundle.candles_by_coin) == {"BTC"}
+    assert isinstance(bundle.candles_by_coin["BTC"], dict)  # per-TF candle dict
 
 
 def test_screen_v2_disabled_type_never_lifts(conn, monkeypatch):
@@ -283,7 +297,7 @@ def test_screen_v2_bad_coin_isolated(conn, monkeypatch):
         ["BAD", "BTC"], {"BAD": 5, "BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
     )
     assert [b.coin for b in survivors] == ["BTC"]      # BTC still emits — scan not aborted
-    assert "BAD" not in bundle and "BTC" in bundle     # the bad coin is not even bundled
+    assert "BAD" not in bundle.candles_by_coin and "BTC" in bundle.candles_by_coin  # the bad coin is not even bundled
 
 
 def test_select_one_per_coin_dedup_error_isolated(conn, monkeypatch):
@@ -313,7 +327,7 @@ def test_screen_v2_total_wipeout_alerts(conn, monkeypatch):
     survivors, bundle = screen_v2(
         ["BTC", "ETH"], {"BTC": 5, "ETH": 5}, None, ScannerConfig(setup_version="v2"), conn, verbose=False,
     )
-    assert survivors == [] and bundle == {}
+    assert survivors == [] and bundle.candles_by_coin == {}
     assert len(sent) == 1 and "all 2 coins failed" in sent[0]
 
 
@@ -345,7 +359,7 @@ def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
     assert isinstance(survivors, list)
     for b in survivors:
         assert isinstance(b.setup_type, SetupTypeV2)
-        assert b.coin in bundle
+        assert b.coin in bundle.candles_by_coin
 
 
 # --- 7. v2 enriched-chart inputs -----------------------------------------------
@@ -354,7 +368,9 @@ def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
 def test_v2_chart_inputs_align_next_htf_ema():
     candles = _realistic_candles()
     sig = _bsig(coin="BTC")
-    candle_sets, htf_emas = _v2_chart_inputs(sig, {"BTC": candles}, ScannerConfig(setup_version="v2"))
+    candle_sets, htf_emas = _v2_chart_inputs(
+        sig, Stage1ArtifactsV2(candles_by_coin={"BTC": candles}), ScannerConfig(setup_version="v2"),
+    )
 
     # the 1d/4h/1h/15m detector frames feed the charts (15m added Chunk 8/8.2)
     assert set(candle_sets) == {"1d", "4h", "1h", "15m"}

@@ -21,6 +21,7 @@ in confluence (the detectors own their own thresholds; see `setups_v2`).
 
 import math
 import sqlite3
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -49,6 +50,16 @@ from .setups_v2 import (
     detect_trend_reclaim,
 )
 from .trend_state import TrendDirection
+
+
+class Stage1ArtifactsV2(NamedTuple):
+    """Per-coin multi-TF closed-bar candle bundle handed from stage 1 to stage 2 on the
+    v2 path. Stage-2 enriched charts render from the same frames the v2 detectors used
+    (no refetch divergence). v1 keeps its untyped 4H candle_map dict — that path retires
+    at the cutover."""
+
+    candles_by_coin: dict[str, dict[str, pd.DataFrame]]
+
 
 # The one-TF-lower ladder for the `lower_tf_reclaim` derivation. 15m is the floor —
 # no lower TF exists, so its reclaim is fail-closed False (a trend_reclaim can never
@@ -242,13 +253,13 @@ def screen_v2(
     config: ScannerConfig,
     conn: sqlite3.Connection,
     verbose: bool = True,
-) -> tuple[list[BoundarySignal], dict[str, dict[str, pd.DataFrame]]]:
+) -> tuple[list[BoundarySignal], Stage1ArtifactsV2]:
     """Produce + select the v2 screener signals, deterministically ordered by score.
 
-    Returns the ordered (uncapped) `BoundarySignal` list plus a bundle mapping each
-    surviving coin to its closed-bar candle dict (for the stage-2 enriched charts). The
-    caller (`stage1_screen`) caps `sent_to_llm` and persists the full list — mirroring
-    v1's `save_signals(all, ..., len(capped))`.
+    Returns the ordered (uncapped) `BoundarySignal` list plus a `Stage1ArtifactsV2`
+    bundle mapping each surviving coin to its closed-bar candle dict (for the stage-2
+    enriched charts). The caller (`stage1_screen`) caps `sent_to_llm` and persists the
+    full list — mirroring v1's `save_signals(all, ..., len(capped))`.
     """
     disabled = {t for t in (disabled_types or set())}
 
@@ -298,7 +309,7 @@ def screen_v2(
     # Prune the bundle to coins that survived — the only frames stage 2 will chart.
     survivor_coins = {b.coin for b in survivors}
     bundle = {coin: bundles[coin] for coin in survivor_coins}
-    return survivors, bundle
+    return survivors, Stage1ArtifactsV2(candles_by_coin=bundle)
 
 
 def chart_inputs(candles: dict[str, pd.DataFrame]) -> tuple[dict, dict]:
