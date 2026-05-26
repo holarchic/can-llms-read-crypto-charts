@@ -223,6 +223,38 @@ def test_sfp_detects_sweep_at_max_age_boundary():
     assert detect_sfp_range(ctx, sub, [], max_age=7) == []  # one tighter excludes it
 
 
+def test_sfp_suppressed_on_shallow_sweep_by_default():
+    # Wick pierces sr 106 by only 0.3 — a 1-tick poke, not a real liquidity grab.
+    # The default sweep_atr depth gate (8b-cal #36) rejects it; sweep_atr=0 (no gate) emits.
+    df = _sweep_frame([105.7, 101.0, 100.0], sweep_high=106.3)
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert detect_sfp_range(ctx, sub, [_lvl(106)]) == []          # shallow → depth gate suppresses
+    assert detect_sfp_range(ctx, sub, [_lvl(106)], sweep_atr=0.0)  # gate off → the poke emits
+
+
+def test_sfp_suppressed_on_weak_reaction_by_default():
+    # Wick sweeps deep (108 over sr 106) but the reaction bars close back by a hair
+    # (105.95 / 105.98 — margins ~0.02-0.05). The default react_atr momentum gate rejects;
+    # react_atr=0 (any-epsilon, the pre-8b behaviour) emits.
+    df = _sweep_frame([102.0, 105.95, 105.98], sweep_high=108.0)
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert detect_sfp_range(ctx, sub, [_lvl(106)]) == []           # weak reaction → momentum gate suppresses
+    assert detect_sfp_range(ctx, sub, [_lvl(106)], react_atr=0.0)  # gate off → the limp reaction emits
+
+
+def test_sfp_suppressed_when_stale_by_default():
+    # Sweep at index 110, then a 4th trailing bar → age 3, one past the default max_age=2
+    # freshness window ("IMMEDIATE on that close"). Default rejects; max_age=3 catches it.
+    closes = _zig(110, 95, 105, 8) + [102.0, 101.0, 100.0, 100.5]
+    highs = [c + 0.4 for c in closes]
+    highs[110] = 108.0
+    df = _frame(closes, highs=highs)
+    assert len(df) - 1 - 110 == 3  # the sweep is age 3
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert detect_sfp_range(ctx, sub, [_lvl(106)]) == []          # stale past the default fresh window
+    assert detect_sfp_range(ctx, sub, [_lvl(106)], max_age=3)     # widen the window → emits
+
+
 # --- rsi_divergence_range -----------------------------------------------------
 
 def test_rsi_divergence_emits_on_higher_high_lower_rsi():
