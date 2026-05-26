@@ -15,9 +15,8 @@ dict so stage-2 enriched charts render from the SAME frames the detectors used (
 refetch divergence).
 
 `stage1_score` (carried on `BoundarySignal.confidence` — the unified screener-rank
-slot v1 fills with its heuristic confidence) and every detector threshold are v1
-defaults pending the Chunk-8b offline calibration; the ranking is deterministic and
-monotonic in confluence, not yet tuned.
+slot v1 fills with its heuristic confidence) ranks deterministically and monotonically
+in confluence (the detectors own their own thresholds; see `setups_v2`).
 """
 
 import math

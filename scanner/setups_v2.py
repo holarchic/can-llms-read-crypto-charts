@@ -29,7 +29,7 @@ layer, and ``models`` must take no upward deps):
 
 Cross-TF concerns stay out: ``detect_trend_reclaim`` takes the one-TF-lower 200EMA
 reclaim as the explicit keyword ``lower_tf_reclaim`` (Chunk 7a computes it). All
-thresholds are v1 defaults, calibrated Chunk 8b. Every detector degrades to ``[]`` on
+detector thresholds are keyword-argument defaults. Every detector degrades to ``[]`` on
 short history / NaN substrate and never raises.
 """
 
@@ -463,22 +463,20 @@ def _significant_level(
 
 def _sweep(
     df: pd.DataFrame, sr_levels: list[SRLevelV2], range_bounds: tuple[float, float] | None,
-    *, reaction_window: int, max_age: int, atr: float, sweep_atr: float, react_atr: float,
+    *, reaction_window: int, max_age: int, depth_min: float, react_min: float,
 ) -> tuple[Direction, float, float, bool] | None:
     """Most recent significant-level sweep with a real wick AND a momentum reaction.
 
-    A sweep bar pierces a significant level by ≥ ``sweep_atr``·ATR (a genuine liquidity
-    grab, not a 1-tick poke) and closes back through it (``_significant_level``); each of
-    the following ``reaction_window`` bars must close back past the level by ≥
-    ``react_atr``·ATR (post-sweep momentum confirms rotation — not any-epsilon). Returns
-    ``(direction, swept_level, sweep_wick_extreme, at_sr)`` or ``None``. Scans only fresh
-    bars (within ``max_age`` — the the framework "IMMEDIATE on that close" window) that leave room
-    for the reaction. Calibrated Chunk 8b-cal (decision #36): the geometry was faithful but
-    too loose on freshness/depth/reaction in the rotational regime.
+    A sweep bar pierces a significant level by ≥ ``depth_min`` (a genuine liquidity grab,
+    not a 1-tick poke) and closes back through it (``_significant_level``); each of the
+    following ``reaction_window`` bars must close back past the level by ≥ ``react_min``
+    (post-sweep momentum confirms rotation — not any-epsilon). Returns ``(direction,
+    swept_level, sweep_wick_extreme, at_sr)`` or ``None``. Scans only fresh bars (within
+    ``max_age`` — the "IMMEDIATE on that close" window) that leave room for the reaction.
+    ``depth_min``/``react_min`` are price-space gates; the caller owns the ATR scaling.
     """
     n = len(df)
     high, low, close = df["High"], df["Low"], df["Close"]
-    depth_min, react_min = sweep_atr * atr, react_atr * atr
     for i in range(n - 1 - reaction_window, max(-1, n - 2 - max_age), -1):  # inclusive of age == max_age
         ci, hi, lo = float(close.iloc[i]), float(high.iloc[i]), float(low.iloc[i])
         level, at_sr = _significant_level(ci, hi, "short", sr_levels, range_bounds)
@@ -555,9 +553,10 @@ def detect_sfp_range(
 ) -> list[SetupSignalV2]:
     """Swing-failure pattern at a significant level (sr OR external liquidity).
 
-    ``max_age``/``sweep_atr``/``react_atr`` are the Chunk 8b-cal freshness / real-sweep-depth
-    / reaction-momentum gates (decision #36) that tighten an over-emitting trigger; the
-    defaults are the calibrated v2 values (this detector runs only on the v2 path)."""
+    ``max_age``/``sweep_atr``/``react_atr`` are the freshness / real-sweep-depth /
+    reaction-momentum gates; the defaults are the calibrated v2 values (this detector runs
+    only on the v2 path). The detector owns the ATR scaling and hands ``_sweep`` the
+    derived price-space minima."""
     if len(context.df) < min_bars:
         return []
     atr = context.atr
@@ -567,7 +566,7 @@ def detect_sfp_range(
         return []
     swept = _sweep(context.df, sr_levels, context.range_bounds,
                    reaction_window=reaction_window, max_age=max_age,
-                   atr=atr, sweep_atr=sweep_atr, react_atr=react_atr)
+                   depth_min=sweep_atr * atr, react_min=react_atr * atr)
     if swept is None:
         return []
     direction, level, extreme, at_sr = swept
