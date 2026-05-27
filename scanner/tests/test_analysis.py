@@ -59,10 +59,9 @@ class TestEstimateCost:
 
 class TestAnthropicRetryConfig:
     """SPEC #37: SDK max_retries=5 captures short 529 blips via ~15s of
-    exponential backoff before the pipeline 529-exhaustion path fires."""
+    exponential backoff before LLMOverloaded fires."""
 
-    def test_max_retries_is_five(self):
-        from scanner.analysis import analyze_for_scanner
+    def _bs(self):
         from scanner.models import (
             BoundarySignal,
             Direction,
@@ -71,12 +70,11 @@ class TestAnthropicRetryConfig:
             SetupType,
             Structure,
         )
-
         ctx = MarketContext(
             structure=Structure.BULLISH, swings=[], sr_levels=[], msbs=[],
             range_bounds=None, atr=1.0, current_price=100.0, fib_levels=None,
         )
-        sig = BoundarySignal.from_setup_signal(
+        return BoundarySignal.from_setup_signal(
             SetupSignal(
                 coin="BTC", setup_type=SetupType.A, direction=Direction.LONG,
                 confidence=0.5, key_level=100.0, context=ctx, description="x",
@@ -84,15 +82,18 @@ class TestAnthropicRetryConfig:
             "4h",
         )
 
+    def test_max_retries_is_five(self):
+        from scanner.analysis import analyze_for_scanner
+
         # Verify the SDK construction kwargs by short-circuiting at messages.create
-        # (the construction at analysis.py happens before the API call, so any
-        # post-construction exception still lets us inspect MockClient.call_args).
+        # (the construction happens before the API call, so any post-construction
+        # exception still lets us inspect MockClient.call_args).
         with patch("scanner.analysis.anthropic.Anthropic") as MockClient:
             instance = MagicMock()
             instance.messages.create.side_effect = RuntimeError("short-circuit")
             MockClient.return_value = instance
             try:
-                analyze_for_scanner(sig, [], None)
+                analyze_for_scanner(self._bs(), [], None)
             except RuntimeError:
                 pass  # expected — only the SDK construction matters here
 
@@ -101,3 +102,82 @@ class TestAnthropicRetryConfig:
         MockClient.assert_called_once()
         kwargs = MockClient.call_args.kwargs
         assert kwargs.get("max_retries") == 5
+
+
+class TestLLMOverloadedTranslation:
+    """SPEC #37 + architecture-pass MED: 529 SDK errors get translated to a
+    scanner-domain LLMOverloaded exception inside analyze_for_scanner, so
+    callers don't depend on the anthropic SDK class hierarchy. Non-529 status
+    errors propagate unchanged."""
+
+    def _bs(self):
+        from scanner.models import (
+            BoundarySignal,
+            Direction,
+            MarketContext,
+            SetupSignal,
+            SetupType,
+            Structure,
+        )
+        ctx = MarketContext(
+            structure=Structure.BULLISH, swings=[], sr_levels=[], msbs=[],
+            range_bounds=None, atr=1.0, current_price=100.0, fib_levels=None,
+        )
+        return BoundarySignal.from_setup_signal(
+            SetupSignal(
+                coin="BTC", setup_type=SetupType.A, direction=Direction.LONG,
+                confidence=0.5, key_level=100.0, context=ctx, description="x",
+            ),
+            "4h",
+        )
+
+    def _make_api_status_error(self, status_code: int, request_id: str | None):
+        import anthropic
+        response = MagicMock()
+        response.headers.get.return_value = request_id
+        err = anthropic.APIStatusError(
+            message="x", response=response, body={"error": {"type": "x"}}
+        )
+        err.status_code = status_code  # type: ignore[misc]
+        err.request_id = request_id
+        return err
+
+    def test_529_translates_to_llm_overloaded(self):
+        from scanner.analysis import LLMOverloaded, analyze_for_scanner
+
+        err = self._make_api_status_error(529, "req_test_529")
+        with patch("scanner.analysis.anthropic.Anthropic") as MockClient:
+            instance = MagicMock()
+            instance.messages.create.side_effect = err
+            MockClient.return_value = instance
+
+            try:
+                analyze_for_scanner(self._bs(), [], None)
+                raised = None
+            except LLMOverloaded as e:
+                raised = e
+
+        assert raised is not None
+        assert raised.request_id == "req_test_529"
+
+    def test_non_529_status_error_propagates_unchanged(self):
+        import anthropic
+
+        from scanner.analysis import LLMOverloaded, analyze_for_scanner
+
+        err = self._make_api_status_error(500, "req_test_500")
+        with patch("scanner.analysis.anthropic.Anthropic") as MockClient:
+            instance = MagicMock()
+            instance.messages.create.side_effect = err
+            MockClient.return_value = instance
+
+            try:
+                analyze_for_scanner(self._bs(), [], None)
+                raised = None
+            except LLMOverloaded:
+                raised = "overload"  # would be wrong
+            except anthropic.APIStatusError as e:
+                raised = e
+
+        assert isinstance(raised, anthropic.APIStatusError)
+        assert raised.status_code == 500

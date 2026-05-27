@@ -517,29 +517,17 @@ class TestRunScanDispatcher:
 
 
 class TestAnalyzeOneErrorPaths:
-    """SPEC #37: 529 SDK-exhaustion gets a structured ops_log; the generic
-    send_errors_alert is suppressed for 529 only. Non-529 exceptions retain
-    the existing send_errors_alert path."""
+    """SPEC #37: LLMOverloaded gets a structured ops_log; the generic
+    send_errors_alert is suppressed for the overload branch only. Other
+    exceptions retain the existing send_errors_alert path."""
 
     def _bs(self):
         from scanner.models import BoundarySignal
         return BoundarySignal.from_setup_signal(_make_signal(coin="BNB"), "4h")
 
-    def _make_overloaded_error(self):
-        # anthropic.OverloadedError inherits APIStatusError with status_code=529
-        # Build via the base class (constructor accepts message + response + body)
-        import anthropic
-        response = MagicMock()
-        response.headers.get.return_value = "req_test_529"
-        return anthropic.APIStatusError(
-            message="Overloaded", response=response, body={"error": {"type": "overloaded_error"}}
-        )
-
-    def test_529_exhaustion_routes_to_structured_ops_log(self):
+    def test_overloaded_routes_to_structured_ops_log(self):
+        from scanner.analysis import LLMOverloaded
         from scanner.pipeline import _analyze_one
-        err = self._make_overloaded_error()
-        err.status_code = 529  # force the branch
-        err.request_id = "req_test_529"
 
         cfg = MagicMock()
         cfg.setup_version = "v1"
@@ -547,14 +535,15 @@ class TestAnalyzeOneErrorPaths:
 
         with patch("scanner.pipeline.fetch_candles", return_value=MagicMock()), \
              patch("scanner.pipeline.generate_charts_for_signal", return_value=[]), \
-             patch("scanner.pipeline.analyze_for_scanner", side_effect=err), \
+             patch("scanner.pipeline.analyze_for_scanner",
+                   side_effect=LLMOverloaded(request_id="req_test_529")), \
              patch("scanner.pipeline.send_ops_log") as ops, \
              patch("scanner.alerts.send_errors_alert") as errs:
             result = _analyze_one(self._bs(), cfg)
 
         assert result is None
         ops.assert_called_once()
-        args, _ = ops.call_args[0], ops.call_args[1]
+        args = ops.call_args[0]
         assert args[0] == "LLM 529 exhaustion"
         fields = args[1]
         assert fields["Coin"] == "BNB"
@@ -563,7 +552,7 @@ class TestAnalyzeOneErrorPaths:
         # COLOR_ERROR is positional arg 2
         from scanner.alerts import COLOR_ERROR
         assert args[2] == COLOR_ERROR
-        # Critical: 529 path does NOT also fire the generic errors alert
+        # Critical: overload path does NOT also fire the generic errors alert
         errs.assert_not_called()
 
     def test_non_529_exception_retains_errors_alert_path(self):

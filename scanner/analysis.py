@@ -19,6 +19,16 @@ from .models import BoundarySignal, ScanResult
 from .prompt_select import select_prompt
 
 
+class LLMOverloaded(Exception):
+    """Anthropic 529 overload after SDK retry-exhaustion (SPEC #37). Raised
+    by `analyze_for_scanner` so callers consume a scanner-domain type, not
+    `anthropic.APIStatusError` — the SDK coupling stays inside this module."""
+
+    def __init__(self, request_id: str | None) -> None:
+        super().__init__(f"Anthropic 529 (request_id={request_id})")
+        self.request_id = request_id
+
+
 def _build_scanner_content(
     chart_paths: list[Path],
     signal: BoundarySignal,
@@ -92,20 +102,27 @@ def analyze_for_scanner(
     # is longer than our staleness budget. Adaptive thinking runs can still
     # burn ~3min, so 180s is the minimum safe ceiling. max_retries=5 yields
     # ~15s of exponential backoff (0.5/1/2/4/8s) — captures short Anthropic
-    # 529 blips; longer outages surface via pipeline._analyze_one's structured
-    # 529 ops_log.
+    # 529 blips; longer outages raise LLMOverloaded to the caller.
     client = anthropic.Anthropic(timeout=180.0, max_retries=5)
-    response = client.messages.create(
-        model=cfg.model,
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
-        system=[{
-            "type": "text",
-            "text": system_text,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=messages,
-    )
+    try:
+        response = client.messages.create(
+            model=cfg.model,
+            max_tokens=16000,
+            thinking={"type": "adaptive"},
+            system=[{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=messages,
+        )
+    except anthropic.APIStatusError as e:
+        # 529 retry-exhaustion translates to a scanner-domain exception so the
+        # caller never imports anthropic. Other APIStatusError codes propagate
+        # to the caller's generic exception handler unchanged.
+        if e.status_code == 529:
+            raise LLMOverloaded(request_id=e.request_id) from e
+        raise
 
     # Warn if response was truncated
     if response.stop_reason == "max_tokens":
