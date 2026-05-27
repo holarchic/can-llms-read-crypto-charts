@@ -401,10 +401,13 @@ class MachineBlock:
     setup_type: str | None = None
     confluence_score: int | None = None
     confirming_event: str | None = None
-    # v2 (the framework) LLM primary judgment — "textbook" | "variant" (SPEC #35). Additive/optional:
-    # v1 never emits it. Captured-not-gated (persisted for Chunk-8b calibration; the setup_validator
-    # floors confluence count, not this field), so from_raw coerces an invalid value to None rather
-    # than rejecting the block (unlike the capital-path fields).
+    # v2 (the framework) LLM primary judgment — "textbook" only on a CONFIRM (SPEC #35).
+    # Additive/optional: v1 never emits it. The post-LLM ``setup_validator`` demotes any v2 CONFIRM
+    # where this is not "textbook" (or where ``machine_block is None``) with ``REJECT_NON_TEXTBOOK``
+    # before the confluence-count floor fires (SPEC #33 step 1). Parser is lenient — ``from_raw``
+    # normalizes / drops an invalid value to None rather than rejecting the whole block (a
+    # downgrade-to-None still demotes at the validator); strict-reject stays for the capital-path
+    # fields above.
     setup_quality: str | None = None
     extra: dict = field(default_factory=dict)
 
@@ -485,10 +488,13 @@ class MachineBlock:
                 return None
             data["confirming_event"] = ev
         if "setup_quality" in data:
-            # Lenient: a captured-not-gated research field must never downgrade an otherwise-valid
-            # CONFIRM to machine_block=None over a typo. Drop an invalid value (neither modeled nor
-            # extra); the raw analysis_text is persisted for forensics. Strict-reject stays for the
-            # capital-path fields above (SPEC #35; plan-review R1).
+            # Lenient at the parser; strict at the validator (SPEC #33/#35). A typo or
+            # unrecognised value must not downgrade an otherwise-valid CONFIRM to
+            # ``machine_block=None`` here — drop the value (neither modeled nor extra) and let
+            # the post-LLM ``setup_validator`` demote on ``REJECT_NON_TEXTBOOK`` instead. "variant"
+            # still normalizes lowercase (the LLM may emit it as a regression / hallucination;
+            # the validator demotes it deterministically). The raw analysis_text is persisted for
+            # forensics. Strict-reject stays for the capital-path fields above.
             sq = data["setup_quality"]
             if isinstance(sq, str) and sq.strip().lower() in ("textbook", "variant"):
                 data["setup_quality"] = sq.strip().lower()

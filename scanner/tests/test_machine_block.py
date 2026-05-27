@@ -340,9 +340,10 @@ def test_setup_quality_case_insensitive():
 
 @pytest.mark.parametrize("bad", ["strong", "", 7, None, "textbookish"])
 def test_setup_quality_invalid_coerced_not_rejected(bad):
-    # LENIENT-coerce (SPEC #35): an invalid value on this captured-not-gated field must NOT
-    # downgrade an otherwise-valid CONFIRM to None — the block survives, the field drops to None,
-    # and to_raw omits it (distinct from the strict-reject capital-path fields).
+    # LENIENT-coerce (SPEC #35): an invalid value on this field must NOT downgrade an otherwise-
+    # valid CONFIRM to None at the parser — the block survives, the field drops to None, and
+    # to_raw omits it (distinct from the strict-reject capital-path fields). The post-LLM
+    # setup_validator then demotes the None-quality CONFIRM with REJECT_NON_TEXTBOOK (SPEC #33).
     mb = MachineBlock.from_raw(_valid_block(setup_quality=bad))
     assert mb is not None
     assert mb.setup_quality is None

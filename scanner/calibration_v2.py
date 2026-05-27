@@ -9,9 +9,13 @@ calibration LOGIC the cutover gate (Acceptance #9 a/b) reads:
   a guard that the per-coin emit rate has not blown past the V9.x baseline (the over-emission the
   V9.11 cohort exposed — decision #32).
 - **Validator floor sweep (#9b):** runs the *real* ``setup_validator.validate_confirms`` (the
-  single owner of the confluence-count floor — never re-implemented here) across candidate
-  ``v2_min_confluence`` floors over a labeled set of seeded over-eager vs legit confirms, and
-  recommends the smallest floor that demotes every over-eager confirm without demoting a legit one.
+  single owner of the two-step gate — textbook-quality floor then confluence-count floor — never
+  re-implemented here) across candidate ``v2_min_confluence`` floors over a labeled set of seeded
+  over-eager vs legit confirms, and recommends the smallest floor that demotes every over-eager
+  confirm without demoting a legit one. The harness scopes its measurement to the count floor
+  by stamping every probe textbook (``_confirm_result``) so the textbook gate is bypassed and
+  the count floor stays the seam under test; ``floor_sweep`` fail-fast asserts the precondition
+  to make external misuse loud.
 - **go/no-go record** combining both, surfacing the reasons a run is NOT a go.
 
 NOT in scope here (the data-dependent operational run): the detector-threshold sweep (Stoch RSI
