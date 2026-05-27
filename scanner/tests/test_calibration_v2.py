@@ -6,6 +6,8 @@ live `setup_validator.validate_confirms` — the harness must validate the real 
 
 from datetime import datetime, timezone
 
+import pytest
+
 from scanner.calibration_v2 import (
     LabeledConfirm,
     calibration_record,
@@ -288,6 +290,23 @@ def test_recommend_floor_still_returns_2_under_two_step_gate():
         if r.floor == 2:
             assert r.over_eager_demoted == r.over_eager_total
             assert r.legit_demoted == 0
+
+
+def test_floor_sweep_rejects_non_textbook_probes():
+    # arch-pass MED: floor_sweep's textbook precondition is now explicit — a non-textbook
+    # probe would be scored as "not demoted by the count floor" while actually demoting
+    # on REJECT_NON_TEXTBOOK, silently mis-scoring. The boundary check raises instead.
+    bad = LabeledConfirm(_result(n_confluence=3, setup_quality="variant"), over_eager=False)
+    with pytest.raises(ValueError, match="textbook-stamped"):
+        floor_sweep([bad], [2], base_config=_CFG)
+
+
+def test_floor_sweep_rejects_missing_machine_block():
+    probe = _result(n_confluence=3)
+    probe.machine_block = None  # simulate the upstream parse-failure path
+    bad = LabeledConfirm(probe, over_eager=False)
+    with pytest.raises(ValueError, match="textbook-stamped"):
+        floor_sweep([bad], [2], base_config=_CFG)
 
 
 def test_textbook_probe_routes_to_count_floor_not_textbook_floor():

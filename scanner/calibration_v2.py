@@ -143,7 +143,22 @@ def floor_sweep(
     floor rule) on a deep copy of the results, so the harness validates the live gate rather than
     a re-implementation. The input is never mutated. ``base_config`` is passed explicitly — the
     harness never constructs config from ambient env (it stays env-independent / pure); ``replace``
-    only overrides the two fields the gate reads."""
+    only overrides the two fields the gate reads.
+
+    Precondition: every probe carries `machine_block.setup_quality == "textbook"` — the sweep
+    measures the count-floor seam, so the upstream textbook-quality gate (SPEC #33 step 1) must
+    pass for every input. A non-textbook probe would demote on `REJECT_NON_TEXTBOOK` and be
+    scored as "not demoted" by the count-floor counter — silently mis-scoring the floor. Fail
+    fast at the boundary rather than hide the misuse.
+    """
+    for lc in labeled:
+        mb = lc.result.machine_block
+        if mb is None or mb.setup_quality != "textbook":
+            raise ValueError(
+                f"floor_sweep requires textbook-stamped probes; "
+                f"{lc.result.coin} has setup_quality="
+                f"{mb.setup_quality if mb is not None else None!r}"
+            )
     reports: list[FloorReport] = []
     for floor in floors:
         cfg = replace(base_config, setup_version="v2", v2_min_confluence=floor)
@@ -231,24 +246,22 @@ def calibration_record(
 # (the validator ignores timestamps; a wall-clock `now()` would only break that property).
 _SEED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
-# A synthetic textbook MachineBlock the probes carry so the new textbook-quality gate
-# (Sub-chunk E, SPEC #33) is bypassed and the count-floor sweep stays the seam under
-# test. Capital-path fields use minimal valid values — the validator reads only
-# ``setup_quality``; the rest are inert for this harness (probe never executes / persists).
-_TEXTBOOK_PROBE_MB = MachineBlock(
-    entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
-    direction="LONG", confidence=5.0, leverage=1.0,
-    setup_quality="textbook",
-)
-
 
 def _confirm_result(signal: BoundarySignal) -> ScanResult:
     """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads
     ``decision`` + ``setup_signal.confluence`` + ``machine_block.setup_quality``; every probe
-    carries a textbook ``machine_block`` so the new textbook gate (SPEC #33) is bypassed and
-    the count-floor sweep — the seam this harness is designed to measure — stays exercised.
-    Without the textbook stamp, every probe would demote on ``REJECT_NON_TEXTBOOK`` first and
-    ``recommend_floor()`` would silently return None / wrong. Fixed timestamp keeps it pure."""
+    carries a freshly-constructed textbook ``MachineBlock`` so the new textbook gate (SPEC #33)
+    is bypassed and the count-floor sweep — the seam this harness is designed to measure —
+    stays exercised. Without the textbook stamp, every probe would demote on
+    ``REJECT_NON_TEXTBOOK`` first and ``recommend_floor()`` would silently return None / wrong.
+    The MachineBlock is constructed fresh per probe (not a module-level singleton) — the
+    dataclass is frozen but its ``extra`` dict is not, so per-probe construction prevents
+    any future mutation from leaking across probes. Fixed timestamp keeps it pure."""
+    mb = MachineBlock(
+        entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
+        direction="LONG", confidence=5.0, leverage=1.0,
+        setup_quality="textbook",
+    )
     return ScanResult(
         scan_id=f"cal-{signal.coin}-{len(signal.confluence)}",
         coin=signal.coin,
@@ -260,7 +273,7 @@ def _confirm_result(signal: BoundarySignal) -> ScanResult:
         parsed_decision={},
         chart_paths=[],
         cost_usd=0.0,
-        machine_block=_TEXTBOOK_PROBE_MB,
+        machine_block=mb,
     )
 
 
