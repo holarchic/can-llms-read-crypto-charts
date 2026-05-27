@@ -30,6 +30,7 @@ from .models import (
     BoundarySignal,
     ConfluenceFactor,
     Direction,
+    MachineBlock,
     ScanResult,
     SetupTypeV2,
     SpineContext,
@@ -230,11 +231,24 @@ def calibration_record(
 # (the validator ignores timestamps; a wall-clock `now()` would only break that property).
 _SEED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
+# A synthetic textbook MachineBlock the probes carry so the new textbook-quality gate
+# (Sub-chunk E, SPEC #33) is bypassed and the count-floor sweep stays the seam under
+# test. Capital-path fields use minimal valid values — the validator reads only
+# ``setup_quality``; the rest are inert for this harness (probe never executes / persists).
+_TEXTBOOK_PROBE_MB = MachineBlock(
+    entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
+    direction="LONG", confidence=5.0, leverage=1.0,
+    setup_quality="textbook",
+)
+
 
 def _confirm_result(signal: BoundarySignal) -> ScanResult:
-    """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads only
-    ``decision`` + ``setup_signal.confluence``; the rest are inert placeholders (this never
-    persists — it is a transient probe for the floor sweep). Fixed timestamp keeps it pure."""
+    """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads
+    ``decision`` + ``setup_signal.confluence`` + ``machine_block.setup_quality``; every probe
+    carries a textbook ``machine_block`` so the new textbook gate (SPEC #33) is bypassed and
+    the count-floor sweep — the seam this harness is designed to measure — stays exercised.
+    Without the textbook stamp, every probe would demote on ``REJECT_NON_TEXTBOOK`` first and
+    ``recommend_floor()`` would silently return None / wrong. Fixed timestamp keeps it pure."""
     return ScanResult(
         scan_id=f"cal-{signal.coin}-{len(signal.confluence)}",
         coin=signal.coin,
@@ -246,6 +260,7 @@ def _confirm_result(signal: BoundarySignal) -> ScanResult:
         parsed_decision={},
         chart_paths=[],
         cost_usd=0.0,
+        machine_block=_TEXTBOOK_PROBE_MB,
     )
 
 

@@ -1,4 +1,4 @@
-"""Post-LLM structural gate for the v10 path (T-019 Chunk 8a, SPEC #33).
+"""Post-LLM structural gate for the v10 path (T-019 Chunk 8a + Sub-chunk E, SPEC #33).
 
 The v10 design assumption — "assume the LLM confirms anything plausible" — is only
 acceptable behind a deterministic structural gate that rejects over-eager CONFIRMs.
@@ -9,16 +9,27 @@ CONFIRM by re-typing its ``ScanResult.decision`` to ``"REJECT"`` — so **both**
 interception — and tags ``ScanResult.validator_verdict`` so the demotion stays
 distinguishable from an LLM REJECT (and partitions the scan summary).
 
-**The gate is the confluence-count floor:** ``len(signal.confluence) <
-config.v2_min_confluence``. The detectors emit at confluence ≥1 and per-coin selection
-keeps the survivor regardless of absolute count, so a marginal setup (e.g. a
-lone-``SWEEP_RECLAIM`` ``sfp_range``) reaches the trigger-happy LLM and gets confirmed —
-only this floor rejects it. It floors the raw factor *count* (the pre-documented intent
-at ``models.ConfluenceFactor``), not the ``_stage1_score`` (whose weights are a Chunk-8b
-placeholder ranker). v2-only: the v1 ``confidence`` is the anti-predictive screener
-score (decision #2); the v2 confluence count is a structural measure.
+**Two-step gate (fail-closed series):**
 
-This is the *one genuinely post-LLM, additive* check. The structural preconditions
+1. ``REJECT_NON_TEXTBOOK`` — ``r.machine_block is None or r.machine_block.setup_quality
+   != "textbook"`` demotes the CONFIRM (decision #35's textbook-only contract enforced
+   structurally). Fires first because it is more discriminating: the live 2026-05-27
+   evidence showed 14/16 CONFIRMs were variants with rationalized compromises the LLM
+   accepted as "one allowable compromise"; all had ≥2 confluence factors so the count
+   floor would catch zero of them. ``continue`` after the demotion preserves the
+   most-specific verdict (no overwrite by the backstop).
+
+2. ``REJECT_CONFLUENCE_FLOOR`` (backstop) — ``len(signal.confluence) <
+   config.v2_min_confluence`` demotes the survivors. The detectors emit at
+   confluence ≥1 and per-coin selection keeps the survivor regardless of absolute
+   count, so a marginal setup (e.g. a lone-``SWEEP_RECLAIM`` ``sfp_range``) reaches
+   the trigger-happy LLM and gets confirmed — only this floor rejects it. It floors
+   the raw factor *count* (the pre-documented intent at ``models.ConfluenceFactor``),
+   not the ``_stage1_score`` (whose weights are a Chunk-8b placeholder ranker).
+   v2-only: the v1 ``confidence`` is the anti-predictive screener score
+   (decision #2); the v2 confluence count is a structural measure.
+
+These are the *genuinely post-LLM, additive* checks. The structural preconditions
 (finite ATR / price, regime, MA-state) are enforced at the detector/producer boundary
 where the signal is constructed — the v2 detectors ``return []`` on bad ATR / wrong
 regime, and ``screener_v2`` only emits well-formed ``BoundarySignal``s — so a
@@ -26,15 +37,17 @@ downstream re-check here would be redundant re-validation of a trusted typed inp
 (arch-pass R1/R2; rules #27/#31). The validator trusts its typed input and does not
 catch broadly: a malformed signal is a producer defect that must fail loudly, not a
 business rejection (rule #35). Pure compute: no DB, no LLM. v1 byte-identical (early
-return on ``setup_version != 'v2'``). The floor is calibrated in Chunk 8b against
-seeded over-eager confirms (Acceptance #9 b).
+return on ``setup_version != 'v2'``). The count floor is calibrated in Chunk 8b
+against seeded over-eager confirms (Acceptance #9 b); the calibration harness stamps
+its synthetic probes textbook so the count-floor sweep stays the seam under test.
 """
 
 from .config import ScannerConfig
 from .models import ScanResult
 
-__all__ = ["validate_confirms", "REJECT_CONFLUENCE_FLOOR"]
+__all__ = ["validate_confirms", "REJECT_CONFLUENCE_FLOOR", "REJECT_NON_TEXTBOOK"]
 
+REJECT_NON_TEXTBOOK = "REJECT_NON_TEXTBOOK"
 REJECT_CONFLUENCE_FLOOR = "REJECT_CONFLUENCE_FLOOR"
 
 
@@ -54,6 +67,10 @@ def validate_confirms(
         return results
     for r in results:
         if not r.is_confirm:
+            continue
+        if r.machine_block is None or r.machine_block.setup_quality != "textbook":
+            r.decision = "REJECT"
+            r.validator_verdict = REJECT_NON_TEXTBOOK
             continue
         if len(r.setup_signal.confluence) < config.v2_min_confluence:
             r.decision = "REJECT"

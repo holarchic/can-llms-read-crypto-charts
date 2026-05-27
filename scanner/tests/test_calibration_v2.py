@@ -24,13 +24,14 @@ from scanner.models import (
     BoundarySignal,
     ConfluenceFactor,
     Direction,
+    MachineBlock,
     ScanResult,
     SetupTypeV2,
     SpineContext,
     SpineLevel,
     Structure,
 )
-from scanner.setup_validator import REJECT_CONFLUENCE_FLOOR
+from scanner.setup_validator import REJECT_CONFLUENCE_FLOOR, REJECT_NON_TEXTBOOK, validate_confirms
 
 _FACTORS = list(ConfluenceFactor)  # 10 members → confluence counts 0..10
 _CFG = ScannerConfig()  # base config passed explicitly (the harness never reads env itself)
@@ -66,7 +67,19 @@ def _bsig(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=2, coin="BTC")
     )
 
 
-def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.TREND_CONTINUATION, coin="BTC") -> ScanResult:
+def _mb(setup_quality: str | None = "textbook") -> MachineBlock:
+    """Minimal textbook `MachineBlock` mirroring the calibration probe — every harness
+    probe carries one so the new textbook-quality gate (SPEC #33 step 1) is bypassed
+    and the count-floor sweep stays the seam under test."""
+    return MachineBlock(
+        entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
+        direction="LONG", confidence=5.0, leverage=1.0,
+        setup_quality=setup_quality,
+    )
+
+
+def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.TREND_CONTINUATION,
+            coin="BTC", setup_quality="textbook") -> ScanResult:
     return ScanResult(
         scan_id=f"s-{coin}-{n_confluence}",
         coin=coin,
@@ -79,6 +92,7 @@ def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.TREND_CON
         chart_paths=[],
         cost_usd=0.0,
         prompt_version="10.00",
+        machine_block=_mb(setup_quality),
     )
 
 
@@ -247,6 +261,46 @@ def test_run_calibration_nogo_on_over_emission():
     rec = run_calibration(signals, universe_size=100, baseline_rate=0.20, base_config=_CFG)
     assert rec.go is False
     assert any("over-emission" in r for r in rec.reasons)
+
+
+# --- textbook-gate contract (Sub-chunk E, SPEC #33 step 1) ----------------------
+
+def test_seeded_probes_carry_textbook_machine_block():
+    # Sub-chunk E contract: every calibration probe MUST carry setup_quality="textbook"
+    # so the new textbook-quality gate is bypassed and the count-floor sweep stays the
+    # seam under test. If `_confirm_result()` drops the stamp, every probe demotes on
+    # REJECT_NON_TEXTBOOK first and the recommended floor goes None / wrong silently.
+    for lc in seed_labeled_confirms():
+        mb = lc.result.machine_block
+        assert mb is not None, f"probe {lc.result.coin} missing machine_block"
+        assert mb.setup_quality == "textbook", f"probe {lc.result.coin}: {mb.setup_quality!r}"
+
+
+def test_recommend_floor_still_returns_2_under_two_step_gate():
+    # the canonical seed (over-eager confluence 0-1, legit 2-4) must still resolve to
+    # floor=2 once the textbook gate fires first — pins the seeded contract against
+    # accidental probe-MB drift that would route every probe to REJECT_NON_TEXTBOOK.
+    reports = floor_sweep(seed_labeled_confirms(), [1, 2, 3, 4], base_config=_CFG)
+    assert recommend_floor(reports) == 2
+    # the live run that the harness scores: each over-eager probe must demote on the
+    # count floor (not the textbook one); the legit probes survive
+    for r in reports:
+        if r.floor == 2:
+            assert r.over_eager_demoted == r.over_eager_total
+            assert r.legit_demoted == 0
+
+
+def test_textbook_probe_routes_to_count_floor_not_textbook_floor():
+    # anti-vacuity: drive validate_confirms over a textbook probe with count<floor and
+    # assert the verdict is REJECT_CONFLUENCE_FLOOR (the seam the harness measures), NOT
+    # REJECT_NON_TEXTBOOK. If the probe-MB stamp were silently dropped, this would flip.
+    # `_CFG` defaults v1 (no-op); the harness exercises validate_confirms via floor_sweep,
+    # which `replace`s to v2 — mirror that here.
+    cfg_v2 = ScannerConfig(setup_version="v2", v2_min_confluence=2)
+    probe = _result(n_confluence=1)  # textbook + count below floor 2
+    validate_confirms([probe], cfg_v2)
+    assert probe.validator_verdict == REJECT_CONFLUENCE_FLOOR
+    assert probe.validator_verdict != REJECT_NON_TEXTBOOK  # explicit anti-flip pin
 
 
 def test_collect_v2_signals_wires_screener(monkeypatch):
