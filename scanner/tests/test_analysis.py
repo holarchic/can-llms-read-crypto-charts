@@ -1,6 +1,7 @@
-"""Tests for scanner.analysis — cost estimation."""
+"""Tests for scanner.analysis — cost estimation + SDK retry config."""
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from scanner.analysis import _estimate_cost
 
@@ -54,3 +55,49 @@ class TestEstimateCost:
         # None or 0 → 0, so no cache costs, full input at base rate
         expected = (1000 / 1e6) * 3.0 + (500 / 1e6) * 15.0
         assert cost == round(expected, 4)
+
+
+class TestAnthropicRetryConfig:
+    """SPEC #37: SDK max_retries=5 captures short 529 blips via ~15s of
+    exponential backoff before the pipeline 529-exhaustion path fires."""
+
+    def test_max_retries_is_five(self):
+        from scanner.analysis import analyze_for_scanner
+        from scanner.models import (
+            BoundarySignal,
+            Direction,
+            MarketContext,
+            SetupSignal,
+            SetupType,
+            Structure,
+        )
+
+        ctx = MarketContext(
+            structure=Structure.BULLISH, swings=[], sr_levels=[], msbs=[],
+            range_bounds=None, atr=1.0, current_price=100.0, fib_levels=None,
+        )
+        sig = BoundarySignal.from_setup_signal(
+            SetupSignal(
+                coin="BTC", setup_type=SetupType.A, direction=Direction.LONG,
+                confidence=0.5, key_level=100.0, context=ctx, description="x",
+            ),
+            "4h",
+        )
+
+        # Verify the SDK construction kwargs by short-circuiting at messages.create
+        # (the construction at analysis.py happens before the API call, so any
+        # post-construction exception still lets us inspect MockClient.call_args).
+        with patch("scanner.analysis.anthropic.Anthropic") as MockClient:
+            instance = MagicMock()
+            instance.messages.create.side_effect = RuntimeError("short-circuit")
+            MockClient.return_value = instance
+            try:
+                analyze_for_scanner(sig, [], None)
+            except RuntimeError:
+                pass  # expected — only the SDK construction matters here
+
+        # The contract: SDK is constructed with max_retries=5
+        # (captures ~15s of exponential backoff for short 529 blips).
+        MockClient.assert_called_once()
+        kwargs = MockClient.call_args.kwargs
+        assert kwargs.get("max_retries") == 5

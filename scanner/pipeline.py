@@ -6,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .alerts import COLOR_OK, COLOR_WARN, format_alert_text, send_alert, send_ops_log
+import anthropic
+
+from .alerts import COLOR_ERROR, COLOR_OK, COLOR_WARN, format_alert_text, send_alert, send_ops_log
 from .analysis import analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
@@ -237,6 +239,22 @@ def _analyze_one(
         result = analyze_for_scanner(signal, chart_paths, config)
         return result
     except Exception as e:
+        # 529 SDK-retry-exhaustion gets its own structured ops embed; suppress
+        # the generic errors alert to avoid duplicate paging (SPEC #37).
+        if isinstance(e, anthropic.APIStatusError) and e.status_code == 529:
+            print(f"  LLM 529 exhausted for {signal.coin}: {e}")
+            send_ops_log(
+                "LLM 529 exhaustion",
+                {
+                    "Coin": signal.coin,
+                    "Setup": signal.setup_type.value,
+                    "Request ID": e.request_id or "unknown",
+                    "Stage": "stage2_analyze",
+                },
+                COLOR_ERROR,
+                config,
+            )
+            return None
         print(f"  Error analyzing {signal.coin}: {e}")
         from .alerts import send_errors_alert
         send_errors_alert(f"Stage2 LLM failed for {signal.coin}: {type(e).__name__}: {e}", config)

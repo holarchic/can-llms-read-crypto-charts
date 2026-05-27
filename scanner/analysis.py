@@ -90,8 +90,11 @@ def analyze_for_scanner(
 
     # Explicit timeout + retries — SDK defaults are 10min/2 retries, which
     # is longer than our staleness budget. Adaptive thinking runs can still
-    # burn ~3min, so 180s is the minimum safe ceiling.
-    client = anthropic.Anthropic(timeout=180.0, max_retries=3)
+    # burn ~3min, so 180s is the minimum safe ceiling. max_retries=5 yields
+    # ~15s of exponential backoff (0.5/1/2/4/8s) — captures short Anthropic
+    # 529 blips; longer outages surface via pipeline._analyze_one's structured
+    # 529 ops_log.
+    client = anthropic.Anthropic(timeout=180.0, max_retries=5)
     response = client.messages.create(
         model=cfg.model,
         max_tokens=16000,
