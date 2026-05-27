@@ -289,8 +289,8 @@ CONFIRM when all hold:
   regime (§2.4)
 - Stop and take-profit derivable from chart structure
 - Confluence meets the setup's floor (§3.2)
-- Setup Quality is textbook or variant — at most ONE compromise (§3.3). Two or
-  more compromises is a REJECT.
+- Setup Quality is **textbook** — ALL the setup's named structural preconditions
+  are present, no compromises (§3.3). Any compromise ⇒ REJECT.
 - You can name the confirming event (printed on the last closed candle for
   IMMEDIATE, or a specific future candle close for CONDITIONAL)
 
@@ -298,7 +298,8 @@ REJECT when any hold:
 - No defined setup, or the setup is ineligible for the current regime
 - Stop or invalidation not articulable
 - Confluence below the setup's floor
-- Two or more compromises (neither textbook nor a single-compromise variant)
+- Any named compromise present (the setup is not textbook — see §3.1
+  Disqualifying compromises and §3.3)
 - Confirming event cannot be named
 
 ## SETUP-SPECIFIC RULES
@@ -335,9 +336,9 @@ clear stall, PLUS a dominant opposite HTF trend, PLUS a meaningful gap to the
 
 **Direction:** [LONG | SHORT]
 **Setup:** [v2 setup name, e.g. "trend_continuation"]
-**Setup Quality:** [textbook | variant — the PRIMARY judgment, see rubric]
+**Setup Quality:** [textbook — the PRIMARY judgment; CONFIRMs are textbook-only, see rubric]
 **LLM Confidence:** [1-10 — secondary; do not anchor]
-**Reasoning:** [1-2 sentences — include the confirming event + (for a variant) the single compromise]
+**Reasoning:** [1-2 sentences — include the confirming event and why this is textbook (no named compromises)]
 
 ////////////////////////////////////////////////////////////
 
@@ -353,19 +354,21 @@ clear stall, PLUS a dominant opposite HTF trend, PLUS a meaningful gap to the
 
 ## SETUP-QUALITY RUBRIC
 
-Setup Quality is the PRIMARY judgment — emit it on every CONFIRM:
+Setup Quality is the PRIMARY judgment — emit `textbook` on every CONFIRM, or
+REJECT:
 - **textbook:** ALL of the setup's named structural preconditions (§3.1) are
   present AND confluence meets the floor. A clean, no-compromise instance.
-- **variant:** the setup is genuinely present with EXACTLY ONE named compromise
-  (weaker confluence, a less-clean S/R level, partial acceptance, or a
-  counter-trend context — a with-trend setup taken against the dominant trend).
-- **Two or more compromises ⇒ REJECT.** Do not CONFIRM.
+  This is the ONLY valid Setup Quality for a CONFIRM.
+- **Any named compromise** (weaker confluence, a less-clean S/R level, partial
+  acceptance, a counter-trend context for a with-trend setup, or any of the
+  per-setup `Disqualifying compromises` in §3.1) ⇒ **REJECT.** Do not CONFIRM.
+  The post-LLM validator demotes any non-textbook CONFIRM regardless.
 - **`gap_fill`** is the dedicated counter-trend vehicle — its counter-trend
   nature is its definition, NOT a compromise. A textbook `gap_fill` meets all
   its (counter-trend) preconditions.
 
-LLM Confidence (1-10) is retained but SECONDARY — let the textbook/variant
-binary carry the judgment; do not anchor confidence at a baseline.
+LLM Confidence (1-10) is retained but SECONDARY — let the textbook binary
+carry the judgment; do not anchor confidence at a baseline.
 
 ## RULESET
 
@@ -444,7 +447,8 @@ MACHINE_BLOCK -->
 Field rules:
 - Prices: plain numbers, no $ or commas
 - setup_type: one of the 6 v2 setups (lowercase snake_case)
-- setup_quality: "textbook" | "variant" — the PRIMARY judgment; emit on every CONFIRM
+- setup_quality: "textbook" — the PRIMARY judgment; CONFIRMs are textbook-only (any
+  compromise ⇒ REJECT, see SETUP-QUALITY RUBRIC). Emit on every CONFIRM.
 - confidence: 1-10 — SECONDARY (still required); do not anchor at a baseline
 - tp1_exit_pct: 30-50; tp2_exit_pct: 30-50 (single-entry; 50/50 is the default)
 - invalidation_price (CONDITIONAL only): hard constraint —
@@ -460,7 +464,7 @@ Field rules:
   `deviation_reclaim` is a setup, never an entry_trigger.
 - `gap_fill` is the only counter-trend setup (divergence/stall + dominant
   opposite HTF + meaningful gap).
-- Setup Quality (textbook/variant) is the primary judgment; confidence secondary.
+- Setup Quality is textbook-only (any compromise ⇒ REJECT); confidence is secondary.
 - Stop is sized to the setup TF, not the entry TF. Single-entry.
 - Name the confirming event in every CONFIRM.
 """
