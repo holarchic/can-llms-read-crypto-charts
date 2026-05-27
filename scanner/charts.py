@@ -37,8 +37,15 @@ _STOCH_PANEL = 2  # price=0, volume=1, Stoch RSI=2
 _ENRICHED_FIGSIZE = (13.5, 9)  # taller than the plain (13.5, 8) to fit the sub-pane
 _ENRICHED_PANEL_RATIOS = (6, 1.4, 2)  # price / volume / Stoch, only when the pane exists
 
+# Chart presentation slice — the rendered window per chart. Detection upstream uses the
+# full substrate (V2_CANDLE_COUNTS = 400 bars for MA warmup); this slice exists only so
+# each candle gets enough pixels to be legible. At figsize 13.5" × 150 dpi = 2025px wide,
+# 150 candles ≈ 13.5 px each (vs ~2.4 px each at 400 candles / 70 dpi). MAs/Stoch RSI
+# stay computed on the full close, then reindexed to the chart slice.
+_CHART_RENDER_BARS = 150
 
-def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
+
+def _ma_addplots(close: pd.Series, chart_index: pd.Index | None = None) -> tuple[list, dict | None]:
     """Panel-0 MA overlays (EMA band + longer set) and the band's envelope fill.
 
     Returns ``(addplots, fill_between | None)``. Every line is skipped unless it has at
@@ -46,17 +53,24 @@ def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
     at different bar counts, and mplfinance errors on an all-NaN addplot. The envelope is
     emitted only when both band edges have data, with a numpy-array payload (mplfinance's
     top-level ``fill_between`` rejects bare Series).
+
+    ``chart_index`` — when supplied, every series is reindexed to it after compute, so
+    mplfinance receives length-matched series for the chart slice without losing the
+    full-history warmup the MAs need.
     """
     band = compute_ema_band(close)
     longer = compute_longer_set(close)
 
+    def _s(series: pd.Series) -> pd.Series:
+        return series.reindex(chart_index) if chart_index is not None else series
+
     # Each line pairs its named substrate field with a colour at the styling site — no
     # positional zip against a separate colour table whose order could silently drift.
-    band_lines = ((band.fast, _BAND_FAST), (band.mid, _BAND_MID), (band.slow, _BAND_SLOW))
+    band_lines = ((_s(band.fast), _BAND_FAST), (_s(band.mid), _BAND_MID), (_s(band.slow), _BAND_SLOW))
     longer_lines = (
-        (longer.sma_100, _SMA100, "dotted"),
-        (longer.ema_200, _EMA200, "dashed"),
-        (longer.sma_300, _SMA300, "dashdot"),
+        (_s(longer.sma_100), _SMA100, "dotted"),
+        (_s(longer.ema_200), _EMA200, "dashed"),
+        (_s(longer.sma_300), _SMA300, "dashdot"),
     )
 
     addplots = []
@@ -70,30 +84,35 @@ def _ma_addplots(close: pd.Series) -> tuple[list, dict | None]:
             )
 
     fill = None
-    if band.fast.notna().any() and band.slow.notna().any():
-        fill = {"y1": band.fast.to_numpy(), "y2": band.slow.to_numpy(), **_ENVELOPE}
+    fast_chart, slow_chart = band_lines[0][0], band_lines[2][0]
+    if fast_chart.notna().any() and slow_chart.notna().any():
+        fill = {"y1": fast_chart.to_numpy(), "y2": slow_chart.to_numpy(), **_ENVELOPE}
     return addplots, fill
 
 
-def _stoch_addplots(close: pd.Series, panel: int) -> list:
+def _stoch_addplots(close: pd.Series, panel: int, chart_index: pd.Index | None = None) -> list:
     """Stoch-RSI sub-pane addplots (%K, %D, and a constant 50 midline) on ``panel``.
 
     Returns ``[]`` when Stoch RSI is all-NaN (close too short / flat) so no empty
     sub-panel is created. The 50 midline carries no data, so it is added only when the
-    pane already exists — it is not independently guarded.
+    pane already exists — it is not independently guarded. ``chart_index`` reslices the
+    computed series to the chart window (same contract as ``_ma_addplots``).
     """
     stoch = compute_stoch_rsi(close)
+    k = stoch.k.reindex(chart_index) if chart_index is not None else stoch.k
+    d = stoch.d.reindex(chart_index) if chart_index is not None else stoch.d
     addplots = []
-    if stoch.k.notna().any():
+    if k.notna().any():
         addplots.append(
             mpf.make_addplot(
-                stoch.k, panel=panel, color=_STOCH_K, width=0.9, ylabel="Stoch RSI", ylim=(0, 100)
+                k, panel=panel, color=_STOCH_K, width=0.9, ylabel="Stoch RSI", ylim=(0, 100)
             )
         )
-    if stoch.d.notna().any():
-        addplots.append(mpf.make_addplot(stoch.d, panel=panel, color=_STOCH_D, width=0.7))
+    if d.notna().any():
+        addplots.append(mpf.make_addplot(d, panel=panel, color=_STOCH_D, width=0.7))
     if addplots:
-        midline = pd.Series(50.0, index=close.index)
+        midline_index = chart_index if chart_index is not None else close.index
+        midline = pd.Series(50.0, index=midline_index)
         addplots.append(
             mpf.make_addplot(midline, panel=panel, color=_STOCH_MID, width=0.6, linestyle="dotted")
         )
@@ -151,6 +170,16 @@ def generate_chart(
     out_dir = output_dir or CHARTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # MAs / Stoch RSI need the full close to warm up (SMA300 + Stoch RSI smoothing);
+    # the chart slice is presentation-only — render the last `_CHART_RENDER_BARS` for
+    # legibility, with every addplot reindexed to match.
+    full_close = df["Close"]
+    if len(df) > _CHART_RENDER_BARS:
+        chart_index = df.index[-_CHART_RENDER_BARS:]
+        df = df.loc[chart_index]
+    else:
+        chart_index = df.index
+
     # Title shows coin + timeframe only — no setup type (avoids anchoring the LLM)
     title = f"{coin}/USDT {timeframe}"
 
@@ -165,7 +194,7 @@ def generate_chart(
         title=title,
         volume=True,
         figsize=(13.5, 8),
-        savefig=dict(fname=str(filepath), dpi=70, bbox_inches="tight"),
+        savefig=dict(fname=str(filepath), dpi=150, bbox_inches="tight"),
         warn_too_much_data=500,
     )
 
@@ -173,16 +202,19 @@ def generate_chart(
         kwargs["hlines"] = hlines
 
     if enrich:
-        close = df["Close"]
-        addplots, fill = _ma_addplots(close)
-        if htf_ema is not None and htf_ema.index.equals(df.index) and htf_ema.notna().any():
-            # The data plane (Chunk 7a) owns alignment + forward-fill; the renderer only
-            # plots an exact-index match. Anything else is skipped, never repaired here or
-            # plotted positionally wrong — alignment stays a single upstream responsibility.
-            addplots.append(
-                mpf.make_addplot(htf_ema, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
-            )
-        stoch_addplots = _stoch_addplots(close, _STOCH_PANEL)
+        addplots, fill = _ma_addplots(full_close, chart_index)
+        if htf_ema is not None and htf_ema.notna().any() and htf_ema.index.is_unique:
+            # The data plane (Chunk 7a) owns alignment + forward-fill onto the substrate
+            # index; the renderer reindexes to the chart slice. Skip when the source index
+            # is non-unique (reindex would raise — alignment is upstream's responsibility,
+            # never repaired here) or the reindexed series is empty (htf_ema source frame
+            # too short / doesn't cover the chart window). Never plot positionally.
+            htf_ema_chart = htf_ema.reindex(chart_index)
+            if htf_ema_chart.notna().any():
+                addplots.append(
+                    mpf.make_addplot(htf_ema_chart, panel=0, color=_HTF_COLOR, width=1.0, linestyle="dashed")
+                )
+        stoch_addplots = _stoch_addplots(full_close, _STOCH_PANEL, chart_index)
         addplots.extend(stoch_addplots)
         if addplots:
             kwargs["addplot"] = addplots
