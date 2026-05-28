@@ -60,7 +60,7 @@ class SRLevel:
 
 @dataclass
 class SRLevelV2:
-    """Top-down S/R level (v10 v2 framework, T-019 Chunk 3).
+    """Top-down S/R *zone* (v10 v2 framework, T-019 Chunk 3 + Sub-chunk F).
 
     Additive sibling to the v1 ``SRLevel`` — the v1 record (swing-cluster source,
     ``direction_tests``/``degraded``) stays frozen for the live v1 path; this is the
@@ -72,6 +72,14 @@ class SRLevelV2:
     -lineage count (``1d``/``3d`` count once) — deliberately a *different* unit from
     v1 ``SRLevel.strength`` (raw swing touch count), hence the different name.
     ``quality`` is set at the end of ``derive_sr_levels`` (0.0 until then).
+    framework-canonical: "a level is a price or cluster of prices" — every level carries
+    a ``[zone_low, zone_high]`` envelope (resistance: ``max(open,close)`` → ``high``;
+    support: ``low`` → ``min(open,close)``). ``price`` is the *wick extreme* on the
+    zone edge — by invariant ``price == zone_high`` for ``pivot_type="high"``,
+    ``price == zone_low`` for ``pivot_type="low"`` — so SFP pierce semantics still
+    anchor on the wick line. ``retest_count`` is post-formation same-side re-entries
+    into the zone (close-based flip); ``quality`` decays by ``0.7^retest_count``
+    and ``retest_count > 5`` is dropped entirely.
     """
 
     price: float
@@ -81,6 +89,9 @@ class SRLevelV2:
     vrvp_confluence: bool
     formed_at: datetime
     last_test: datetime
+    zone_low: float         # required — no default (fail loud at construction)
+    zone_high: float        # required — no default
+    retest_count: int = 0   # derived post-hoc, not at pivot construction
     quality: float = 0.0
 
 

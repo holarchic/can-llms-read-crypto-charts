@@ -49,10 +49,21 @@ def _empty():
 
 
 def _lvl(price, tf, ptype="high", confirmations=1, vrvp=False, formed="2024-01-01", last=None):
+    """Test fixture: a line-like level (zone collapsed to `price`). Real production levels
+    carry wick+body zones from `_pivot`; this helper covers fixtures that don't care about
+    zone semantics. Asymmetric inward pad preserves the `price == zone-edge` invariant.
+    """
     f = pd.Timestamp(formed)
+    p = float(price)
+    pad = abs(p) * 0.001
+    if ptype == "high":
+        zone_low, zone_high = p - pad, p
+    else:
+        zone_low, zone_high = p, p + pad
     return SRLevelV2(
-        price=float(price), tf_source=tf, pivot_type=ptype, confirmations=confirmations,
+        price=p, tf_source=tf, pivot_type=ptype, confirmations=confirmations,
         vrvp_confluence=vrvp, formed_at=f, last_test=pd.Timestamp(last) if last else f,
+        zone_low=zone_low, zone_high=zone_high,
     )
 
 

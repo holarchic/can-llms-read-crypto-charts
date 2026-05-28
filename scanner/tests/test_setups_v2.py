@@ -56,10 +56,17 @@ def _substrate(df):
     return TFSubstrate(bands, longer, ts, detect_regime(df, ts, longer))
 
 
-def _lvl(price):
+def _lvl(price, zone_pct=0.005):
+    """Test fixture: AT_SR levels for trend-family detectors. ``zone_pct`` is the
+    one-sided zone half-width relative to ``price`` (default 0.5% — wide enough that
+    a price equal to ``price`` sits inside the zone for new zone-membership semantics).
+    """
+    p = float(price)
+    pad = abs(p) * zone_pct
     return SRLevelV2(
-        price=float(price), tf_source="1d", pivot_type="high", confirmations=1,
-        vrvp_confluence=False, formed_at=datetime(2026, 1, 1), last_test=datetime(2026, 1, 2), quality=1.0,
+        price=p, tf_source="1d", pivot_type="high", confirmations=1,
+        vrvp_confluence=False, formed_at=datetime(2026, 1, 1), last_test=datetime(2026, 1, 2),
+        zone_low=p - pad, zone_high=p + pad, quality=1.0,
     )
 
 

@@ -50,10 +50,17 @@ def _substrate(df):
     return TFSubstrate(bands, longer, ts, detect_regime(df, ts, longer))
 
 
-def _lvl(price):
+def _lvl(price, zone_pct=0.005):
+    """Test fixture: line-like level with a small symmetric zone for AT_SR membership.
+    The wick-edge invariant matters in production (`_pivot`/`_combine`); fixtures are
+    free to use a symmetric pad so a tested price equal to ``price`` sits inside.
+    """
+    p = float(price)
+    pad = abs(p) * zone_pct
     return SRLevelV2(
-        price=float(price), tf_source="1d", pivot_type="high", confirmations=1,
-        vrvp_confluence=False, formed_at=datetime(2026, 1, 1), last_test=datetime(2026, 1, 2), quality=1.0,
+        price=p, tf_source="1d", pivot_type="high", confirmations=1,
+        vrvp_confluence=False, formed_at=datetime(2026, 1, 1), last_test=datetime(2026, 1, 2),
+        zone_low=p - pad, zone_high=p + pad, quality=1.0,
     )
 
 

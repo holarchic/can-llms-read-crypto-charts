@@ -59,6 +59,10 @@ _TF_RANK = {"1mo": 3, "1w": 2, "3d": 1, "1d": 0}
 _DEFAULT_TOL = 0.01      # price-cluster width, relative (1%) — v1 default
 _DEFAULT_WINDOW = 2      # fractal half-width on sparse HTF bars — v1 default
 _DEFAULT_N_SUB = 3       # max refined sub-levels per macro bracket — v1 default
+_RETEST_DECAY = 0.7      # per-retest multiplicative quality decay (framework-canonical)
+_MAX_RETESTS = 5         # > 5 same-side retests → drop (the framework: "8 is too many")
+_MIN_ZONE_PCT = 0.001    # 0.1% of pivot price — min zone width pad (avoid zero-width)
+_MAX_ZONE_PCT = 0.03     # 3% of mid-price — max merged-cluster width before best-fallback
 
 
 def _lineage_key(tf_source: str) -> str:
@@ -72,11 +76,32 @@ def _within(a: float, b: float, tol: float) -> bool:
     return abs(a - b) / anchor <= tol
 
 
-def _pivot(price: float, tf_source: str, pivot_type: str, ts) -> SRLevelV2:
+def _pivot(
+    open_: float, high: float, low: float, close: float,
+    tf_source: str, pivot_type: str, ts,
+) -> SRLevelV2:
+    """One bar → one zoned pivot. Zone is framework-canonical (resistance: body-top → wick;
+    support: wick → body-bottom). Min-width pad is *asymmetric*: it extends INWARD from
+    the wick extreme so the ``price == zone-edge`` invariant holds even for a
+    four-price doji where O=H=L=C.
+    """
     t = pd.Timestamp(ts)
+    h, lo, op, cl = float(high), float(low), float(open_), float(close)
+    if pivot_type == "high":
+        price = h
+        zone_high = h
+        zone_low_raw = max(op, cl)
+        # Pad INWARD from the wick (down from price), so zone_high == price holds.
+        zone_low = min(zone_low_raw, price - price * _MIN_ZONE_PCT)
+    else:
+        price = lo
+        zone_low = lo
+        zone_high_raw = min(op, cl)
+        zone_high = max(zone_high_raw, price + price * _MIN_ZONE_PCT)
     return SRLevelV2(
-        price=float(price), tf_source=tf_source, pivot_type=pivot_type,
+        price=price, tf_source=tf_source, pivot_type=pivot_type,
         confirmations=1, vrvp_confluence=False, formed_at=t, last_test=t,
+        zone_low=zone_low, zone_high=zone_high,
     )
 
 
@@ -96,6 +121,12 @@ def _fractal_pivots(df: pd.DataFrame, tf_source: str, window: int) -> list[SRLev
     lows = df["Low"].to_numpy(dtype=float)
     index = df.index
 
+    opens = df["Open"].to_numpy(dtype=float)
+    closes = df["Close"].to_numpy(dtype=float)
+
+    def _emit(k: int, kind: str) -> SRLevelV2:
+        return _pivot(opens[k], highs[k], lows[k], closes[k], tf_source, kind, index[k])
+
     pivots: list[SRLevelV2] = []
     for kind, series, is_max in (("high", highs, True), ("low", lows, False)):
         run: list[int] = []  # consecutive plateau candidates at the same extreme
@@ -108,29 +139,45 @@ def _fractal_pivots(df: pd.DataFrame, tf_source: str, window: int) -> list[SRLev
                 run.append(i)  # same flat-top → extend, most-recent wins
             else:
                 if run:
-                    pivots.append(_pivot(series[run[-1]], tf_source, kind, index[run[-1]]))
+                    pivots.append(_emit(run[-1], kind))
                 run = [i]
         if run:
-            pivots.append(_pivot(series[run[-1]], tf_source, kind, index[run[-1]]))
+            pivots.append(_emit(run[-1], kind))
     return pivots
 
 
 def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
     """Collapse one price cluster per contract clause 6 (confirmations never decreases).
 
-    VRVP is deliberately reset to ``False`` here — confluence is owned by the
-    post-merge ``_score_with_vrvp`` pass on the final price, not carried through.
+    Zones use the outer envelope (min ``zone_low``, max ``zone_high``) with a
+    max-width guard: if the envelope exceeds ``_MAX_ZONE_PCT`` of mid-price, fall back
+    to the best contributor's zone (a 1w wide-wick + 1d tight pivot at the same cluster
+    shouldn't produce a comically wide merged zone). Merged ``price`` is then pinned to
+    the zone edge — resistance: ``zone_high``; support: ``zone_low`` — preserving the
+    SFP-pierce invariant ``_significant_level`` reads. VRVP is deliberately reset to
+    ``False`` here — confluence is owned by the post-merge ``_score_with_vrvp`` pass on
+    the final price, not carried through.
     """
     best = max(cluster, key=lambda l: (_TF_RANK[l.tf_source], l.confirmations, l.last_test))
     lineages = {_lineage_key(l.tf_source) for l in cluster}
+    zone_low_raw = min(c.zone_low for c in cluster)
+    zone_high_raw = max(c.zone_high for c in cluster)
+    mid = (zone_low_raw + zone_high_raw) / 2.0
+    if mid > 0 and (zone_high_raw - zone_low_raw) / mid > _MAX_ZONE_PCT:
+        zone_low, zone_high = best.zone_low, best.zone_high
+    else:
+        zone_low, zone_high = zone_low_raw, zone_high_raw
+    price = zone_high if best.pivot_type == "high" else zone_low
     return SRLevelV2(
-        price=best.price,
+        price=price,
         tf_source=best.tf_source,
         pivot_type=best.pivot_type,
         confirmations=max(best.confirmations, len(lineages)),
         vrvp_confluence=False,
         formed_at=best.formed_at,
         last_test=max(l.last_test for l in cluster),
+        zone_low=zone_low,
+        zone_high=zone_high,
     )
 
 
