@@ -71,7 +71,9 @@ class SRLevelV2:
     freshly-found single pivot they are equal. ``confirmations`` is a distinct-TF
     -lineage count (``1d``/``3d`` count once) — deliberately a *different* unit from
     v1 ``SRLevel.strength`` (raw swing touch count), hence the different name.
-    ``quality`` is set at the end of ``derive_sr_levels`` (0.0 until then).
+    ``quality`` carries None pre-``_assign_quality`` (the final stage of
+    ``derive_sr_levels``) and a positive float post-score. Surfacing the unset state as
+    None lets the chart dispatch boundary reject a pre-score level forwarded by mistake.
     framework-canonical: "a level is a price or cluster of prices" — every level carries
     a ``[zone_low, zone_high]`` envelope (resistance: ``max(open,close)`` → ``high``;
     support: ``low`` → ``min(open,close)``). ``price`` is the *wick extreme* on the
@@ -93,9 +95,8 @@ class SRLevelV2:
     zone_high: float           # required — no default
     retest_count: int = 0      # derived post-hoc, not at pivot construction
     # Quality stays None pre-``_assign_quality`` (the final stage of ``derive_sr_levels``).
-    # Surfacing the unset state as ``None`` rather than the lossy ``0.0`` sentinel is what
-    # lets the chart dispatch boundary reject a pre-score level forwarded by mistake
-    # (codex arch r4 finding).
+    # Surfacing the unset state as None rather than a lossy 0.0 sentinel is what lets the
+    # chart dispatch boundary reject a pre-score level forwarded by mistake.
     quality: float | None = None
 
 

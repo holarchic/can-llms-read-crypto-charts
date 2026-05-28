@@ -173,17 +173,16 @@ def _has_zoned_levels(sr_levels: list) -> bool:
     The QUINTUPLE-shape contract: ``zone_low`` + ``zone_high`` + ``quality`` +
     ``pivot_type ∈ {"high", "low"}`` + ``formed_at`` all set. A level with some but
     not all of those, OR a ``pivot_type`` outside the legal set, is malformed and
-    rejected at this boundary, never later inside matplotlib. Mixed-shape payloads
-    (some zoned, some line-only) are likewise a producer bug and fail here so a bad
-    call never silently drops the line-only entries on the zoned render path. v1
-    ``SpineLevel`` / ``SRLevel`` leave every zone field unset and the renderer falls
-    through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel`` populates every
-    field via ``from_sr_level_v2`` (production `SRLevelV2.quality` is always assigned
-    by `_assign_quality`'s final pass — `quality=None` here is a producer bug, not a
-    line-shape).
-
-    Codex iteration log: r2 added pivot_type-value validation; r3 added quality
-    presence so the boundary covers every field `_sr_zones` reads."""
+    rejected at this boundary, never later inside matplotlib. The quintuple covers
+    every field ``_sr_zones`` reads, so a producer bug fails here rather than
+    silently rendering with a fallback (mis-coloured zone, wrong alpha tier, etc.).
+    Mixed-shape payloads (some zoned, some line-only) are likewise a producer bug and
+    fail here so a bad call never silently drops the line-only entries on the zoned
+    render path. v1 ``SpineLevel`` / ``SRLevel`` leave every zone field unset and the
+    renderer falls through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel``
+    populates every field via ``from_sr_level_v2`` (``SRLevelV2.quality`` is always
+    assigned by ``_assign_quality``'s final pass — ``quality=None`` here is a
+    producer bug, not a line-shape)."""
     def _shape(lvl) -> str:
         zl = getattr(lvl, "zone_low", None)
         zh = getattr(lvl, "zone_high", None)

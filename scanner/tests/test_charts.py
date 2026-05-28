@@ -432,10 +432,12 @@ class TestZoneRendering:
                            output_dir=tmp_charts)
 
     def test_zoned_with_missing_quality_raises_at_dispatch(self, long_df, tmp_charts):
-        """Codex arch r3 MEDIUM: a zoned level with `quality=None` must be rejected at
-        the dispatch boundary — `_sr_zones` reads quality for both top-N selection AND
-        alpha; pre-r3 a None quality silently fell back to 0.0, masking a producer bug.
-        Production `SRLevelV2.quality` is always populated by `_assign_quality`."""
+        """A zoned level with `quality=None` must be rejected at the dispatch boundary
+        — `_sr_zones` reads quality for both top-N selection AND alpha; without this
+        gate a None quality would silently fall back to 0.0 (lowest-tier alpha),
+        masking a producer bug. Production `SRLevelV2.quality` is always populated by
+        `_assign_quality` so a None on this path means a pre-score level forwarded by
+        mistake."""
         no_quality = SpineLevel(
             price=110.0, zone_low=109.0, zone_high=110.0,
             pivot_type="high", quality=None,
@@ -453,11 +455,11 @@ class TestZoneRendering:
     def test_pre_score_srlevelv2_through_from_sr_level_v2_rejected_at_dispatch(
         self, long_df, tmp_charts,
     ):
-        """Codex arch r4 MEDIUM: a raw pre-`_assign_quality` `SRLevelV2` projected
-        through `from_sr_level_v2` MUST be rejected at the dispatch boundary. Pre-r4
-        the model default `quality=0.0` slipped past `quality is not None`; post-r4
-        `SRLevelV2.quality` is `None` until `_assign_quality` runs, so the projection
-        carries `quality=None` and the boundary catches it."""
+        """A raw pre-`_assign_quality` `SRLevelV2` projected through `from_sr_level_v2`
+        is rejected at the dispatch boundary: `SRLevelV2.quality` carries None until
+        `_assign_quality` runs, the projection forwards that None onto `SpineLevel`,
+        and the boundary catches the missing-quality shape. The model field's Optional
+        type is exactly what makes this gate work."""
         from scanner.models import SRLevelV2
         raw = SRLevelV2(
             price=110.0, tf_source="1d", pivot_type="high",
@@ -479,11 +481,10 @@ class TestZoneRendering:
                            output_dir=tmp_charts)
 
     def test_zoned_with_invalid_pivot_type_raises_at_dispatch(self, long_df, tmp_charts):
-        """Codex arch r2 MEDIUM: a zoned level whose `pivot_type` is outside
-        `{'high', 'low'}` must be rejected at the dispatch boundary — not silently
-        rendered via `_sr_zones`'s colour fallback (`pivot_type == 'low'` → support
-        else resistance). The boundary owns pivot_type-value validation, not the
-        renderer."""
+        """A zoned level whose `pivot_type` is outside `{'high', 'low'}` is rejected
+        at the dispatch boundary — not silently rendered via `_sr_zones`'s colour
+        fallback (`pivot_type == 'low'` → support else resistance). The boundary
+        owns pivot_type-value validation, not the renderer."""
         bogus = SpineLevel(
             price=110.0, zone_low=109.0, zone_high=110.0,
             pivot_type="bogus", quality=1.0,
@@ -499,10 +500,10 @@ class TestZoneRendering:
                            output_dir=tmp_charts)
 
     def test_zoned_with_missing_formed_at_raises_at_dispatch(self, long_df, tmp_charts):
-        """Sub-G: a level with zone fields BUT `formed_at=None` is malformed under the
-        quintuple-shape contract. Without this, a producer bug would silently fall open
-        to chart-left back-dating — the exact bug `_has_zoned_levels` is designed to
-        prevent at the dispatch boundary (parallel to F arch-r2's triple-shape rejection)."""
+        """A level with zone fields BUT `formed_at=None` is malformed under the
+        quintuple-shape contract. Without this gate, a producer bug would silently fall
+        open to chart-left back-dating — exactly what `_has_zoned_levels` is designed to
+        prevent at the dispatch boundary."""
         missing = SpineLevel(
             price=110.0, zone_low=109.0, zone_high=110.0,
             pivot_type="high", quality=1.0, formed_at=None,

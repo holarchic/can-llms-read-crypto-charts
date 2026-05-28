@@ -732,11 +732,11 @@ def test_apply_retest_decay_split_drop_counts():
 
 
 def test_count_retests_classifies_cap_then_flip_as_flipped():
-    """Codex arch-pass r1: ``flipped`` is the canonical drop reason — a level that
-    accumulated > `_MAX_RETESTS` retests AND then later closed through MUST classify as
-    flipped, NOT capped. The counter saturates at cap+1 but the scan continues so the
-    later flip is still observable. Without this, drop-reason classification would be
-    order-dependent (whichever happened first wins arbitrarily)."""
+    """``flipped`` is the canonical drop reason — a level that accumulated >
+    `_MAX_RETESTS` retests AND then later closed through MUST classify as flipped, NOT
+    capped. The counter saturates at cap+1 but the scan continues so the later flip is
+    still observable. Without this, drop-reason classification would be order-dependent
+    (whichever happened first wins arbitrarily)."""
     lvl = _resistance()
     cycle = [(95.0, 96.0, 94.0, 95.0), (98.0, 99.8, 97.5, 99.7)]
     flip_then_quiet = [(99.0, 101.5, 98.0, 101.0)]                     # close 101 > 100 = flip
