@@ -75,6 +75,13 @@ _RETEST_DECAY = 0.7      # per-retest multiplicative quality decay (framework-ca
 _MAX_RETESTS = 5         # > 5 same-side retests → drop (the framework: "8 is too many")
 _MIN_ZONE_PCT = 0.001    # 0.1% of pivot price — min zone width pad (avoid zero-width)
 _MAX_ZONE_PCT = 0.03     # 3% of mid-price — max merged-cluster width before best-fallback
+# Per-bar max-width cap (Sub-chunk G). The cap unit is width/mid (same as `_combine`'s
+# cluster-merge guard above), so a `_pivot`-built zone passes the same calibration check.
+# Solved for zone-edge: resistance `zone_low >= price * (2 - r) / (2 + r)` enforces
+# width/mid ≤ r when zone_high == price; support symmetric. The two constants are the
+# algebraic edges of that bound — derived once at module load, not per call.
+_CAP_LO = (2.0 - _MAX_ZONE_PCT) / (2.0 + _MAX_ZONE_PCT)   # resistance: zone_low / price floor
+_CAP_HI = (2.0 + _MAX_ZONE_PCT) / (2.0 - _MAX_ZONE_PCT)   # support:    zone_high / price ceiling
 
 
 def _lineage_key(tf_source: str) -> str:
@@ -93,9 +100,18 @@ def _pivot(
     tf_source: str, pivot_type: str, ts,
 ) -> SRLevelV2:
     """One bar → one zoned pivot. Zone is framework-canonical (resistance: body-top → wick;
-    support: wick → body-bottom). Min-width pad is *asymmetric*: it extends INWARD from
-    the wick extreme so the ``price == zone-edge`` invariant holds even for a
-    four-price doji where O=H=L=C.
+    support: wick → body-bottom). Two asymmetric bounds — both extend INWARD from the
+    wick extreme so the ``price == zone-edge`` invariant holds for both:
+
+    * Min-pad widens a body-collapsed-to-wick doji to ``_MIN_ZONE_PCT`` so the zone is
+      never zero-width.
+    * Max-cap clips a wide HTF wick-to-body envelope back to ``_MAX_ZONE_PCT`` (Sub-G:
+      the calibration sweep measured 80% of substrate zones exceeding the cap the code
+      was supposed to enforce — `_combine`'s merged-cluster guard never reached the
+      per-bar bound). Both bounds, both apply: at most one fires per bar (a wide bar
+      caps; a doji pads; a normal bar leaves the raw envelope alone). `_combine`'s
+      cluster guard is preserved — contributors at slightly-different prices can
+      still merge to a width wider than any individual zone.
     """
     t = pd.Timestamp(ts)
     h, lo, op, cl = float(high), float(low), float(open_), float(close)
@@ -104,12 +120,15 @@ def _pivot(
         zone_high = h
         zone_low_raw = max(op, cl)
         # Pad INWARD from the wick (down from price), so zone_high == price holds.
-        zone_low = min(zone_low_raw, price - price * _MIN_ZONE_PCT)
+        zone_low_after_pad = min(zone_low_raw, price - price * _MIN_ZONE_PCT)
+        # Cap INWARD when the wick-to-body envelope exceeds the per-bar width budget.
+        zone_low = max(zone_low_after_pad, price * _CAP_LO)
     else:
         price = lo
         zone_low = lo
         zone_high_raw = min(op, cl)
-        zone_high = max(zone_high_raw, price + price * _MIN_ZONE_PCT)
+        zone_high_after_pad = max(zone_high_raw, price + price * _MIN_ZONE_PCT)
+        zone_high = min(zone_high_after_pad, price * _CAP_HI)
     return SRLevelV2(
         price=price, tf_source=tf_source, pivot_type=pivot_type,
         confirmations=1, vrvp_confluence=False, formed_at=t, last_test=t,

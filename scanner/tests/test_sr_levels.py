@@ -23,7 +23,10 @@ from scanner.indicators import cluster_sr_levels, find_swing_points
 from scanner.ma_indicators import VolumeProfile, compute_volume_profile
 from scanner.models import SRLevelV2
 from scanner.sr_levels import (
+    _CAP_HI,
+    _CAP_LO,
     _MAX_RETESTS,
+    _MAX_ZONE_PCT,
     _RETEST_DECAY,
     _assign_quality,
     _combine,
@@ -300,15 +303,17 @@ def test_srlevel_v2_zone_fields_required():
 @pytest.mark.parametrize(
     "open_,high,low,close,ptype",
     [
-        (95.0, 100.0, 94.0, 96.0, "high"),                  # bullish-bodied resistance
-        (96.0, 100.0, 94.0, 95.0, "high"),                  # bearish-bodied resistance
-        (104.0, 106.0, 100.0, 105.0, "low"),                # bullish-bodied support
-        (105.0, 106.0, 100.0, 104.0, "low"),                # bearish-bodied support
+        (98.0, 100.0, 97.0, 99.0, "high"),                  # bullish-bodied resistance, ~1% wick
+        (99.0, 100.0, 97.0, 98.0, "high"),                  # bearish-bodied resistance, ~1% wick
+        (101.0, 103.0, 100.0, 102.0, "low"),                # bullish-bodied support, ~1% wick
+        (102.0, 103.0, 100.0, 101.0, "low"),                # bearish-bodied support, ~1% wick
     ],
 )
 def test_pivot_zone_derivation_invariant(open_, high, low, close, ptype):
     """Resistance: zone_high == high (= price); zone_low == max(open, close).
-    Support: zone_low == low (= price); zone_high == min(open, close)."""
+    Support: zone_low == low (= price); zone_high == min(open, close).
+    Fixtures stay under `_MAX_ZONE_PCT` so neither min-pad nor max-cap (Sub-G) fires —
+    the raw wick-to-body envelope IS the zone."""
     lvl = _pivot(open_, high, low, close, "1d", ptype, pd.Timestamp("2024-01-01"))
     if ptype == "high":
         assert lvl.price == high
@@ -346,6 +351,53 @@ def test_pivot_doji_zone_supports_at_sr_membership_for_adjacent_price():
     assert lvl.zone_low <= p <= lvl.zone_high
     # a price just inward (the body side) is inside the pad
     assert lvl.zone_low <= (p - 1e-6) <= lvl.zone_high
+
+
+def test_pivot_width_cap_resistance_clips_inward_to_max_zone_pct():
+    """Sub-G: a wide-wick HTF resistance bar (raw wick-to-body envelope ≫ `_MAX_ZONE_PCT`)
+    is clipped INWARD to `zone_low = price * _CAP_LO`. The wick extreme stays the touch
+    line (`price == zone_high`) and width/mid is exactly the budget."""
+    # raw envelope: zone_high=100, zone_low=max(open, close)=22 → ~80% width — wildly over cap.
+    lvl = _pivot(20.0, 100.0, 15.0, 22.0, "1w", "high", pd.Timestamp("2024-01-01"))
+    assert lvl.zone_high == 100.0
+    assert math.isclose(lvl.zone_low, 100.0 * _CAP_LO, rel_tol=0, abs_tol=1e-12)
+    assert lvl.price == lvl.zone_high                                  # invariant
+    width_over_mid = (lvl.zone_high - lvl.zone_low) / ((lvl.zone_high + lvl.zone_low) / 2.0)
+    assert width_over_mid <= _MAX_ZONE_PCT + 1e-9                      # `_combine`'s unit
+
+
+def test_pivot_width_cap_support_clips_inward_to_max_zone_pct():
+    """Symmetric to the resistance case — support's wick extreme is `price == zone_low`,
+    and a wide body clips `zone_high` down to `price * _CAP_HI`."""
+    # raw envelope: zone_low=100, zone_high=min(open, close)=180 → ~57% width over cap.
+    lvl = _pivot(180.0, 200.0, 100.0, 195.0, "1w", "low", pd.Timestamp("2024-01-01"))
+    assert lvl.zone_low == 100.0
+    assert math.isclose(lvl.zone_high, 100.0 * _CAP_HI, rel_tol=0, abs_tol=1e-12)
+    assert lvl.price == lvl.zone_low
+    width_over_mid = (lvl.zone_high - lvl.zone_low) / ((lvl.zone_high + lvl.zone_low) / 2.0)
+    assert width_over_mid <= _MAX_ZONE_PCT + 1e-9
+
+
+@pytest.mark.parametrize("ptype", ["high", "low"])
+def test_pivot_doji_min_pad_still_applies_after_cap_addition(ptype):
+    """Sub-G: adding the max-cap must not break the existing min-pad for doji bars.
+    A four-price doji's body collapses to the wick, so the cap doesn't fire (envelope
+    is already zero-width); the pad widens to `_MIN_ZONE_PCT`."""
+    p = 100.0
+    lvl = _pivot(p, p, p, p, "1d", ptype, pd.Timestamp("2024-01-01"))
+    if ptype == "high":
+        assert lvl.zone_high == p
+        assert math.isclose(lvl.zone_low, p - p * 0.001, rel_tol=0, abs_tol=1e-9)
+    else:
+        assert lvl.zone_low == p
+        assert math.isclose(lvl.zone_high, p + p * 0.001, rel_tol=0, abs_tol=1e-9)
+
+
+def test_pivot_normal_bar_neither_pad_nor_cap_fires():
+    """A ~1% wick-to-body bar: zone is exactly the raw envelope — neither bound fires."""
+    lvl = _pivot(98.0, 100.0, 97.0, 99.0, "1d", "high", pd.Timestamp("2024-01-01"))
+    assert lvl.zone_high == 100.0
+    assert lvl.zone_low == 99.0                                         # max(98, 99) — raw
 
 
 def _zlvl(price, tf, ptype, zone_low, zone_high, *, confirmations=1, formed="2024-01-01"):
