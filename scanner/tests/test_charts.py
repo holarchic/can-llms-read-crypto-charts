@@ -260,6 +260,21 @@ class TestZoneRendering:
         finally:
             plt.close(fig)
 
+    def test_partial_zone_fields_raises_at_dispatch(self, long_df, tmp_charts):
+        """Codex architecture pass r2: a level with `zone_low` set but `zone_high`
+        missing is malformed and must be rejected at the dispatch boundary — never
+        slipped through to matplotlib where it would crash with a confusing TypeError.
+        """
+        partial = SpineLevel(price=104.0, zone_low=103.0)                 # zone_high missing
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="PART", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="part",
+        )
+        with pytest.raises(ValueError, match="partial zone fields"):
+            generate_chart(long_df, "PART", "4H", signal, sr_levels=[partial],
+                           output_dir=tmp_charts)
+
     def test_mixed_zoned_and_line_levels_raises_at_dispatch(self, long_df, tmp_charts):
         """Codex architecture pass: mixing v1 line-only and v2 zoned levels in one
         chart payload is a producer bug — the dispatch must raise rather than silently
