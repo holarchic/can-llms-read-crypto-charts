@@ -164,10 +164,14 @@ def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
     to the best contributor's zone (a 1w wide-wick + 1d tight pivot at the same cluster
     shouldn't produce a comically wide merged zone). Merged ``price`` is then pinned to
     the zone edge — resistance: ``zone_high``; support: ``zone_low`` — preserving the
-    SFP-pierce invariant ``_significant_level`` reads. ``formed_at`` is the LATEST
-    contributor's formation timestamp (not the dominant contributor's) — the merged
-    record's zone shape only exists once the widening contributor has formed, so retest
-    counting must not back-date through pre-widening bars. VRVP is deliberately reset to
+    SFP-pierce invariant ``_significant_level`` reads. ``formed_at`` is the latest
+    formation timestamp among the contributors that actually DEFINE the kept zone edges:
+    when the max-width guard fires, the kept zone is ``best``'s alone, so the merged
+    formation is ``best.formed_at``; under the outer envelope, it is the latest among
+    the contributors whose ``zone_low`` / ``zone_high`` were chosen. Retest counting can
+    only count bars after the merged record's zone shape actually existed, but
+    contributors that did NOT widen the kept zone don't back-date or push it forward.
+    VRVP is deliberately reset to
     ``False`` here — confluence is owned by the post-merge ``_score_with_vrvp`` pass on
     the final price, not carried through.
     """
@@ -177,9 +181,18 @@ def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
     zone_high_raw = max(c.zone_high for c in cluster)
     mid = (zone_low_raw + zone_high_raw) / 2.0
     if mid > 0 and (zone_high_raw - zone_low_raw) / mid > _MAX_ZONE_PCT:
+        # Guard fires: best alone defines the kept zone, so its formation is the
+        # whole merged record's formation. Other contributors are summarised by
+        # `confirmations`/`last_test` but do not change zone shape.
         zone_low, zone_high = best.zone_low, best.zone_high
+        formed_at = best.formed_at
     else:
+        # Outer envelope: the merged zone's shape exists once BOTH edge-defining
+        # contributors (the one with min zone_low + the one with max zone_high) have
+        # formed. Retest counting must not back-date through bars pre-dating that.
         zone_low, zone_high = zone_low_raw, zone_high_raw
+        edge_defs = [c for c in cluster if c.zone_low == zone_low or c.zone_high == zone_high]
+        formed_at = max(c.formed_at for c in edge_defs)
     price = zone_high if best.pivot_type == "high" else zone_low
     return SRLevelV2(
         price=price,
@@ -187,7 +200,7 @@ def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
         pivot_type=best.pivot_type,
         confirmations=max(best.confirmations, len(lineages)),
         vrvp_confluence=False,
-        formed_at=max(c.formed_at for c in cluster),
+        formed_at=formed_at,
         last_test=max(l.last_test for l in cluster),
         zone_low=zone_low,
         zone_high=zone_high,

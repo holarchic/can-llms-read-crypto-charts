@@ -421,14 +421,34 @@ def test_merge_by_price_does_not_collapse_opposite_sides():
     assert (low.zone_low, low.zone_high) == (100.1, 100.6)   # support zone untouched
 
 
-def test_combine_formed_at_is_latest_contributor_not_dominant():
-    """Codex correctness regression: when a later, wider contributor merges with an
-    earlier one, the merged `formed_at` is the LATER timestamp — so retest counting
-    cannot back-date through bars that pre-date the widened zone shape."""
+def test_combine_formed_at_tracks_widening_contributor_under_envelope():
+    """Codex correctness regression r1: when a later, *wider* contributor merges with an
+    earlier one (the kept zone IS widened), the merged `formed_at` is the LATER
+    contributor's — so retest counting cannot back-date through bars that pre-date the
+    widened zone shape.
+    """
     early = _zlvl(100.0, "1w", "high", 99.5, 100.0, formed="2026-01-01")
     later = _zlvl(100.05, "1d", "high", 98.0, 100.05, formed="2026-03-01")
     merged = _combine([early, later])
-    assert merged.formed_at == pd.Timestamp("2026-03-01")    # latest, not best's
+    # Outer envelope kept (the 2% width is under _MAX_ZONE_PCT=3%).
+    assert (merged.zone_low, merged.zone_high) == (98.0, 100.05)
+    # `later` defines the chosen zone_low (98.0) → merged formation is later's.
+    assert merged.formed_at == pd.Timestamp("2026-03-01")
+
+
+def test_combine_formed_at_keeps_best_when_max_width_guard_falls_back():
+    """Codex correctness regression r2: when the max-width guard fires, the kept zone
+    IS best's alone (not widened) — so the merged `formed_at` must stay at `best`'s.
+    Stamping it with the discarded later contributor's timestamp would over-date a zone
+    that did not in fact widen, undercounting valid retests and breaking refinement.
+    """
+    wide = _zlvl(100.0, "1w", "high", 95.0, 100.0, formed="2026-01-01")            # 5% wide → best by rank
+    tight = _zlvl(100.05, "1d", "high", 99.8, 100.05, confirmations=2, formed="2026-03-01")
+    merged = _combine([wide, tight])
+    # Guard fires → kept zone is wide's; formation stays at wide's.
+    assert (merged.zone_low, merged.zone_high) == (wide.zone_low, wide.zone_high)
+    assert merged.tf_source == "1w"
+    assert merged.formed_at == pd.Timestamp("2026-01-01")
 
 
 def test_count_retests_excludes_bars_before_widened_zone_formed():
