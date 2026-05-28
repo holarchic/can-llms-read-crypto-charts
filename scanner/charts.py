@@ -151,7 +151,16 @@ def _sr_hlines(sr_levels: list, df: pd.DataFrame) -> dict | None:
 # the candle marketcolors), alpha gradient `_ZONE_ALPHA_LO..._ZONE_ALPHA_HI` so the
 # best-quality level reads vivid and the worst reads faded.
 _ZONE_SUPPORT, _ZONE_RESISTANCE = "#26a69a", "#ef5350"
-_ZONE_ALPHA_LO, _ZONE_ALPHA_HI = 0.15, 0.55
+_ZONE_ALPHA_LO, _ZONE_ALPHA_HI = 0.18, 0.45
+# Cap the on-chart zone count — detection consumes every level, but the chart should
+# render only the few highest-quality ones in view. A chart marks 3–6 levels, not
+# the whole substrate; rendering all leaves no whitespace.
+_MAX_ZONES_PER_CHART = 6
+# Each rendered zone gets a thin solid edge at zone_low/zone_high in addition to the
+# faint axhspan fill — TradingView-style SR box. The edge sharpens the boundary that
+# the LLM (and the operator) reads as the touch/pierce price.
+_ZONE_EDGE_LW = 0.6
+_ZONE_EDGE_ALPHA = 0.6
 
 
 def _has_zoned_levels(sr_levels: list) -> bool:
@@ -190,25 +199,32 @@ def _has_zoned_levels(sr_levels: list) -> bool:
 
 
 def _sr_zones(sr_levels: list, df: pd.DataFrame, ax) -> int:
-    """Render v2 zoned S/R via ``ax.axhspan`` — colour by ``pivot_type``, alpha by
-    normalised ``quality``. Returns the count of zones drawn (0 when none fall inside
-    the chart's price window). Same ±5% cushion as the line path. Input is guaranteed
-    homogeneous by ``_has_zoned_levels`` at the dispatch boundary."""
+    """Render v2 zoned S/R via ``ax.axhspan`` (faint fill) + ``ax.axhline`` (sharp
+    zone edges) — colour by ``pivot_type``, alpha by normalised ``quality``. Returns
+    the count of zones drawn (0 when none fall inside the chart's price window). Same
+    ±5% cushion as the line path. Input is guaranteed homogeneous by
+    ``_has_zoned_levels`` at the dispatch boundary. Cap at ``_MAX_ZONES_PER_CHART``
+    top-quality levels — detection consumes the full substrate, but the chart marks
+    only the few that an operator would actually mark."""
     price_range = df["High"].max() - df["Low"].min()
     lo = df["Low"].min() - price_range * 0.05
     hi = df["High"].max() + price_range * 0.05
     visible = [lvl for lvl in sr_levels if lo <= lvl.price <= hi]
     if not visible:
         return 0
-    qs = [(lvl.quality if lvl.quality is not None else 0.0) for lvl in visible]
+    visible.sort(key=lambda lvl: (lvl.quality if lvl.quality is not None else 0.0), reverse=True)
+    rendered = visible[:_MAX_ZONES_PER_CHART]
+    qs = [(lvl.quality if lvl.quality is not None else 0.0) for lvl in rendered]
     qmin, qmax = min(qs), max(qs)
     qspan = qmax - qmin
-    for lvl, q in zip(visible, qs):
+    for lvl, q in zip(rendered, qs):
         normalized = ((q - qmin) / qspan) if qspan > 0 else 1.0
-        alpha = _ZONE_ALPHA_LO + (_ZONE_ALPHA_HI - _ZONE_ALPHA_LO) * normalized
+        fill_alpha = _ZONE_ALPHA_LO + (_ZONE_ALPHA_HI - _ZONE_ALPHA_LO) * normalized
         color = _ZONE_SUPPORT if lvl.pivot_type == "low" else _ZONE_RESISTANCE
-        ax.axhspan(lvl.zone_low, lvl.zone_high, alpha=alpha, color=color)
-    return len(visible)
+        ax.axhspan(lvl.zone_low, lvl.zone_high, alpha=fill_alpha, color=color, lw=0)
+        ax.axhline(lvl.zone_high, color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA)
+        ax.axhline(lvl.zone_low, color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA)
+    return len(rendered)
 
 
 
