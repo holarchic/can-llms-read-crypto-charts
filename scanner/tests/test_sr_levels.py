@@ -17,14 +17,20 @@ single-pivot building block used throughout.
 import math
 
 import pandas as pd
+import pytest
 
 from scanner.indicators import cluster_sr_levels, find_swing_points
 from scanner.ma_indicators import VolumeProfile, compute_volume_profile
 from scanner.models import SRLevelV2
 from scanner.sr_levels import (
+    _MAX_RETESTS,
+    _RETEST_DECAY,
     _assign_quality,
+    _combine,
+    _count_retests,
     _find_htf_pivots,
     _merge_sr_levels,
+    _pivot,
     _refine_pivots_on_lower_tf,
     _score_with_vrvp,
     anchor_vrvp_for_range,
@@ -276,3 +282,267 @@ def test_merge_keeps_disjoint_macro_and_refined():
     refined = [_lvl(100, "1d", formed="2024-06-01")]
     merged = _merge_sr_levels(macro, refined, tol=0.01)
     assert sorted(l.price for l in merged) == [50.0, 100.0, 150.0]
+
+
+# ── Sub-chunk F: zones, retest counting, decay ────────────────────────────────
+
+
+def test_srlevel_v2_zone_fields_required():
+    """No zone defaults — missing zone_low/zone_high at construction → TypeError."""
+    with pytest.raises(TypeError):
+        SRLevelV2(                                          # type: ignore[call-arg]
+            price=100.0, tf_source="1d", pivot_type="high", confirmations=1,
+            vrvp_confluence=False, formed_at=pd.Timestamp("2024-01-01"),
+            last_test=pd.Timestamp("2024-01-01"),
+        )
+
+
+@pytest.mark.parametrize(
+    "open_,high,low,close,ptype",
+    [
+        (95.0, 100.0, 94.0, 96.0, "high"),                  # bullish-bodied resistance
+        (96.0, 100.0, 94.0, 95.0, "high"),                  # bearish-bodied resistance
+        (104.0, 106.0, 100.0, 105.0, "low"),                # bullish-bodied support
+        (105.0, 106.0, 100.0, 104.0, "low"),                # bearish-bodied support
+    ],
+)
+def test_pivot_zone_derivation_invariant(open_, high, low, close, ptype):
+    """Resistance: zone_high == high (= price); zone_low == max(open, close).
+    Support: zone_low == low (= price); zone_high == min(open, close)."""
+    lvl = _pivot(open_, high, low, close, "1d", ptype, pd.Timestamp("2024-01-01"))
+    if ptype == "high":
+        assert lvl.price == high
+        assert lvl.zone_high == high
+        assert lvl.zone_low == max(open_, close)
+    else:
+        assert lvl.price == low
+        assert lvl.zone_low == low
+        assert lvl.zone_high == min(open_, close)
+
+
+@pytest.mark.parametrize("ptype", ["high", "low"])
+def test_pivot_four_price_doji_gets_inward_min_width_pad(ptype):
+    """O=H=L=C → zone padded ASYMMETRICALLY inward from the wick extreme so
+    `price == zone-edge` invariant still holds. The pad extends INTO the candle-body
+    side (the side the level "respects" from), never outward past the wick."""
+    p = 100.0
+    lvl = _pivot(p, p, p, p, "1d", ptype, pd.Timestamp("2024-01-01"))
+    if ptype == "high":
+        assert lvl.zone_high == p            # wick extreme preserved
+        assert lvl.zone_low < p              # inward (body-side) pad
+        assert lvl.price == lvl.zone_high
+    else:
+        assert lvl.zone_low == p
+        assert lvl.zone_high > p             # inward pad above the wick low
+        assert lvl.price == lvl.zone_low
+
+
+def test_pivot_doji_zone_supports_at_sr_membership_for_adjacent_price():
+    """A four-price doji's min-width zone is wide enough that the touch line + a
+    tiny adjacent price both fall inside (AT_SR membership not collapsed)."""
+    p = 100.0
+    lvl = _pivot(p, p, p, p, "1d", "high", pd.Timestamp("2024-01-01"))
+    # price right at the wick line is inside (touch line == zone_high boundary)
+    assert lvl.zone_low <= p <= lvl.zone_high
+    # a price just inward (the body side) is inside the pad
+    assert lvl.zone_low <= (p - 1e-6) <= lvl.zone_high
+
+
+def _zlvl(price, tf, ptype, zone_low, zone_high, *, confirmations=1, formed="2024-01-01"):
+    """Construct a level with explicit zone bounds — used to drive `_combine` directly."""
+    f = pd.Timestamp(formed)
+    return SRLevelV2(
+        price=float(price), tf_source=tf, pivot_type=ptype, confirmations=confirmations,
+        vrvp_confluence=False, formed_at=f, last_test=f,
+        zone_low=float(zone_low), zone_high=float(zone_high),
+    )
+
+
+def test_combine_outer_envelope_widens_zone_across_contributors():
+    """Three clustered resistance pivots → merged zone is the outer envelope (min low,
+    max high), wider than any single contributor."""
+    a = _zlvl(100.0, "1d", "high", 99.5, 100.0)
+    b = _zlvl(100.1, "1d", "high", 99.7, 100.1, confirmations=2)
+    c = _zlvl(100.05, "3d", "high", 99.6, 100.05)
+    merged = _combine([a, b, c])
+    assert merged.zone_low == 99.5
+    assert merged.zone_high == 100.1
+    assert (merged.zone_high - merged.zone_low) > max(
+        x.zone_high - x.zone_low for x in (a, b, c)
+    )
+
+
+def test_combine_max_width_guard_falls_back_to_best_contributor_zone():
+    """1w wide-wick + 1d tight pivot at the same cluster price — the outer envelope
+    is comically wide (>3% of mid-price), so `_combine` returns the best
+    contributor's zone, not the union."""
+    wide = _zlvl(100.0, "1w", "high", 95.0, 100.0, confirmations=1)   # 5% wide
+    tight = _zlvl(100.05, "1d", "high", 99.8, 100.05, confirmations=2)
+    merged = _combine([wide, tight])
+    # best by (rank, confirmations, last_test) = 1w wins on rank
+    assert merged.tf_source == "1w"
+    assert merged.zone_low == 95.0
+    assert merged.zone_high == 100.0
+
+
+def test_combine_merged_price_pinned_to_zone_edge_resistance():
+    """Resistance merge: `price == zone_high` (the wick line that SFP semantics read)."""
+    a = _zlvl(100.0, "1d", "high", 99.5, 100.0)
+    b = _zlvl(99.95, "1d", "high", 99.4, 99.95, confirmations=2)
+    merged = _combine([a, b])
+    assert merged.pivot_type == "high"
+    assert merged.price == merged.zone_high      # SFP-pierce invariant
+
+
+def test_combine_merged_price_pinned_to_zone_edge_support():
+    """Support merge: `price == zone_low`."""
+    a = _zlvl(100.0, "1d", "low", 100.0, 100.5)
+    b = _zlvl(100.05, "1d", "low", 100.05, 100.6, confirmations=2)
+    merged = _combine([a, b])
+    assert merged.pivot_type == "low"
+    assert merged.price == merged.zone_low
+
+
+# ── _count_retests ────────────────────────────────────────────────────────────
+
+
+def _retest_bars(rows, start="2024-01-10"):
+    """Build a per-TF frame from a list of (open, high, low, close) tuples."""
+    n = len(rows)
+    idx = pd.date_range(start, periods=n, freq="D")
+    return pd.DataFrame(
+        {
+            "Open":   [r[0] for r in rows],
+            "High":   [r[1] for r in rows],
+            "Low":    [r[2] for r in rows],
+            "Close":  [r[3] for r in rows],
+            "Volume": [1.0] * n,
+        },
+        index=idx,
+    )
+
+
+def _resistance(zone_low=99.5, zone_high=100.0, formed="2024-01-01"):
+    return _zlvl(zone_high, "1d", "high", zone_low, zone_high, formed=formed)
+
+
+def test_count_retests_zero_when_price_never_returns():
+    """Price drops away and never re-enters the zone → 0 retests."""
+    lvl = _resistance()
+    df = _retest_bars([(95.0, 96.0, 94.0, 95.0)] * 6)
+    assert _count_retests(lvl, df) == 0
+
+
+def test_count_retests_three_same_side_retests_at_resistance():
+    """Price oscillates: respect-side (below) → into zone → respect-side → into zone …
+    Three completed re-entry cycles count as 3 retests."""
+    lvl = _resistance()
+    # bar layout per cycle: drop below zone (respect_side), re-enter zone
+    cycle = [
+        (95.0, 96.0, 94.0, 95.0),               # respect-side (high 96 < zone_low 99.5)
+        (98.0, 99.8, 97.5, 99.7),               # back inside zone (low 97.5 <= 100, high 99.8 >= 99.5)
+    ]
+    df = _retest_bars(cycle * 3)
+    assert _count_retests(lvl, df) == 3
+
+
+def test_count_retests_stops_at_flip_close_above_resistance():
+    """A close ABOVE the zone (acceptance, not a wick poke) breaks the level → counting
+    halts there. Same-side retests after the flip are not credited."""
+    lvl = _resistance()
+    rows = [
+        (95.0, 96.0, 94.0, 95.0),               # respect-side
+        (98.0, 99.8, 97.5, 99.7),               # retest 1
+        (95.0, 96.0, 94.0, 95.0),               # respect-side
+        (99.0, 101.0, 98.0, 100.5),             # FLIP: close 100.5 > zone_high 100
+        (95.0, 96.0, 94.0, 95.0),               # would-be retest, ignored
+        (99.0, 99.9, 97.0, 99.8),
+    ]
+    assert _count_retests(lvl, _retest_bars(rows)) == 1
+
+
+def test_count_retests_wick_above_resistance_is_not_a_flip():
+    """A single-bar WICK above the zone (close still inside / below) is NOT a flip —
+    the framework's acceptance is close-based, not wick-based. Counting continues."""
+    lvl = _resistance()
+    rows = [
+        (95.0, 96.0, 94.0, 95.0),               # respect-side
+        (98.0, 100.5, 97.5, 99.7),              # wick to 100.5 above zone_high but close 99.7 inside
+        (95.0, 96.0, 94.0, 95.0),               # respect-side again
+        (98.0, 99.8, 97.5, 99.7),               # retest cycle 2
+    ]
+    assert _count_retests(lvl, _retest_bars(rows)) == 2
+
+
+def test_count_retests_caps_at_max_plus_one():
+    """The counter stops as soon as it exceeds ``_MAX_RETESTS`` — caller drops the level."""
+    lvl = _resistance()
+    cycle = [
+        (95.0, 96.0, 94.0, 95.0),
+        (98.0, 99.8, 97.5, 99.7),
+    ]
+    df = _retest_bars(cycle * (_MAX_RETESTS + 3))
+    rc = _count_retests(lvl, df)
+    assert rc > _MAX_RETESTS                       # marks the level for drop
+    assert rc <= _MAX_RETESTS + 1                  # early-exits at the cap, never further
+
+
+def test_count_retests_respect_side_for_support():
+    """For a support (pivot_type='low'), respect_side is ABOVE — price oscillates
+    above the zone and re-enters from above."""
+    lvl = _zlvl(95.0, "1d", "low", 95.0, 95.5)
+    rows = [
+        (97.0, 98.0, 96.0, 97.5),               # respect-side (low 96 > zone_high 95.5)
+        (95.4, 95.4, 95.0, 95.2),               # re-enter zone from above
+        (97.0, 98.0, 96.0, 97.5),               # respect-side
+        (95.4, 95.4, 95.0, 95.2),               # retest cycle 2
+    ]
+    assert _count_retests(lvl, _retest_bars(rows)) == 2
+
+
+def test_count_retests_empty_or_missing_frame_yields_zero():
+    """Degraded inputs never raise — a missing or empty per-TF frame returns 0."""
+    lvl = _resistance()
+    assert _count_retests(lvl, None) == 0
+    assert _count_retests(lvl, _empty()) == 0
+
+
+# ── pipeline integration: drop > _MAX_RETESTS + quality decay ──────────────────
+
+
+def _high_retest_daily_frame(zone_low=99.5, zone_high=100.0, formed="2024-01-01"):
+    """A daily frame whose price oscillates around a 99.5–100 resistance enough to
+    exceed `_MAX_RETESTS` — used to verify drop + decay end-to-end through
+    `derive_sr_levels`. The frame starts with a 5-bar tent at the resistance so
+    `_fractal_pivots` finds the pivot, then oscillates well past the cap."""
+    tent = [(99.0, 99.5, 98.5, 99.0),
+            (99.5, 99.8, 99.2, 99.7),
+            (99.8, 100.0, 99.4, 99.6),          # pivot apex
+            (99.5, 99.8, 99.2, 99.7),
+            (99.0, 99.5, 98.5, 99.0)]
+    cycle = [(95.0, 96.0, 94.0, 95.0), (98.0, 99.8, 97.5, 99.7)]
+    return _retest_bars(tent + cycle * (_MAX_RETESTS + 4), start=formed)
+
+
+def test_apply_retest_decay_quality_scales_by_decay_power():
+    """A level with retest_count=3 has quality = base * 0.7^3 (rest of the score
+    structure unchanged)."""
+    fresh = _lvl(100, "1d")                              # retest_count default 0
+    aged = SRLevelV2(
+        price=fresh.price, tf_source="1d", pivot_type="high", confirmations=1,
+        vrvp_confluence=False, formed_at=fresh.formed_at, last_test=fresh.last_test,
+        zone_low=fresh.zone_low, zone_high=fresh.zone_high, retest_count=3,
+    )
+    scored = _assign_quality([fresh, aged])
+    f, a = scored[0], scored[1]
+    assert a.quality == pytest.approx(f.quality * (_RETEST_DECAY ** 3), rel=1e-6)
+
+
+def test_derive_drops_level_when_retest_count_exceeds_max():
+    """End-to-end through `derive_sr_levels`: a resistance with >5 same-side retests
+    on its daily frame is absent from the output (and only that level)."""
+    daily = _high_retest_daily_frame()
+    # Provide a weekly to anchor brackets so the daily pivot is allowed to refine inside.
+    weekly = _frame([80, 85, 90, 85, 80, 110, 115, 120, 115, 110], freq="7D")
+    levels = derive_sr_levels(weekly=weekly, daily=daily)
+    assert not any(99.0 <= l.price <= 100.5 for l in levels)

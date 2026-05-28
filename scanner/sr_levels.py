@@ -43,12 +43,15 @@ fewer/zero brackets → possibly an empty result, never a raise. Thresholds
 multi-touch beyond distinct lineage is not separately counted in ``confirmations``.
 """
 
+import logging
 from dataclasses import replace
 
 import pandas as pd
 
 from .ma_indicators import VolumeProfile, compute_volume_profile
 from .models import SRLevelV2
+
+logger = logging.getLogger(__name__)
 
 # Public surface (enforced): the supported pipeline seam + the Chunk-4 VRVP primitive.
 # The derivation stages are private (`_find_htf_pivots` etc.); unit tests reach them
@@ -234,6 +237,75 @@ def _refine_pivots_on_lower_tf(
     return refined
 
 
+def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> int:
+    """Post-formation same-side re-entries into ``[zone_low, zone_high]``.
+
+    the framework: "recurring tests from the same direction generally make the level weaker…
+    you don't want to trade that the eighth time round; the first/fresh test is the
+    highest-probability trade." Only respect-side touches count — a level *flip* (price
+    accepted on the wrong side via a close, not a single-bar wick) means the level is
+    broken differently and we stop counting. The check fires regardless of state so a
+    respect-side bar can flip directly to the wrong side without re-entering the zone.
+    A missing/empty per-TF frame yields zero (degraded inputs never raise).
+    """
+    if df is None or df.empty:
+        return 0
+    respect_side = "below" if level.pivot_type == "high" else "above"
+    after = df[df.index > level.formed_at]
+    if after.empty:
+        return 0
+    retests = 0
+    state = "in_zone"  # the pivot bar itself IS in zone
+    for _, bar in after.iterrows():
+        in_zone = (bar["Low"] <= level.zone_high) and (bar["High"] >= level.zone_low)
+        # close-based acceptance: a single-bar wick beyond is not a flip
+        flipped = (
+            (respect_side == "below" and bar["Close"] > level.zone_high)
+            or (respect_side == "above" and bar["Close"] < level.zone_low)
+        )
+        if flipped:
+            break
+        on_respect_side = (
+            (respect_side == "below" and bar["High"] < level.zone_low)
+            or (respect_side == "above" and bar["Low"] > level.zone_high)
+        )
+        if state == "in_zone":
+            if on_respect_side:
+                state = "respect_side"
+        elif state == "respect_side" and in_zone:
+            retests += 1
+            state = "in_zone"
+            if retests > _MAX_RETESTS:
+                break  # one over the cap is enough to mark for drop
+    return retests
+
+
+def _apply_retest_decay(
+    levels: list[SRLevelV2], frames_by_tf: dict[str, pd.DataFrame],
+) -> list[SRLevelV2]:
+    """Stamp ``retest_count`` per level and drop ``> _MAX_RETESTS``.
+
+    Each level counts retests on its own ``tf_source`` frame — a ``1w`` pivot counts
+    on weekly bars, a ``1d`` pivot on dailies — so the cadence of "same-direction
+    retest" matches the TF the level was found on. Logs the dropped count at INFO
+    when non-zero (operator visibility per plan).
+    """
+    out: list[SRLevelV2] = []
+    dropped = 0
+    for lvl in levels:
+        rc = _count_retests(lvl, frames_by_tf.get(lvl.tf_source))
+        if rc > _MAX_RETESTS:
+            dropped += 1
+            continue
+        out.append(replace(lvl, retest_count=rc))
+    if dropped > 0:
+        logger.info(
+            "derive_sr_levels: dropped %d level(s) with retest_count > %d",
+            dropped, _MAX_RETESTS,
+        )
+    return out
+
+
 def _score_with_vrvp(levels: list[SRLevelV2], vrvp: VolumeProfile) -> list[SRLevelV2]:
     """Flag ``vrvp_confluence`` where a level sits in the value area ``[VAL, VAH]``.
 
@@ -255,11 +327,15 @@ def _merge_sr_levels(
 
 
 def _assign_quality(levels: list[SRLevelV2]) -> list[SRLevelV2]:
-    """Set ``quality`` monotonic in rank → confirmations → vrvp → recency (clause 7).
+    """Set ``quality`` monotonic in rank → confirmations → vrvp → recency (clause 7),
+    then decayed by ``_RETEST_DECAY ** retest_count`` (Sub-chunk F).
 
     Bounded bands keep the scalar lexicographic-consistent: rank (×1000) dominates
     confirmations (×100, ≤ a few hundred), which dominates the vrvp flag (5) and the
     normalized recency (≤1). Numeric weights are v1 defaults, calibrated Chunk 8b.
+    The retest-decay multiplier is applied *after* the base — a level retested 3 times
+    keeps its rank/confluence/vrvp ordering relative to its un-decayed self but is
+    demoted vs a fresh peer (framework-canonical "fresh = highest probability").
     """
     if not levels:
         return []
@@ -269,12 +345,13 @@ def _assign_quality(levels: list[SRLevelV2]) -> list[SRLevelV2]:
     out = []
     for l in levels:
         recency = 1.0 if span == 0 else (pd.Timestamp(l.last_test).value - lo) / span
-        q = (
+        base = (
             _TF_RANK[l.tf_source] * 1000.0
             + l.confirmations * 100.0
             + (5.0 if l.vrvp_confluence else 0.0)
             + recency
         )
+        q = base * (_RETEST_DECAY ** l.retest_count)
         out.append(replace(l, quality=round(q, 4)))
     return out
 
@@ -320,4 +397,8 @@ def derive_sr_levels(
     refined = _refine_pivots_on_lower_tf(macro, d, td, window=window, n_sub=n_sub, tol=tol)
     merged = _merge_sr_levels(macro, refined, tol=tol)
     scored = _score_with_vrvp(merged, vrvp) if vrvp is not None else merged
-    return sorted(_assign_quality(scored), key=lambda l: l.price)
+    # Sub-chunk F: post-formation retest count + drop > _MAX_RETESTS; each level
+    # counts on its own tf_source frame.
+    frames_by_tf = {"1mo": m, "1w": w, "3d": td, "1d": d}
+    retested = _apply_retest_decay(scored, frames_by_tf)
+    return sorted(_assign_quality(retested), key=lambda l: l.price)
