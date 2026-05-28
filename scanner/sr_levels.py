@@ -41,10 +41,12 @@ Algorithm contract (provenance precedence ``1mo > 1w > 3d > 1d``):
    bands so the scalar is lexicographic-consistent with that priority.
 
 Pipeline order in ``derive_sr_levels``: find → refine → merge → score → retest-decay
-→ quality. The retest-decay pass (Sub-chunk F) counts post-formation same-side
-re-entries into each level's zone and drops `retest_count > _MAX_RETESTS`; `quality`
-is then decayed by `_RETEST_DECAY ** retest_count` so fresh zones outrank retested
-ones (framework-canonical "fresh = highest probability").
+→ quality. The retest-decay pass (Sub-chunk F + G) counts post-formation same-side
+re-entries into each level's zone and drops both ``retest_count > _MAX_RETESTS`` AND
+levels whose close-based flip predicate fired (Sub-G: the framework's forward-only /
+dies-on-cross principle — a level that closed through is broken, not just retested);
+``quality`` is then decayed by `_RETEST_DECAY ** retest_count` so fresh zones outrank
+retested ones (framework-canonical "fresh = highest probability").
 
 Degradation: missing/short ``1w``/``1mo`` history yields fewer/zero macro pivots →
 fewer/zero brackets → possibly an empty result, never a raise. Thresholds
@@ -293,23 +295,28 @@ def _refine_pivots_on_lower_tf(
     return refined
 
 
-def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> int:
+def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> tuple[int, bool]:
     """Post-formation same-side re-entries into ``[zone_low, zone_high]``.
 
-    the framework: "recurring tests from the same direction generally make the level weaker…
-    you don't want to trade that the eighth time round; the first/fresh test is the
-    highest-probability trade." Only respect-side touches count — a level *flip* (price
-    accepted on the wrong side via a close, not a single-bar wick) means the level is
-    broken differently and we stop counting. The check fires regardless of state so a
-    respect-side bar can flip directly to the wrong side without re-entering the zone.
-    A missing/empty per-TF frame yields zero (degraded inputs never raise).
+    Returns ``(retests, flipped)``. the framework: "recurring tests from the same direction
+    generally make the level weaker… you don't want to trade that the eighth time
+    round; the first/fresh test is the highest-probability trade." Only respect-side
+    touches count — a level *flip* (price accepted on the wrong side via a close, not
+    a single-bar wick) means the level is broken outright. Sub-G surfaces the flip to
+    the caller (``_apply_retest_decay``) so a flipped level is dropped from
+    ``derive_sr_levels`` output entirely — the framework's forward-only / dies-on-cross
+    principle (LESSONS.md: "once price closes through the zone, drop it from the
+    substrate, do not just stop counting retests"). The flip check fires regardless
+    of state so a respect-side bar can flip directly to the wrong side without
+    re-entering the zone. A missing/empty per-TF frame yields ``(0, False)``
+    (degraded inputs never raise).
     """
     if df is None or df.empty:
-        return 0
+        return 0, False
     respect_side = "below" if level.pivot_type == "high" else "above"
     after = df[df.index > level.formed_at]
     if after.empty:
-        return 0
+        return 0, False
     retests = 0
     state = "in_zone"  # the pivot bar itself IS in zone
     for _, bar in after.iterrows():
@@ -320,7 +327,7 @@ def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> int:
             or (respect_side == "above" and bar["Close"] < level.zone_low)
         )
         if flipped:
-            break
+            return retests, True
         on_respect_side = (
             (respect_side == "below" and bar["High"] < level.zone_low)
             or (respect_side == "above" and bar["Low"] > level.zone_high)
@@ -333,29 +340,35 @@ def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> int:
             state = "in_zone"
             if retests > _MAX_RETESTS:
                 break  # one over the cap is enough to mark for drop
-    return retests
+    return retests, False
 
 
 def _apply_retest_decay(
     levels: list[SRLevelV2], frames_by_tf: dict[str, pd.DataFrame],
-) -> tuple[list[SRLevelV2], int]:
-    """Stamp ``retest_count`` per level and drop ``> _MAX_RETESTS``.
+) -> tuple[list[SRLevelV2], int, int]:
+    """Stamp ``retest_count`` per level and drop on flip OR retest-cap.
 
-    Each level counts retests on its own ``tf_source`` frame — a ``1w`` pivot counts
-    on weekly bars, a ``1d`` pivot on dailies — so the cadence of "same-direction
-    retest" matches the TF the level was found on. Returns ``(kept_levels, dropped_count)``
-    — pure compute, no I/O; the dropped count surfaces at the public seam (which owns
-    the single observability boundary for this module).
+    Returns ``(kept_levels, dropped_flipped, dropped_capped)``. Sub-G splits the
+    drop count so the public-seam log distinguishes "broken zone" from "8th-time
+    retest"; both still drop the level from the output. Each level counts retests on
+    its own ``tf_source`` frame — a ``1w`` pivot counts on weekly bars, a ``1d``
+    pivot on dailies — so the cadence of "same-direction retest" matches the TF the
+    level was found on. Pure compute, no I/O; the public seam owns the single
+    observability boundary for this module.
     """
     out: list[SRLevelV2] = []
-    dropped = 0
+    dropped_flipped = 0
+    dropped_capped = 0
     for lvl in levels:
-        rc = _count_retests(lvl, frames_by_tf.get(lvl.tf_source))
+        rc, flipped = _count_retests(lvl, frames_by_tf.get(lvl.tf_source))
+        if flipped:
+            dropped_flipped += 1
+            continue
         if rc > _MAX_RETESTS:
-            dropped += 1
+            dropped_capped += 1
             continue
         out.append(replace(lvl, retest_count=rc))
-    return out, dropped
+    return out, dropped_flipped, dropped_capped
 
 
 def _score_with_vrvp(levels: list[SRLevelV2], vrvp: VolumeProfile) -> list[SRLevelV2]:
@@ -453,10 +466,10 @@ def derive_sr_levels(
     # counts on its own tf_source frame. This is the single observability boundary —
     # the private decay pass returns a count, the public seam emits the operator log.
     frames_by_tf = {"1mo": m, "1w": w, "3d": td, "1d": d}
-    retested, dropped = _apply_retest_decay(scored, frames_by_tf)
-    if dropped > 0:
+    retested, dropped_flipped, dropped_capped = _apply_retest_decay(scored, frames_by_tf)
+    if dropped_flipped or dropped_capped:
         logger.info(
-            "derive_sr_levels: dropped %d level(s) with retest_count > %d",
-            dropped, _MAX_RETESTS,
+            "derive_sr_levels: dropped %d level(s) (%d flipped, %d retest > %d)",
+            dropped_flipped + dropped_capped, dropped_flipped, dropped_capped, _MAX_RETESTS,
         )
     return sorted(_assign_quality(retested), key=lambda l: l.price)

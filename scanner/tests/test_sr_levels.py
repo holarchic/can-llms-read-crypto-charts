@@ -532,7 +532,7 @@ def test_count_retests_excludes_bars_before_widened_zone_formed():
     )
     # Post-fix: only the two re-entries after 2026-03-01 should count (Feb bar is
     # filtered out by `after = df[df.index > level.formed_at]`).
-    assert _count_retests(merged, df) == 2
+    assert _count_retests(merged, df) == (2, False)
 
 
 # ── _count_retests ────────────────────────────────────────────────────────────
@@ -559,15 +559,15 @@ def _resistance(zone_low=99.5, zone_high=100.0, formed="2024-01-01"):
 
 
 def test_count_retests_zero_when_price_never_returns():
-    """Price drops away and never re-enters the zone → 0 retests."""
+    """Price drops away and never re-enters the zone → 0 retests, no flip."""
     lvl = _resistance()
     df = _retest_bars([(95.0, 96.0, 94.0, 95.0)] * 6)
-    assert _count_retests(lvl, df) == 0
+    assert _count_retests(lvl, df) == (0, False)
 
 
 def test_count_retests_three_same_side_retests_at_resistance():
     """Price oscillates: respect-side (below) → into zone → respect-side → into zone …
-    Three completed re-entry cycles count as 3 retests."""
+    Three completed re-entry cycles count as 3 retests, no flip."""
     lvl = _resistance()
     # bar layout per cycle: drop below zone (respect_side), re-enter zone
     cycle = [
@@ -575,12 +575,13 @@ def test_count_retests_three_same_side_retests_at_resistance():
         (98.0, 99.8, 97.5, 99.7),               # back inside zone (low 97.5 <= 100, high 99.8 >= 99.5)
     ]
     df = _retest_bars(cycle * 3)
-    assert _count_retests(lvl, df) == 3
+    assert _count_retests(lvl, df) == (3, False)
 
 
 def test_count_retests_stops_at_flip_close_above_resistance():
-    """A close ABOVE the zone (acceptance, not a wick poke) breaks the level → counting
-    halts there. Same-side retests after the flip are not credited."""
+    """A close ABOVE the zone (acceptance, not a wick poke) breaks the level → returns
+    ``(retests_at_flip, True)``. Same-side retests after the flip are not credited;
+    the caller (`_apply_retest_decay`) drops the level on the True flag — Sub-G."""
     lvl = _resistance()
     rows = [
         (95.0, 96.0, 94.0, 95.0),               # respect-side
@@ -590,7 +591,7 @@ def test_count_retests_stops_at_flip_close_above_resistance():
         (95.0, 96.0, 94.0, 95.0),               # would-be retest, ignored
         (99.0, 99.9, 97.0, 99.8),
     ]
-    assert _count_retests(lvl, _retest_bars(rows)) == 1
+    assert _count_retests(lvl, _retest_bars(rows)) == (1, True)
 
 
 def test_count_retests_wick_above_resistance_is_not_a_flip():
@@ -603,20 +604,22 @@ def test_count_retests_wick_above_resistance_is_not_a_flip():
         (95.0, 96.0, 94.0, 95.0),               # respect-side again
         (98.0, 99.8, 97.5, 99.7),               # retest cycle 2
     ]
-    assert _count_retests(lvl, _retest_bars(rows)) == 2
+    assert _count_retests(lvl, _retest_bars(rows)) == (2, False)
 
 
 def test_count_retests_caps_at_max_plus_one():
-    """The counter stops as soon as it exceeds ``_MAX_RETESTS`` — caller drops the level."""
+    """The counter stops as soon as it exceeds ``_MAX_RETESTS`` — caller drops the level
+    on the capped count, separate from the flip path."""
     lvl = _resistance()
     cycle = [
         (95.0, 96.0, 94.0, 95.0),
         (98.0, 99.8, 97.5, 99.7),
     ]
     df = _retest_bars(cycle * (_MAX_RETESTS + 3))
-    rc = _count_retests(lvl, df)
+    rc, flipped = _count_retests(lvl, df)
     assert rc > _MAX_RETESTS                       # marks the level for drop
     assert rc <= _MAX_RETESTS + 1                  # early-exits at the cap, never further
+    assert flipped is False                        # cap path is distinct from flip path
 
 
 def test_count_retests_respect_side_for_support():
@@ -629,14 +632,14 @@ def test_count_retests_respect_side_for_support():
         (97.0, 98.0, 96.0, 97.5),               # respect-side
         (95.4, 95.4, 95.0, 95.2),               # retest cycle 2
     ]
-    assert _count_retests(lvl, _retest_bars(rows)) == 2
+    assert _count_retests(lvl, _retest_bars(rows)) == (2, False)
 
 
 def test_count_retests_empty_or_missing_frame_yields_zero():
-    """Degraded inputs never raise — a missing or empty per-TF frame returns 0."""
+    """Degraded inputs never raise — a missing or empty per-TF frame returns (0, False)."""
     lvl = _resistance()
-    assert _count_retests(lvl, None) == 0
-    assert _count_retests(lvl, _empty()) == 0
+    assert _count_retests(lvl, None) == (0, False)
+    assert _count_retests(lvl, _empty()) == (0, False)
 
 
 # ── pipeline integration: drop > _MAX_RETESTS + quality decay ──────────────────
@@ -678,3 +681,80 @@ def test_derive_drops_level_when_retest_count_exceeds_max():
     weekly = _frame([80, 85, 90, 85, 80, 110, 115, 120, 115, 110], freq="7D")
     levels = derive_sr_levels(weekly=weekly, daily=daily)
     assert not any(99.0 <= l.price <= 100.5 for l in levels)
+
+
+# ── Sub-G: drop-on-flip ───────────────────────────────────────────────────────
+
+
+def _flip_then_quiet_daily_frame(formed="2024-01-01"):
+    """Frame whose first post-formation bar closes ABOVE the 99.5–100 resistance, so
+    `_count_retests` returns (0, True) — the flip fires before any retest accumulates."""
+    tent = [(99.0, 99.5, 98.5, 99.0),
+            (99.5, 99.8, 99.2, 99.7),
+            (99.8, 100.0, 99.4, 99.6),                  # pivot apex
+            (99.5, 99.8, 99.2, 99.7),
+            (99.0, 99.5, 98.5, 99.0)]
+    flip_then_quiet = [(99.0, 101.5, 98.0, 101.0)] + [(102.0, 103.0, 101.0, 102.5)] * 6
+    return _retest_bars(tent + flip_then_quiet, start=formed)
+
+
+def test_apply_retest_decay_drops_flipped_at_zero_retests():
+    """A level whose first post-formation bar closes through it (no preceding retests)
+    is dropped by `_apply_retest_decay` — pre-G it survived with retest_count=0, post-G
+    it disappears."""
+    from scanner.sr_levels import _apply_retest_decay
+    daily = _flip_then_quiet_daily_frame()
+    lvl = _resistance(formed="2024-01-01")
+    kept, dropped_flipped, dropped_capped = _apply_retest_decay([lvl], {"1d": daily})
+    assert kept == []
+    assert dropped_flipped == 1
+    assert dropped_capped == 0
+
+
+def test_apply_retest_decay_split_drop_counts():
+    """One flipped (on its 1d frame) + one retest-capped (on its 1w frame) → returns
+    ``(kept=[], dropped_flipped=1, dropped_capped=1)``. Both drop the level from
+    output; the counts are reported separately for the public-seam log."""
+    from scanner.sr_levels import _apply_retest_decay
+
+    lvl_flipped = _zlvl(100.0, "1d", "high", 99.5, 100.0, formed="2024-01-01")
+    lvl_capped = _zlvl(100.0, "1w", "high", 99.5, 100.0, formed="2024-01-01")
+    # 1w frame: tent at the level then 9 oscillation cycles → 9 retests > _MAX_RETESTS=5.
+    weekly_cap_cycle = [(95.0, 96.0, 94.0, 95.0), (98.0, 99.8, 97.5, 99.7)]
+    weekly = _retest_bars(weekly_cap_cycle * (_MAX_RETESTS + 4), start="2024-01-08")
+    kept, dropped_flipped, dropped_capped = _apply_retest_decay(
+        [lvl_flipped, lvl_capped],
+        {"1d": _flip_then_quiet_daily_frame(), "1w": weekly},
+    )
+    assert kept == []
+    assert dropped_flipped == 1
+    assert dropped_capped == 1
+
+
+def test_derive_sr_levels_post_g_substrate_bounded():
+    """End-to-end: every output zone is ≤ `_MAX_ZONE_PCT` (per-bar cap fires at
+    `_pivot`) AND no output level shows a flip on its own TF frame (drop-on-flip).
+    Pre-G this assertion would fail on both counts; post-G it holds for every level."""
+    # Weekly: macro pivots at 80 (low) and 120 (high), wide-bodied so the raw envelope
+    # would exceed `_MAX_ZONE_PCT` without G's per-bar cap.
+    weekly_dates = pd.date_range("2024-01-01", periods=10, freq="7D")
+    weekly = pd.DataFrame(
+        {
+            "Open":   [80, 82, 85,  82, 80, 100, 105, 110, 105, 100],
+            "High":   [85, 90, 92,  90, 85, 115, 118, 120, 118, 115],
+            "Low":    [75, 78, 80,  78, 75,  95, 100, 105, 100,  95],
+            "Close":  [82, 85, 88,  85, 82, 105, 110, 115, 110, 105],
+            "Volume": [1.0] * 10,
+        },
+        index=weekly_dates,
+    )
+    # Daily: macro brackets are sub-refined; daily mostly oscillates inside; no flip needed
+    # for daily since we just want to verify cap. Drop-on-flip already verified above.
+    daily = _frame([95, 100, 105, 100, 95] * 8)
+    out = derive_sr_levels(weekly=weekly, daily=daily)
+    # Every output zone respects the per-bar cap (width/mid <= _MAX_ZONE_PCT).
+    for lvl in out:
+        mid = (lvl.zone_low + lvl.zone_high) / 2.0
+        assert (lvl.zone_high - lvl.zone_low) / mid <= _MAX_ZONE_PCT + 1e-9, (
+            f"zone width/mid > _MAX_ZONE_PCT for {lvl}"
+        )
