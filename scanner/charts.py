@@ -355,9 +355,10 @@ def generate_chart(
         if hlines:
             kwargs["hlines"] = hlines
     else:
-        # v2 zoned path: `axhspan` runs post-plot on the price axis, so we take fig/axes
-        # back via `returnfig=True` and call `fig.savefig` ourselves. The line `hlines`
-        # kwarg is omitted on this path — zones replace it.
+        # v2 zoned path: `_sr_zones` adds Rectangle + hlines artists post-plot on the
+        # price axis (forward-only from formed_at — Sub-G), so we take fig/axes back via
+        # `returnfig=True` and call `fig.savefig` ourselves. The line `hlines` kwarg is
+        # omitted on this path — zones replace it.
         kwargs["returnfig"] = True
 
     if enrich:

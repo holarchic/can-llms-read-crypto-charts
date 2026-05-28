@@ -348,33 +348,34 @@ class TestZoneRendering:
 
         from scanner import charts
         monkeypatch.setattr(charts, "_MAX_ZONES_PER_CHART", 3)
-        # 10 zones at the same in-window price; quality A=10 (highest)..J=1 (lowest).
+        # 10 zones at DISTINCT in-window prices; quality A=10 (highest)..J=1 (lowest).
         # Top 6 by quality (A-F) have formed_at AFTER the chart's last bar → skipped.
         # Bottom 4 (G-J) have formed_at BEFORE chart-start → renderable.
-        # Correct (renderable-first): renderable={G,H,I,J}; top-3={G,H,I}.
+        # Correct (renderable-first): renderable={G,H,I,J}; top-3 by quality={G,H,I}.
         # Bad (top-N-first): top-3 from full set={A,B,C}; renderable-filter drops them → 0.
-        n_bars = len(long_df.index)
+        # Distinct prices let us pin IDENTITY (which labels survived), not just count.
         after = long_df.index[-1] + pd.Timedelta(days=30)
         before = long_df.index[0] - pd.Timedelta(days=30)
-        levels = []
         labels = list("ABCDEFGHIJ")
-        for i, label in enumerate(labels):
+        prices = [150.0 + i for i in range(len(labels))]                     # 150..159
+        label_to_price = dict(zip(labels, prices))
+        levels = []
+        for i, (label, price) in enumerate(zip(labels, prices)):
             q = float(10 - i)                                                # A=10 down to J=1
             formed_at = after if i < 6 else before                           # A-F skip, G-J renderable
-            lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
-                              quality=q, pivot_type="high", formed_at=formed_at)
-            # Stamp a label-distinguishing attribute so we can identify which survived.
-            lvl._label = label                                               # type: ignore[attr-defined]
-            levels.append(lvl)
+            levels.append(self._zoned(
+                price=price, zone_low=price - 1.0, zone_high=price,
+                quality=q, pivot_type="high", formed_at=formed_at,
+            ))
         fig, ax = plt.subplots()
         try:
             count = _sr_zones(levels, long_df, ax)
             assert count == 3
-            # Identity check: surviving Rectangles correspond to G, H, I (descending quality
-            # among the renderable subset).
-            rendered_x = [p.get_x() for p in ax.patches]
-            assert all(x == -0.5 for x in rendered_x)                        # all pre-window → chart-left
-            assert all(p.get_width() == float(n_bars) for p in ax.patches)   # full-width each
+            # Identity pin: surviving Rectangles' y-bounds must match G/H/I's price levels
+            # exactly. Quality-descending insertion order = G(q=4), H(q=3), I(q=2).
+            expected = [label_to_price[label] for label in ("G", "H", "I")]
+            rendered_y_high = [p.get_y() + p.get_height() for p in ax.patches]
+            assert rendered_y_high == expected
         finally:
             plt.close(fig)
 
