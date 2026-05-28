@@ -219,14 +219,10 @@ def _x_left_renderable(formed_at, chart_index) -> float | None:
       * ``None`` — ``formed_at`` strictly exceeds the last visible bar; zone hadn't formed
         yet in this window, caller skips.
 
-    ``formed_at=None`` on the zoned render path is a producer bug — ``_has_zoned_levels``
-    rejects it at the dispatch boundary (G.3a quadruple-shape contract). A defensive
-    raise here closes the second-layer hole rather than silently fall open."""
-    if formed_at is None:
-        raise ValueError(
-            "_x_left_renderable: formed_at is None on a zoned-render path; "
-            "_has_zoned_levels should have rejected this at the dispatch boundary."
-        )
+    Trusts the producer contract: zoned-payload validation lives at ``_has_zoned_levels``
+    (the single dispatch boundary). A ``formed_at=None`` on this path is impossible if
+    that boundary is honoured; if a future direct caller bypasses dispatch with bad
+    input, the ``<=`` comparison raises ``TypeError`` loud-and-fast at the same line."""
     if formed_at <= chart_index[0]:
         return -0.5
     if formed_at > chart_index[-1]:

@@ -731,6 +731,21 @@ def test_apply_retest_decay_split_drop_counts():
     assert dropped_capped == 1
 
 
+def test_count_retests_classifies_cap_then_flip_as_flipped():
+    """Codex arch-pass r1: ``flipped`` is the canonical drop reason — a level that
+    accumulated > `_MAX_RETESTS` retests AND then later closed through MUST classify as
+    flipped, NOT capped. The counter saturates at cap+1 but the scan continues so the
+    later flip is still observable. Without this, drop-reason classification would be
+    order-dependent (whichever happened first wins arbitrarily)."""
+    lvl = _resistance()
+    cycle = [(95.0, 96.0, 94.0, 95.0), (98.0, 99.8, 97.5, 99.7)]
+    flip_then_quiet = [(99.0, 101.5, 98.0, 101.0)]                     # close 101 > 100 = flip
+    rows = cycle * (_MAX_RETESTS + 3) + flip_then_quiet
+    rc, flipped = _count_retests(lvl, _retest_bars(rows))
+    assert flipped is True                                              # canonical reason
+    assert rc <= _MAX_RETESTS + 1                                       # counter saturated
+
+
 def test_derive_sr_levels_post_g_substrate_bounded():
     """End-to-end: every output zone is ≤ `_MAX_ZONE_PCT` (per-bar cap fires at
     `_pivot`) AND no output level shows a flip on its own TF frame (drop-on-flip).
