@@ -9,6 +9,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
+from matplotlib.patches import Rectangle
 
 from .config import CHARTS_DIR
 from .ma_indicators import compute_ema_band, compute_longer_set, compute_stoch_rsi
@@ -203,32 +204,96 @@ def _has_zoned_levels(sr_levels: list) -> bool:
     return shapes == {"zoned"}
 
 
+def _x_left_renderable(formed_at, chart_index) -> float | None:
+    """Bar-edge x-coord where a forward-only zone starts on a mpf categorical axis.
+
+    mpf renders bars centered on integer x: bar ``i`` spans visually from ``x = i - 0.5``
+    (left edge) to ``x = i + 0.5`` (right edge); chart bounds are ``[-0.5, len(index) -
+    0.5]``. ``chart_index.searchsorted(formed_at)`` returns the integer index of the bar
+    CONTAINING ``formed_at`` — that's the bar's CENTER. To start a Rectangle at the LEFT
+    edge of that bar, subtract 0.5.
+
+    Returns:
+      * ``-0.5`` — ``formed_at`` precedes the rendered window; clip to chart-left edge.
+      * ``float(idx) - 0.5`` — ``formed_at`` falls inside the rendered window.
+      * ``None`` — ``formed_at`` strictly exceeds the last visible bar; zone hadn't formed
+        yet in this window, caller skips.
+
+    ``formed_at=None`` on the zoned render path is a producer bug — ``_has_zoned_levels``
+    rejects it at the dispatch boundary (G.3a quadruple-shape contract). A defensive
+    raise here closes the second-layer hole rather than silently fall open."""
+    if formed_at is None:
+        raise ValueError(
+            "_x_left_renderable: formed_at is None on a zoned-render path; "
+            "_has_zoned_levels should have rejected this at the dispatch boundary."
+        )
+    if formed_at <= chart_index[0]:
+        return -0.5
+    if formed_at > chart_index[-1]:
+        return None
+    return float(chart_index.searchsorted(formed_at)) - 0.5
+
+
 def _sr_zones(sr_levels: list, df: pd.DataFrame, ax) -> int:
-    """Render v2 zoned S/R via ``ax.axhspan`` (faint fill) + ``ax.axhline`` (sharp
-    zone edges) — colour by ``pivot_type``, alpha by normalised ``quality``. Returns
-    the count of zones drawn (0 when none fall inside the chart's price window). Same
-    ±5% cushion as the line path. Input is guaranteed homogeneous by
-    ``_has_zoned_levels`` at the dispatch boundary. Cap at ``_MAX_ZONES_PER_CHART``
-    top-quality levels — detection consumes the full substrate, but the chart marks
-    only the few that an operator would actually mark."""
+    """Render v2 zoned S/R as forward-extending Rectangles (faint fill) + ``ax.hlines``
+    (sharp zone edges) — colour by ``pivot_type``, alpha by normalised ``quality``.
+    Returns the count of zones drawn (0 when none are renderable). Same ±5% cushion as
+    the line path. Input is guaranteed homogeneous by ``_has_zoned_levels`` at the
+    dispatch boundary.
+
+    Stage 1 — filter to RENDERABLE zones: in price window AND ``formed_at`` falls at or
+    before the last visible bar (post-window zones skip). Stage 2 — keep the top
+    ``_MAX_ZONES_PER_CHART`` by quality among the RENDERABLE set (not pre-filter, or the
+    chart would render below capacity whenever any of the top-N had formed after the
+    window). Stage 3 — paint each zone forward-only from ``searchsorted(formed_at) - 0.5``
+    on mpf's bar-centered categorical x-axis (clipped to ``-0.5`` when formed before the
+    window) to ``len(index) - 0.5`` (the right edge of the last bar). Zone artists sit at
+    a zorder BELOW the candle collections — read live from ``ax.collections`` since
+    ``_sr_zones`` is called AFTER ``mpf.plot`` has already added the candles, and mpf's
+    default zorder could shift across versions.
+    """
     price_range = df["High"].max() - df["Low"].min()
     lo = df["Low"].min() - price_range * 0.05
     hi = df["High"].max() + price_range * 0.05
-    visible = [lvl for lvl in sr_levels if lo <= lvl.price <= hi]
-    if not visible:
+
+    renderable: list[tuple] = []
+    for lvl in sr_levels:
+        if not (lo <= lvl.price <= hi):
+            continue
+        x_left = _x_left_renderable(lvl.formed_at, df.index)
+        if x_left is None:
+            continue
+        renderable.append((lvl, x_left))
+    if not renderable:
         return 0
-    visible.sort(key=lambda lvl: (lvl.quality if lvl.quality is not None else 0.0), reverse=True)
-    rendered = visible[:_MAX_ZONES_PER_CHART]
-    qs = [(lvl.quality if lvl.quality is not None else 0.0) for lvl in rendered]
+
+    renderable.sort(
+        key=lambda r: (r[0].quality if r[0].quality is not None else 0.0), reverse=True,
+    )
+    rendered = renderable[:_MAX_ZONES_PER_CHART]
+
+    qs = [(r[0].quality if r[0].quality is not None else 0.0) for r in rendered]
     qmin, qmax = min(qs), max(qs)
     qspan = qmax - qmin
-    for lvl, q in zip(rendered, qs):
+    x_right = len(df.index) - 0.5
+    # Pin zone artists strictly under mpf's candle/wick collections so candles stay on
+    # top. Read live: mpf's default zorder isn't a public contract and could shift.
+    candle_z = min((a.zorder for a in ax.collections), default=2)
+    fill_z, edge_z = candle_z - 1.0, candle_z - 0.5
+    for (lvl, x_left), q in zip(rendered, qs):
         normalized = ((q - qmin) / qspan) if qspan > 0 else 1.0
         fill_alpha = _ZONE_ALPHA_LO + (_ZONE_ALPHA_HI - _ZONE_ALPHA_LO) * normalized
         color = _ZONE_SUPPORT if lvl.pivot_type == "low" else _ZONE_RESISTANCE
-        ax.axhspan(lvl.zone_low, lvl.zone_high, alpha=fill_alpha, color=color, lw=0)
-        ax.axhline(lvl.zone_high, color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA)
-        ax.axhline(lvl.zone_low, color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA)
+        width = x_right - x_left
+        height = lvl.zone_high - lvl.zone_low
+        ax.add_patch(Rectangle(
+            (x_left, lvl.zone_low), width, height,
+            facecolor=color, alpha=fill_alpha, lw=0, zorder=fill_z,
+        ))
+        ax.hlines(lvl.zone_high, x_left, x_right,
+                  color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA, zorder=edge_z)
+        ax.hlines(lvl.zone_low, x_left, x_right,
+                  color=color, lw=_ZONE_EDGE_LW, alpha=_ZONE_EDGE_ALPHA, zorder=edge_z)
     return len(rendered)
 
 

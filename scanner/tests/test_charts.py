@@ -225,7 +225,10 @@ class TestZoneRendering:
             formed_at=formed_at if formed_at is not None else pd.Timestamp("2025-12-01", tz="UTC"),
         )
 
-    def test_axhspan_paints_zones_with_quality_alpha_and_pivot_color(self, long_df):
+    def test_rectangle_paints_zones_with_quality_alpha_and_pivot_color(self, long_df):
+        """Zones render as forward-extending Rectangles (Sub-G replaces axhspan): y-bounds
+        are the zone, x-bounds run from the formation bar's left edge to chart's right
+        edge. Quality drives alpha; pivot_type drives colour."""
         import matplotlib.pyplot as plt
         levels = [
             self._zoned(price=110.0, zone_low=109.0, zone_high=110.0, quality=1.0, pivot_type="high"),
@@ -235,18 +238,25 @@ class TestZoneRendering:
         try:
             count = _sr_zones(levels, long_df, ax)
             assert count == 2
+            x_right = len(long_df.index) - 0.5
             patches = [
-                {"y0": p.get_y(), "y1": p.get_y() + p.get_height(),
+                {"x0": p.get_x(), "width": p.get_width(),
+                 "y0": p.get_y(), "y1": p.get_y() + p.get_height(),
                  "color": p.get_facecolor(), "alpha": p.get_alpha()}
                 for p in ax.patches
             ]
-            # Patch bounds match the zones (mpl orders them in insertion order).
+            # Both levels formed pre-window (default helper formed_at = 2025-12-01) so
+            # both Rectangles span the full chart width: x0 = -0.5, right edge = x_right.
+            for patch in patches:
+                assert patch["x0"] == -0.5
+                assert patch["x0"] + patch["width"] == x_right
+            # Patch bounds match the zones (mpl orders them in insertion order). Insertion
+            # order = quality-descending → resistance (q=1.0) first, support (q=0.5) second.
             assert (patches[0]["y0"], patches[0]["y1"]) == (109.0, 110.0)
             assert (patches[1]["y0"], patches[1]["y1"]) == (95.0, 96.0)
             # Vivid (1.0 quality) is the higher alpha; faded (0.5) is the lower.
             assert patches[0]["alpha"] > patches[1]["alpha"]
             # Pivot-type colour split: resistance red-tinted, support green-tinted.
-            # Compare red vs green channel dominance per RGBA.
             res_r, res_g = patches[0]["color"][0], patches[0]["color"][1]
             sup_r, sup_g = patches[1]["color"][0], patches[1]["color"][1]
             assert res_r > res_g                              # resistance is red-dominant
@@ -262,6 +272,146 @@ class TestZoneRendering:
         try:
             assert _sr_zones([far], long_df, ax) == 0
             assert len(ax.patches) == 0
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_rectangle_starts_at_bar_left_edge_when_formed_inside_chart(self, long_df):
+        """Sub-G geometry: a zone whose `formed_at` matches bar 50 of the chart renders
+        as a Rectangle starting at x = 49.5 (the LEFT edge of bar 50 on mpf's bar-centered
+        categorical axis — `searchsorted - 0.5`), spanning to chart-right."""
+        import matplotlib.pyplot as plt
+        formed = long_df.index[50]
+        lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                          quality=1.0, pivot_type="high", formed_at=formed)
+        fig, ax = plt.subplots()
+        try:
+            assert _sr_zones([lvl], long_df, ax) == 1
+            (patch,) = ax.patches
+            assert patch.get_x() == 49.5                          # bar 50's LEFT edge
+            assert patch.get_x() + patch.get_width() == len(long_df.index) - 0.5
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_rectangle_clipped_to_chart_left_when_formed_before_window(self, long_df):
+        """A zone formed BEFORE chart-start renders from x = -0.5 (chart-left edge),
+        spanning the full chart width."""
+        import matplotlib.pyplot as plt
+        before = long_df.index[0] - pd.Timedelta(days=30)
+        lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                          quality=1.0, pivot_type="high", formed_at=before)
+        fig, ax = plt.subplots()
+        try:
+            assert _sr_zones([lvl], long_df, ax) == 1
+            (patch,) = ax.patches
+            assert patch.get_x() == -0.5
+            assert patch.get_width() == float(len(long_df.index))
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_renders_level_formed_at_last_visible_bar(self, long_df):
+        """A zone whose `formed_at` is the LAST visible bar's timestamp renders as a
+        thin Rectangle in the last bar's slot — not skipped (the `>` check excludes
+        only strictly-after-window, not at-window-end)."""
+        import matplotlib.pyplot as plt
+        n = len(long_df.index)
+        lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                          quality=1.0, pivot_type="high", formed_at=long_df.index[-1])
+        fig, ax = plt.subplots()
+        try:
+            assert _sr_zones([lvl], long_df, ax) == 1
+            (patch,) = ax.patches
+            assert patch.get_x() == float(n - 1) - 0.5            # last bar's LEFT edge
+            assert patch.get_width() == 1.0                       # one bar's slot
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_skips_level_formed_strictly_after_chart_window(self, long_df):
+        """A zone whose `formed_at` STRICTLY exceeds the last visible bar is skipped —
+        the zone hadn't formed yet in the rendered window."""
+        import matplotlib.pyplot as plt
+        after = long_df.index[-1] + pd.Timedelta(days=30)
+        lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                          quality=1.0, pivot_type="high", formed_at=after)
+        fig, ax = plt.subplots()
+        try:
+            assert _sr_zones([lvl], long_df, ax) == 0
+            assert len(ax.patches) == 0
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_top_n_cap_applies_after_renderable_filter(self, long_df, monkeypatch):
+        """Sub-G ordering: filter to RENDERABLE first, then cap top-N. Bad ordering
+        (top-N first, filter second) would silently render below capacity whenever any
+        of the top-N had formed after the window. Pin both the count AND the identities
+        so the bad ordering fails on identity, not just count."""
+        import matplotlib.pyplot as plt
+
+        from scanner import charts
+        monkeypatch.setattr(charts, "_MAX_ZONES_PER_CHART", 3)
+        # 10 zones at the same in-window price; quality A=10 (highest)..J=1 (lowest).
+        # Top 6 by quality (A-F) have formed_at AFTER the chart's last bar → skipped.
+        # Bottom 4 (G-J) have formed_at BEFORE chart-start → renderable.
+        # Correct (renderable-first): renderable={G,H,I,J}; top-3={G,H,I}.
+        # Bad (top-N-first): top-3 from full set={A,B,C}; renderable-filter drops them → 0.
+        n_bars = len(long_df.index)
+        after = long_df.index[-1] + pd.Timedelta(days=30)
+        before = long_df.index[0] - pd.Timedelta(days=30)
+        levels = []
+        labels = list("ABCDEFGHIJ")
+        for i, label in enumerate(labels):
+            q = float(10 - i)                                                # A=10 down to J=1
+            formed_at = after if i < 6 else before                           # A-F skip, G-J renderable
+            lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                              quality=q, pivot_type="high", formed_at=formed_at)
+            # Stamp a label-distinguishing attribute so we can identify which survived.
+            lvl._label = label                                               # type: ignore[attr-defined]
+            levels.append(lvl)
+        fig, ax = plt.subplots()
+        try:
+            count = _sr_zones(levels, long_df, ax)
+            assert count == 3
+            # Identity check: surviving Rectangles correspond to G, H, I (descending quality
+            # among the renderable subset).
+            rendered_x = [p.get_x() for p in ax.patches]
+            assert all(x == -0.5 for x in rendered_x)                        # all pre-window → chart-left
+            assert all(p.get_width() == float(n_bars) for p in ax.patches)   # full-width each
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_zorder_below_candles(self, long_df, signal, tmp_charts):
+        """Sub-G: zone artists (Rectangle fill + edge hlines) MUST sit at a zorder BELOW
+        the candle collections so candles stay visible on top. Read mpf's actual zorder
+        live; the literal default could shift across mplfinance bumps."""
+        import matplotlib.pyplot as plt
+        import mplfinance as mpf
+        fig, axes = mpf.plot(long_df, type="candle", returnfig=True, volume=True)
+        ax = axes[0]
+        try:
+            # Snapshot BEFORE _sr_zones so the candle baseline isn't poisoned by the new
+            # edge LineCollections we are about to add.
+            pre_collections = list(ax.collections)
+            candle_z = min(a.zorder for a in pre_collections)
+            lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                              quality=1.0, pivot_type="high")
+            _sr_zones([lvl], long_df, ax)
+            new_collections = [a for a in ax.collections if a not in pre_collections]
+            assert all(a.zorder < candle_z for a in new_collections)          # edge hlines
+            assert all(p.zorder < candle_z for p in ax.patches)               # fill Rectangle
+        finally:
+            plt.close(fig)
+
+    def test_sr_zones_no_axhspan_called(self, long_df, monkeypatch):
+        """Regression guard: _sr_zones must NOT call ax.axhspan (the pre-G back-dating
+        bug). Monkeypatch axhspan to raise; rendering valid zoned input should succeed."""
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        monkeypatch.setattr(ax, "axhspan", lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("axhspan must not be called post-G")
+        ))
+        try:
+            lvl = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                              quality=1.0, pivot_type="high")
+            assert _sr_zones([lvl], long_df, ax) == 1
         finally:
             plt.close(fig)
 
