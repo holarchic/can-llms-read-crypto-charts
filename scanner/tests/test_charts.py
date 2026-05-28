@@ -213,11 +213,16 @@ class TestZoneRendering:
     against a real matplotlib axes and assert the patches landed at the expected
     bounds with the expected colour/alpha."""
 
-    def _zoned(self, price, zone_low, zone_high, *, quality=1.0, pivot_type="high"):
+    def _zoned(self, price, zone_low, zone_high, *, quality=1.0, pivot_type="high",
+               formed_at=None):
+        # Default formed_at sits BEFORE the chart's start (`_osc_df` defaults to
+        # 2026-01-01), so the rendered Rectangle spans the full chart width — the
+        # pre-G axhspan behaviour for these specific tests' purposes.
         return SpineLevel(
             price=price, degraded=False,
             zone_low=zone_low, zone_high=zone_high,
             quality=quality, pivot_type=pivot_type,
+            formed_at=formed_at if formed_at is not None else pd.Timestamp("2025-12-01", tz="UTC"),
         )
 
     def test_axhspan_paints_zones_with_quality_alpha_and_pivot_color(self, long_df):
@@ -273,6 +278,24 @@ class TestZoneRendering:
         )
         with pytest.raises(ValueError, match="partial zone fields"):
             generate_chart(long_df, "PART", "4H", signal, sr_levels=[partial],
+                           output_dir=tmp_charts)
+
+    def test_zoned_with_missing_formed_at_raises_at_dispatch(self, long_df, tmp_charts):
+        """Sub-G: a level with zone fields BUT `formed_at=None` is malformed under the
+        quadruple-shape contract. Without this, a producer bug would silently fall open
+        to chart-left back-dating — the exact bug `_has_zoned_levels` is designed to
+        prevent at the dispatch boundary (parallel to F arch-r2's triple-shape rejection)."""
+        missing = SpineLevel(
+            price=110.0, zone_low=109.0, zone_high=110.0,
+            pivot_type="high", quality=1.0, formed_at=None,
+        )
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="MISS", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="miss",
+        )
+        with pytest.raises(ValueError, match="partial zone fields"):
+            generate_chart(long_df, "MISS", "4H", signal, sr_levels=[missing],
                            output_dir=tmp_charts)
 
     def test_mixed_zoned_and_line_levels_raises_at_dispatch(self, long_df, tmp_charts):

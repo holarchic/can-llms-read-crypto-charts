@@ -165,19 +165,23 @@ _ZONE_EDGE_ALPHA = 0.6
 
 def _has_zoned_levels(sr_levels: list) -> bool:
     """The v2 chart payload — every level carries a complete zone envelope
-    (``zone_low`` + ``zone_high`` + ``pivot_type`` all set). A level with some but not
-    all of those is malformed and rejected at this boundary, never later inside
-    matplotlib. Mixed-shape payloads (some zoned, some line-only) are likewise a
-    producer bug and fail here so a bad call never silently drops the line-only
-    entries on the zoned render path. v1 ``SpineLevel`` / ``SRLevel`` leave every
-    zone field unset and the renderer falls through to the line-based
+    (``zone_low`` + ``zone_high`` + ``pivot_type`` + ``formed_at`` all set). A level
+    with some but not all of those is malformed and rejected at this boundary, never
+    later inside matplotlib. Mixed-shape payloads (some zoned, some line-only) are
+    likewise a producer bug and fail here so a bad call never silently drops the
+    line-only entries on the zoned render path. v1 ``SpineLevel`` / ``SRLevel`` leave
+    every zone field unset and the renderer falls through to the line-based
     ``_sr_hlines`` path; v2 ``SpineLevel`` populates every field via
-    ``from_sr_level_v2``."""
+    ``from_sr_level_v2``. Sub-G extends the shape from a triple to a quadruple by
+    requiring ``formed_at`` — without it, the forward-only Rectangle renderer
+    (``_sr_zones``) has no left edge and would silently back-date the zone to
+    chart-left."""
     def _shape(lvl) -> str:
         zl = getattr(lvl, "zone_low", None)
         zh = getattr(lvl, "zone_high", None)
         pt = getattr(lvl, "pivot_type", "") or ""
-        present = (zl is not None, zh is not None, bool(pt))
+        fa = getattr(lvl, "formed_at", None)
+        present = (zl is not None, zh is not None, bool(pt), fa is not None)
         if all(present):
             return "zoned"
         if not any(present):
@@ -188,7 +192,8 @@ def _has_zoned_levels(sr_levels: list) -> bool:
     if "malformed" in shapes:
         raise ValueError(
             "chart S/R payload contains a level with partial zone fields — "
-            "every zoned level must set zone_low, zone_high, and pivot_type together."
+            "every zoned level must set zone_low, zone_high, pivot_type, "
+            "and formed_at together."
         )
     if shapes == {"zoned", "line"}:
         raise ValueError(

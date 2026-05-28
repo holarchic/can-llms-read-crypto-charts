@@ -250,7 +250,12 @@ class SpineLevel:
     maps to `degraded=False` (rendered solid/green). Sub-chunk F adds optional zone +
     quality + pivot_type fields so the v2 chart renderer (`_sr_zones`) can draw shaded
     zones with quality-keyed alpha and pivot-type-keyed colour; v1 leaves them None
-    and the chart consumer falls back to line rendering."""
+    and the chart consumer falls back to line rendering. Sub-chunk G adds the FIFTH
+    optional v2-only field ``formed_at`` so the renderer can draw the zone
+    forward-only from its formation bar (a Rectangle from `searchsorted(formed_at)`
+    to chart-right). v1 leaves it None; ``_has_zoned_levels`` rejects a zoned payload
+    with ``formed_at=None`` at the dispatch boundary so a producer bug can't silently
+    fall open to chart-left back-dating."""
 
     price: float
     degraded: bool = False
@@ -258,6 +263,7 @@ class SpineLevel:
     zone_high: float | None = None
     quality: float | None = None
     pivot_type: str = ""
+    formed_at: datetime | None = None
 
     @classmethod
     def from_sr_level(cls, lvl: SRLevel) -> "SpineLevel":
@@ -269,6 +275,7 @@ class SpineLevel:
             price=lvl.price, degraded=False,
             zone_low=lvl.zone_low, zone_high=lvl.zone_high,
             quality=lvl.quality, pivot_type=lvl.pivot_type,
+            formed_at=lvl.formed_at,
         )
 
 
