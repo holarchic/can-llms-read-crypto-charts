@@ -158,34 +158,39 @@ _ZONE_ALPHA_LO, _ZONE_ALPHA_HI = 0.18, 0.45
 # the whole substrate; rendering all leaves no whitespace.
 _MAX_ZONES_PER_CHART = 6
 # Each rendered zone gets a thin solid edge at zone_low/zone_high in addition to the
-# faint axhspan fill — TradingView-style SR box. The edge sharpens the boundary that
+# faint Rectangle fill — TradingView-style SR box. The edge sharpens the boundary that
 # the LLM (and the operator) reads as the touch/pierce price.
 _ZONE_EDGE_LW = 0.6
 _ZONE_EDGE_ALPHA = 0.6
 
 
+_ZONED_PIVOT_TYPES = frozenset({"high", "low"})
+
+
 def _has_zoned_levels(sr_levels: list) -> bool:
     """The v2 chart payload — every level carries a complete zone envelope
-    (``zone_low`` + ``zone_high`` + ``pivot_type`` + ``formed_at`` all set). A level
-    with some but not all of those is malformed and rejected at this boundary, never
-    later inside matplotlib. Mixed-shape payloads (some zoned, some line-only) are
-    likewise a producer bug and fail here so a bad call never silently drops the
-    line-only entries on the zoned render path. v1 ``SpineLevel`` / ``SRLevel`` leave
-    every zone field unset and the renderer falls through to the line-based
-    ``_sr_hlines`` path; v2 ``SpineLevel`` populates every field via
-    ``from_sr_level_v2``. Sub-G extends the shape from a triple to a quadruple by
-    requiring ``formed_at`` — without it, the forward-only Rectangle renderer
-    (``_sr_zones``) has no left edge and would silently back-date the zone to
-    chart-left."""
+    (``zone_low`` + ``zone_high`` + ``pivot_type ∈ {"high", "low"}`` + ``formed_at``
+    all set). A level with some but not all of those, OR a ``pivot_type`` outside the
+    legal set, is malformed and rejected at this boundary, never later inside
+    matplotlib (codex arch r2: ``pivot_type="bogus"`` previously passed boundary +
+    rendered as resistance via the ``_sr_zones`` colour-fallback). Mixed-shape
+    payloads (some zoned, some line-only) are likewise a producer bug and fail here
+    so a bad call never silently drops the line-only entries on the zoned render
+    path. v1 ``SpineLevel`` / ``SRLevel`` leave every zone field unset and the
+    renderer falls through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel``
+    populates every field via ``from_sr_level_v2``."""
     def _shape(lvl) -> str:
         zl = getattr(lvl, "zone_low", None)
         zh = getattr(lvl, "zone_high", None)
         pt = getattr(lvl, "pivot_type", "") or ""
         fa = getattr(lvl, "formed_at", None)
-        present = (zl is not None, zh is not None, bool(pt), fa is not None)
+        pt_present = pt in _ZONED_PIVOT_TYPES
+        pt_absent = pt == ""
+        present = (zl is not None, zh is not None, pt_present, fa is not None)
+        absent = (zl is None, zh is None, pt_absent, fa is None)
         if all(present):
             return "zoned"
-        if not any(present):
+        if all(absent):
             return "line"
         return "malformed"
 
@@ -193,8 +198,8 @@ def _has_zoned_levels(sr_levels: list) -> bool:
     if "malformed" in shapes:
         raise ValueError(
             "chart S/R payload contains a level with partial zone fields — "
-            "every zoned level must set zone_low, zone_high, pivot_type, "
-            "and formed_at together."
+            "every zoned level must set zone_low, zone_high, formed_at, "
+            "and a pivot_type in {'high', 'low'} together."
         )
     if shapes == {"zoned", "line"}:
         raise ValueError(

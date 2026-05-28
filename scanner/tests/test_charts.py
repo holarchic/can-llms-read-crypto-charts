@@ -209,9 +209,9 @@ class TestEnrichmentRender:
 
 
 class TestZoneRendering:
-    """v2 zoned S/R via `_sr_zones`/`axhspan`. Independent of `mpf.plot` — we render
-    against a real matplotlib axes and assert the patches landed at the expected
-    bounds with the expected colour/alpha."""
+    """v2 zoned S/R via `_sr_zones` — forward-only Rectangle + `ax.hlines` (Sub-G).
+    Independent of `mpf.plot` — we render against a real matplotlib axes and assert the
+    patches landed at the expected bounds with the expected colour/alpha."""
 
     def _zoned(self, price, zone_low, zone_high, *, quality=1.0, pivot_type="high",
                formed_at=None):
@@ -431,6 +431,26 @@ class TestZoneRendering:
             generate_chart(long_df, "PART", "4H", signal, sr_levels=[partial],
                            output_dir=tmp_charts)
 
+    def test_zoned_with_invalid_pivot_type_raises_at_dispatch(self, long_df, tmp_charts):
+        """Codex arch r2 MEDIUM: a zoned level whose `pivot_type` is outside
+        `{'high', 'low'}` must be rejected at the dispatch boundary — not silently
+        rendered via `_sr_zones`'s colour fallback (`pivot_type == 'low'` → support
+        else resistance). The boundary owns pivot_type-value validation, not the
+        renderer."""
+        bogus = SpineLevel(
+            price=110.0, zone_low=109.0, zone_high=110.0,
+            pivot_type="bogus", quality=1.0,
+            formed_at=pd.Timestamp("2025-12-01", tz="UTC"),
+        )
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="BOGUS", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="bogus",
+        )
+        with pytest.raises(ValueError, match="partial zone fields"):
+            generate_chart(long_df, "BOGUS", "4H", signal, sr_levels=[bogus],
+                           output_dir=tmp_charts)
+
     def test_zoned_with_missing_formed_at_raises_at_dispatch(self, long_df, tmp_charts):
         """Sub-G: a level with zone fields BUT `formed_at=None` is malformed under the
         quadruple-shape contract. Without this, a producer bug would silently fall open
@@ -467,7 +487,7 @@ class TestZoneRendering:
 
     def test_generate_chart_routes_v2_levels_through_zones(self, long_df, tmp_charts):
         # End-to-end smoke: v2 SpineLevel with zones → file written via the
-        # returnfig + axhspan + manual savefig path. The plain SetupSignal
+        # returnfig + Rectangle + manual savefig path (Sub-G). The plain SetupSignal
         # context.sr_levels is ignored once the explicit kwarg supplies zoned levels.
         context = build_context(long_df)
         signal = SetupSignal(

@@ -496,9 +496,10 @@ def derive_sr_levels(
     refined = _refine_pivots_on_lower_tf(macro, d, td, window=window, n_sub=n_sub, tol=tol)
     merged = _merge_sr_levels(macro, refined, tol=tol)
     scored = _score_with_vrvp(merged, vrvp) if vrvp is not None else merged
-    # Sub-chunk F: post-formation retest count + drop > _MAX_RETESTS; each level
-    # counts on its own tf_source frame. This is the single observability boundary —
-    # the private decay pass returns a count, the public seam emits the operator log.
+    # Sub-chunks F + G: post-formation retest count + drop on flip OR > _MAX_RETESTS;
+    # each level counts on its own tf_source frame. This is the single observability
+    # boundary — the private decay pass returns a DecayResult, the public seam emits
+    # the operator log with the flipped/capped split.
     frames_by_tf = {"1mo": m, "1w": w, "3d": td, "1d": d}
     decay = _apply_retest_decay(scored, frames_by_tf)
     if decay.dropped_flipped or decay.dropped_capped:
