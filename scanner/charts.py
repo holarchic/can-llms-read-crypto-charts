@@ -6,6 +6,7 @@ matplotlib.use("agg")
 
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
 
@@ -146,6 +147,46 @@ def _sr_hlines(sr_levels: list, df: pd.DataFrame) -> dict | None:
     )
 
 
+# v2 zone rendering palette — green-tinted support, red-tinted resistance (matches
+# the candle marketcolors), alpha gradient `_ZONE_ALPHA_LO..._ZONE_ALPHA_HI` so the
+# best-quality level reads vivid and the worst reads faded.
+_ZONE_SUPPORT, _ZONE_RESISTANCE = "#26a69a", "#ef5350"
+_ZONE_ALPHA_LO, _ZONE_ALPHA_HI = 0.15, 0.55
+
+
+def _has_zoned_levels(sr_levels: list) -> bool:
+    """The v2 chart payload — at least one level carries an explicit zone envelope.
+    v1 ``SpineLevel`` / ``SRLevel`` leave the zone fields ``None`` and the renderer
+    falls through to the line-based ``_sr_hlines`` path."""
+    return any(getattr(lvl, "zone_low", None) is not None for lvl in sr_levels)
+
+
+def _sr_zones(sr_levels: list, df: pd.DataFrame, ax) -> int:
+    """Render v2 zoned S/R via ``ax.axhspan`` — colour by ``pivot_type``, alpha by
+    normalised ``quality``. Returns the count of zones drawn (0 when none fall inside
+    the chart's price window). Same ±5% cushion as the line path. Skips any level
+    that's missing zone bounds — defensive against a mixed-shape input."""
+    price_range = df["High"].max() - df["Low"].min()
+    lo = df["Low"].min() - price_range * 0.05
+    hi = df["High"].max() + price_range * 0.05
+    visible = [
+        lvl for lvl in sr_levels
+        if lvl.zone_low is not None and lvl.zone_high is not None
+        and lo <= lvl.price <= hi
+    ]
+    if not visible:
+        return 0
+    qs = [(lvl.quality if lvl.quality is not None else 0.0) for lvl in visible]
+    qmin, qmax = min(qs), max(qs)
+    qspan = qmax - qmin
+    for lvl, q in zip(visible, qs):
+        normalized = ((q - qmin) / qspan) if qspan > 0 else 1.0
+        alpha = _ZONE_ALPHA_LO + (_ZONE_ALPHA_HI - _ZONE_ALPHA_LO) * normalized
+        color = _ZONE_SUPPORT if lvl.pivot_type == "low" else _ZONE_RESISTANCE
+        ax.axhspan(lvl.zone_low, lvl.zone_high, alpha=alpha, color=color)
+    return len(visible)
+
+
 
 def generate_chart(
     df: pd.DataFrame,
@@ -183,7 +224,8 @@ def generate_chart(
     # Title shows coin + timeframe only — no setup type (avoids anchoring the LLM)
     title = f"{coin}/USDT {timeframe}"
 
-    hlines = _sr_hlines(sr_levels or signal.context.sr_levels, df)
+    levels_for_render = sr_levels or signal.context.sr_levels
+    use_zones = _has_zoned_levels(levels_for_render)
 
     filename = f"{coin}_{timeframe}_{signal.setup_type.value}.png"
     filepath = out_dir / filename
@@ -194,12 +236,19 @@ def generate_chart(
         title=title,
         volume=True,
         figsize=(13.5, 8),
-        savefig=dict(fname=str(filepath), dpi=150, bbox_inches="tight"),
         warn_too_much_data=500,
     )
-
-    if hlines:
-        kwargs["hlines"] = hlines
+    if not use_zones:
+        # v1/line path: mplfinance handles savefig + hlines together (existing behaviour).
+        kwargs["savefig"] = dict(fname=str(filepath), dpi=150, bbox_inches="tight")
+        hlines = _sr_hlines(levels_for_render, df)
+        if hlines:
+            kwargs["hlines"] = hlines
+    else:
+        # v2 zoned path: `axhspan` runs post-plot on the price axis, so we take fig/axes
+        # back via `returnfig=True` and call `fig.savefig` ourselves. The line `hlines`
+        # kwarg is omitted on this path — zones replace it.
+        kwargs["returnfig"] = True
 
     if enrich:
         addplots, fill = _ma_addplots(full_close, chart_index)
@@ -224,7 +273,16 @@ def generate_chart(
             kwargs["panel_ratios"] = _ENRICHED_PANEL_RATIOS
             kwargs["figsize"] = _ENRICHED_FIGSIZE
 
-    mpf.plot(df, **kwargs)
+    if use_zones:
+        result = mpf.plot(df, **kwargs)
+        if result is not None:                          # test stubs may return None
+            fig, axes = result
+            price_ax = axes[0] if isinstance(axes, (list, tuple)) else axes
+            _sr_zones(levels_for_render, df, price_ax)
+            fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
+            plt.close(fig)
+    else:
+        mpf.plot(df, **kwargs)
     return filepath
 
 

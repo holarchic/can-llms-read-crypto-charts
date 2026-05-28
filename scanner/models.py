@@ -243,15 +243,21 @@ class SetupSignalV2:
 
 @dataclass
 class SpineLevel:
-    """The S/R level the stage-2→4 spine carries — exactly the field pair the chart
-    consumer (`charts._sr_hlines`) reads (`price` + `degraded`), version-neutral so the
-    v1 `SRLevel` and the v2 `SRLevelV2` both project onto it (the nested-S/R
-    neutralization deferred from 7b.2a, arch-pass R2). v2 has no degradation model — a
-    top-down `SRLevelV2` is high-quality by construction — so it maps to
-    `degraded=False` (rendered solid/green)."""
+    """The S/R level the stage-2→4 spine carries — the chart-consumer payload,
+    version-neutral so the v1 `SRLevel` and the v2 `SRLevelV2` both project onto it
+    (the nested-S/R neutralization deferred from 7b.2a, arch-pass R2). v2 has no
+    degradation model — a top-down `SRLevelV2` is high-quality by construction — so it
+    maps to `degraded=False` (rendered solid/green). Sub-chunk F adds optional zone +
+    quality + pivot_type fields so the v2 chart renderer (`_sr_zones`) can draw shaded
+    zones with quality-keyed alpha and pivot-type-keyed colour; v1 leaves them None
+    and the chart consumer falls back to line rendering."""
 
     price: float
     degraded: bool = False
+    zone_low: float | None = None
+    zone_high: float | None = None
+    quality: float | None = None
+    pivot_type: str = ""
 
     @classmethod
     def from_sr_level(cls, lvl: SRLevel) -> "SpineLevel":
@@ -259,7 +265,11 @@ class SpineLevel:
 
     @classmethod
     def from_sr_level_v2(cls, lvl: SRLevelV2) -> "SpineLevel":
-        return cls(price=lvl.price, degraded=False)
+        return cls(
+            price=lvl.price, degraded=False,
+            zone_low=lvl.zone_low, zone_high=lvl.zone_high,
+            quality=lvl.quality, pivot_type=lvl.pivot_type,
+        )
 
 
 @dataclass

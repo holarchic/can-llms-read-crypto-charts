@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.charts import cleanup_charts, generate_chart, generate_charts_for_signal
+from scanner.charts import _sr_zones, cleanup_charts, generate_chart, generate_charts_for_signal
 from scanner.indicators import build_context
 from scanner.ma_indicators import compute_stoch_rsi
-from scanner.models import Direction, SetupSignal, SetupType
+from scanner.models import Direction, SetupSignal, SetupType, SpineLevel
 
 
 @pytest.fixture
@@ -204,6 +204,76 @@ class TestEnrichmentRender:
     def test_enriched_png_smoke(self, long_df, signal, tmp_charts):
         # Real end-to-end render (no mpf.plot stub) — exercises the fill_between + panel API.
         path = generate_chart(long_df, "TEST", "4H", signal, output_dir=tmp_charts, enrich=True)
+        assert path.exists()
+        assert path.stat().st_size > 1000
+
+
+class TestZoneRendering:
+    """v2 zoned S/R via `_sr_zones`/`axhspan`. Independent of `mpf.plot` — we render
+    against a real matplotlib axes and assert the patches landed at the expected
+    bounds with the expected colour/alpha."""
+
+    def _zoned(self, price, zone_low, zone_high, *, quality=1.0, pivot_type="high"):
+        return SpineLevel(
+            price=price, degraded=False,
+            zone_low=zone_low, zone_high=zone_high,
+            quality=quality, pivot_type=pivot_type,
+        )
+
+    def test_axhspan_paints_zones_with_quality_alpha_and_pivot_color(self, long_df):
+        import matplotlib.pyplot as plt
+        levels = [
+            self._zoned(price=110.0, zone_low=109.0, zone_high=110.0, quality=1.0, pivot_type="high"),
+            self._zoned(price=95.0, zone_low=95.0, zone_high=96.0, quality=0.5, pivot_type="low"),
+        ]
+        fig, ax = plt.subplots()
+        try:
+            count = _sr_zones(levels, long_df, ax)
+            assert count == 2
+            patches = [
+                {"y0": p.get_y(), "y1": p.get_y() + p.get_height(),
+                 "color": p.get_facecolor(), "alpha": p.get_alpha()}
+                for p in ax.patches
+            ]
+            # Patch bounds match the zones (mpl orders them in insertion order).
+            assert (patches[0]["y0"], patches[0]["y1"]) == (109.0, 110.0)
+            assert (patches[1]["y0"], patches[1]["y1"]) == (95.0, 96.0)
+            # Vivid (1.0 quality) is the higher alpha; faded (0.5) is the lower.
+            assert patches[0]["alpha"] > patches[1]["alpha"]
+            # Pivot-type colour split: resistance red-tinted, support green-tinted.
+            # Compare red vs green channel dominance per RGBA.
+            res_r, res_g = patches[0]["color"][0], patches[0]["color"][1]
+            sup_r, sup_g = patches[1]["color"][0], patches[1]["color"][1]
+            assert res_r > res_g                              # resistance is red-dominant
+            assert sup_g > sup_r                              # support is green-dominant
+        finally:
+            plt.close(fig)
+
+    def test_zones_outside_visible_range_are_skipped(self, long_df):
+        import matplotlib.pyplot as plt
+        # `long_df` spans roughly 95–225; place a level WAY above the ±5% cushion.
+        far = self._zoned(price=10_000.0, zone_low=9_990.0, zone_high=10_010.0)
+        fig, ax = plt.subplots()
+        try:
+            assert _sr_zones([far], long_df, ax) == 0
+            assert len(ax.patches) == 0
+        finally:
+            plt.close(fig)
+
+    def test_generate_chart_routes_v2_levels_through_zones(self, long_df, tmp_charts):
+        # End-to-end smoke: v2 SpineLevel with zones → file written via the
+        # returnfig + axhspan + manual savefig path. The plain SetupSignal
+        # context.sr_levels is ignored once the explicit kwarg supplies zoned levels.
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="ZONE", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="zoned",
+        )
+        zoned = [
+            self._zoned(price=110.0, zone_low=109.0, zone_high=110.0, quality=1.0, pivot_type="high"),
+            self._zoned(price=95.0, zone_low=95.0, zone_high=96.0, quality=0.5, pivot_type="low"),
+        ]
+        path = generate_chart(long_df, "ZONE", "4H", signal, sr_levels=zoned, output_dir=tmp_charts)
         assert path.exists()
         assert path.stat().st_size > 1000
 
