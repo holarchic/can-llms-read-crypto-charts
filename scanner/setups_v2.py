@@ -167,8 +167,15 @@ def _deviated_within_lookback(
     return False
 
 
-def _near_sr(price: float, sr_levels: list[SRLevelV2], atr: float, tol: float) -> bool:
-    return any(abs(price - lvl.price) <= tol * atr for lvl in sr_levels)
+def _near_sr(price: float, sr_levels: list[SRLevelV2]) -> bool:
+    """True iff ``price`` sits inside any level's [zone_low, zone_high] envelope.
+
+    framework-canonical zone membership (Sub-chunk F): a level is a price range, not a
+    point — the ATR-scaled tolerance the v10 substrate used previously is dropped in
+    favour of structural zone width. Other proximity primitives (``_htf_block``,
+    retest-tolerance) still scale by ATR — they don't read a zone envelope.
+    """
+    return any(lvl.zone_low <= price <= lvl.zone_high for lvl in sr_levels)
 
 
 def _recent_msb(msbs: list[MSB], n: int, direction: Direction, lookback: int) -> bool:
@@ -215,10 +222,10 @@ def _weakness_flag(swings: list[SwingPoint], direction: Direction) -> bool:
 
 def _retest_factors(
     entry: float, price: float, atr: float, sr_levels: list[SRLevelV2],
-    sr_tol: float, retest_tol: float,
+    retest_tol: float,
 ) -> set[ConfluenceFactor]:
     factors: set[ConfluenceFactor] = set()
-    if _near_sr(entry, sr_levels, atr, sr_tol):
+    if _near_sr(entry, sr_levels):
         factors.add(ConfluenceFactor.AT_SR)
     if abs(price - entry) <= retest_tol * atr:
         factors.add(ConfluenceFactor.RETEST)
@@ -230,7 +237,6 @@ def detect_trend_continuation(
     substrate: TFSubstrate,
     sr_levels: list[SRLevelV2],
     *,
-    sr_tol: float = 0.5,
     retest_tol: float = 0.5,
     impulse_k: float = 1.5,
     lookback: int = 10,
@@ -256,7 +262,7 @@ def detect_trend_continuation(
     if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
         return []
     factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.VERTICAL_ACCUMULATION}
-    factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
+    factors |= _retest_factors(ema36, price, atr, sr_levels, retest_tol)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.TREND_CONTINUATION,
         direction=direction,
@@ -309,7 +315,7 @@ def detect_trend_reclaim(
     if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
         return []
     factors ={ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.LOWER_TF_CONFIRMED}
-    factors |= _retest_factors(ema36, price, atr, sr_levels, sr_tol, retest_tol)
+    factors |= _retest_factors(ema36, price, atr, sr_levels, retest_tol)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.TREND_RECLAIM,
         direction=direction,
@@ -328,7 +334,6 @@ def detect_deviation_reclaim(
     sr_levels: list[SRLevelV2],
     *,
     lookback: int = 10,
-    sr_tol: float = 0.5,
     retest_tol: float = 0.5,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
@@ -344,7 +349,7 @@ def detect_deviation_reclaim(
     ema36, price, atr = _latest(substrate.bands.slow), context.current_price, context.atr
     if _isnan(ema36) or _isnan(price) or _isnan(atr) or atr <= 0:
         return []
-    if not _near_sr(ema36, sr_levels, atr, sr_tol):  # reclaim must be S/R-supported
+    if not _near_sr(ema36, sr_levels):  # reclaim must be S/R-supported
         return []
     hard = _protected_stop(context.swings, direction, ema36)
     if _isnan(hard):  # fail closed — no structural invalidation, not well-formed
@@ -498,7 +503,6 @@ def detect_gap_fill(
     min_gap: float = 1.0,
     rsi_len: int = 14,
     div_max_gap: int = 14,
-    sr_tol: float = 0.5,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
     """Counter-trend gap-fill toward the 100MA: geometry AND (divergence OR F2 stall)."""
@@ -526,7 +530,7 @@ def detect_gap_fill(
         factors.add(ConfluenceFactor.DIVERGENCE)
     if stall:
         factors.add(ConfluenceFactor.GAPFILL_STALL)
-    if _near_sr(price, sr_levels, atr, sr_tol):
+    if _near_sr(price, sr_levels):
         factors.add(ConfluenceFactor.AT_SR)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.GAP_FILL,
@@ -594,7 +598,6 @@ def detect_rsi_divergence_range(
     div_max_gap: int = 14,
     rsi_hi: float = 70.0,
     rsi_lo: float = 30.0,
-    sr_tol: float = 0.5,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
     """RSI divergence at a range extreme in a rotational/transitional regime."""
@@ -627,7 +630,7 @@ def detect_rsi_divergence_range(
     oversold = direction is Direction.LONG and ref_rsi < rsi_lo
     if overbought or oversold:  # corroborating extreme, not a gate
         factors.add(ConfluenceFactor.OVERSOLD_OVERBOUGHT)
-    if _near_sr(swing.body_price, sr_levels, atr, sr_tol):
+    if _near_sr(swing.body_price, sr_levels):
         factors.add(ConfluenceFactor.AT_SR)
     return [SetupSignalV2(
         setup_type=SetupTypeV2.RSI_DIVERGENCE_RANGE,
