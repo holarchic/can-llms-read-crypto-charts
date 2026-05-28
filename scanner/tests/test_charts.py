@@ -260,6 +260,22 @@ class TestZoneRendering:
         finally:
             plt.close(fig)
 
+    def test_mixed_zoned_and_line_levels_raises_at_dispatch(self, long_df, tmp_charts):
+        """Codex architecture pass: mixing v1 line-only and v2 zoned levels in one
+        chart payload is a producer bug — the dispatch must raise rather than silently
+        drop the line-only entries on the zoned path."""
+        zoned = self._zoned(price=110.0, zone_low=109.0, zone_high=110.0,
+                            quality=1.0, pivot_type="high")
+        line_only = SpineLevel(price=120.0, degraded=False)
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="MIX", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="mix",
+        )
+        with pytest.raises(ValueError, match="homogeneous"):
+            generate_chart(long_df, "MIX", "4H", signal, sr_levels=[zoned, line_only],
+                           output_dir=tmp_charts)
+
     def test_generate_chart_routes_v2_levels_through_zones(self, long_df, tmp_charts):
         # End-to-end smoke: v2 SpineLevel with zones → file written via the
         # returnfig + axhspan + manual savefig path. The plain SetupSignal

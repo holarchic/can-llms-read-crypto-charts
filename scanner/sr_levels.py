@@ -10,8 +10,10 @@ Public surface = ``derive_sr_levels`` (the supported seam) + ``anchor_vrvp_for_r
 (the Chunk-4 VRVP-anchor primitive). The derivation stages are private — callers
 get the whole pipeline, not partial assemblies against internal sequencing.
 
-Pure functions, no I/O. Substrate-only: nothing wires this into the pipeline yet
-(Chunk 7), and the range-detection that supplies an anchor index to
+Pure derivation. The only I/O is a single INFO log at the public ``derive_sr_levels``
+seam when the retest-decay pass drops levels — observable for operators, scoped to that
+one boundary; every private stage stays pure. Substrate-only: nothing wires this into
+the pipeline yet (Chunk 7), and the range-detection that supplies an anchor index to
 ``anchor_vrvp_for_range`` lives in Chunk 4 (``regime``) — here that function is the
 pure ``(df, anchor_idx) -> VolumeProfile`` primitive.
 
@@ -26,11 +28,14 @@ Algorithm contract (provenance precedence ``1mo > 1w > 3d > 1d``):
 4. ``1d`` and locally-resampled ``3d`` are lineage siblings — a same-price pair
    counts once (``confirmations`` is a distinct-lineage count, ``1d``/``3d`` → ``ltf``).
 5. at most ``n_sub`` refined sub-levels per bracket (top by confirmations then recency).
-6. merge unions macro + refined and dedups by price (higher rank wins, confirmations
-   never decreases — ``max(best, distinct-lineages)``, ``last_test`` = latest,
-   ``formed_at`` = the dominant contributor's). VRVP confluence is **not** carried
-   through merge: it is set once, *after* merging, by ``_score_with_vrvp`` on each
-   final level's price — a merged level reflects its own (post-merge) price, not a
+6. merge unions macro + refined and dedups within ``pivot_type`` (same-side only —
+   never collapses an opposite-side pair). Higher rank wins, confirmations never
+   decreases — ``max(best, distinct-lineages)``, ``last_test`` = latest. Zone =
+   outer envelope with a max-width guard back to ``best``'s zone; ``formed_at`` = the
+   latest formation among the contributors that actually DEFINE the kept edges (under
+   the guard, that is ``best.formed_at``). VRVP confluence is **not** carried through
+   merge: it is set once, *after* merging, by ``_score_with_vrvp`` on each final
+   level's price — a merged level reflects its own (post-merge) price, not a
    contributor that straddled a value-area edge.
 7. ``quality`` is monotonic in rank → confirmations → vrvp → recency, with bounded
    bands so the scalar is lexicographic-consistent with that priority.
@@ -314,13 +319,14 @@ def _count_retests(level: SRLevelV2, df: pd.DataFrame) -> int:
 
 def _apply_retest_decay(
     levels: list[SRLevelV2], frames_by_tf: dict[str, pd.DataFrame],
-) -> list[SRLevelV2]:
+) -> tuple[list[SRLevelV2], int]:
     """Stamp ``retest_count`` per level and drop ``> _MAX_RETESTS``.
 
     Each level counts retests on its own ``tf_source`` frame — a ``1w`` pivot counts
     on weekly bars, a ``1d`` pivot on dailies — so the cadence of "same-direction
-    retest" matches the TF the level was found on. Logs the dropped count at INFO
-    when non-zero (operator visibility per plan).
+    retest" matches the TF the level was found on. Returns ``(kept_levels, dropped_count)``
+    — pure compute, no I/O; the dropped count surfaces at the public seam (which owns
+    the single observability boundary for this module).
     """
     out: list[SRLevelV2] = []
     dropped = 0
@@ -330,12 +336,7 @@ def _apply_retest_decay(
             dropped += 1
             continue
         out.append(replace(lvl, retest_count=rc))
-    if dropped > 0:
-        logger.info(
-            "derive_sr_levels: dropped %d level(s) with retest_count > %d",
-            dropped, _MAX_RETESTS,
-        )
-    return out
+    return out, dropped
 
 
 def _score_with_vrvp(levels: list[SRLevelV2], vrvp: VolumeProfile) -> list[SRLevelV2]:
@@ -430,7 +431,13 @@ def derive_sr_levels(
     merged = _merge_sr_levels(macro, refined, tol=tol)
     scored = _score_with_vrvp(merged, vrvp) if vrvp is not None else merged
     # Sub-chunk F: post-formation retest count + drop > _MAX_RETESTS; each level
-    # counts on its own tf_source frame.
+    # counts on its own tf_source frame. This is the single observability boundary —
+    # the private decay pass returns a count, the public seam emits the operator log.
     frames_by_tf = {"1mo": m, "1w": w, "3d": td, "1d": d}
-    retested = _apply_retest_decay(scored, frames_by_tf)
+    retested, dropped = _apply_retest_decay(scored, frames_by_tf)
+    if dropped > 0:
+        logger.info(
+            "derive_sr_levels: dropped %d level(s) with retest_count > %d",
+            dropped, _MAX_RETESTS,
+        )
     return sorted(_assign_quality(retested), key=lambda l: l.price)

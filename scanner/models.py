@@ -277,8 +277,10 @@ class SpineContext:
     """The structural context the stage-2→4 spine consumes — exactly the
     `MarketContext` fields read downstream of stage 1, version-neutral end to end. The
     top-level shape is producer-neutral (the spine holds no whole v1 `MarketContext`)
-    and `sr_levels` is a `SpineLevel` list — the `{price, degraded}` pair the chart
-    consumer reads, which both the v1 `SRLevel` and the v2 `SRLevelV2` project onto.
+    and `sr_levels` is a `SpineLevel` list — the chart-consumer payload onto which
+    both the v1 `SRLevel` and the v2 `SRLevelV2` project. Per Sub-chunk F, `SpineLevel`
+    additionally carries optional zone/quality/pivot_type so the v2 zoned-render path
+    works through the same field; v1 leaves them None and falls back to line rendering.
     `fib_levels` and `vol_percentile` are `| None` — v2 has no fib swing / volume-
     percentile source, so it carries None rather than a fabricated `0.0` (an unknown is
     NULL, not an observed zeroth percentile). Field names match the v1 `MarketContext`

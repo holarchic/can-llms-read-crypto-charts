@@ -282,7 +282,6 @@ def detect_trend_reclaim(
     *,
     lower_tf_reclaim: bool,
     htf_res_tol: float = 1.0,
-    sr_tol: float = 0.5,
     retest_tol: float = 0.5,
     msb_lookback: int = 25,
     min_bars: int = 40,

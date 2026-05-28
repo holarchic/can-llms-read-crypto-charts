@@ -155,25 +155,30 @@ _ZONE_ALPHA_LO, _ZONE_ALPHA_HI = 0.15, 0.55
 
 
 def _has_zoned_levels(sr_levels: list) -> bool:
-    """The v2 chart payload — at least one level carries an explicit zone envelope.
-    v1 ``SpineLevel`` / ``SRLevel`` leave the zone fields ``None`` and the renderer
-    falls through to the line-based ``_sr_hlines`` path."""
-    return any(getattr(lvl, "zone_low", None) is not None for lvl in sr_levels)
+    """The v2 chart payload — every level carries an explicit zone envelope. Mixed-shape
+    payloads (some zoned, some line-only) are a producer bug and fail loudly here so a
+    bad call never silently drops the line-only entries on the zoned render path. v1
+    ``SpineLevel`` / ``SRLevel`` leave every zone field ``None`` and the renderer falls
+    through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel`` populates every
+    level via ``from_sr_level_v2``."""
+    zoned_flags = [getattr(lvl, "zone_low", None) is not None for lvl in sr_levels]
+    if zoned_flags and any(zoned_flags) and not all(zoned_flags):
+        raise ValueError(
+            "chart S/R payload mixes zoned and line-only levels — producers must "
+            "supply a homogeneous list (all v1 SpineLevel or all v2 SpineLevel)."
+        )
+    return any(zoned_flags)
 
 
 def _sr_zones(sr_levels: list, df: pd.DataFrame, ax) -> int:
     """Render v2 zoned S/R via ``ax.axhspan`` — colour by ``pivot_type``, alpha by
     normalised ``quality``. Returns the count of zones drawn (0 when none fall inside
-    the chart's price window). Same ±5% cushion as the line path. Skips any level
-    that's missing zone bounds — defensive against a mixed-shape input."""
+    the chart's price window). Same ±5% cushion as the line path. Input is guaranteed
+    homogeneous by ``_has_zoned_levels`` at the dispatch boundary."""
     price_range = df["High"].max() - df["Low"].min()
     lo = df["Low"].min() - price_range * 0.05
     hi = df["High"].max() + price_range * 0.05
-    visible = [
-        lvl for lvl in sr_levels
-        if lvl.zone_low is not None and lvl.zone_high is not None
-        and lo <= lvl.price <= hi
-    ]
+    visible = [lvl for lvl in sr_levels if lo <= lvl.price <= hi]
     if not visible:
         return 0
     qs = [(lvl.quality if lvl.quality is not None else 0.0) for lvl in visible]
