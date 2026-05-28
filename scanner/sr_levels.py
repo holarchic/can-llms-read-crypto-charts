@@ -35,7 +35,11 @@ Algorithm contract (provenance precedence ``1mo > 1w > 3d > 1d``):
 7. ``quality`` is monotonic in rank → confirmations → vrvp → recency, with bounded
    bands so the scalar is lexicographic-consistent with that priority.
 
-Pipeline order in ``derive_sr_levels``: find → refine → merge → score → quality.
+Pipeline order in ``derive_sr_levels``: find → refine → merge → score → retest-decay
+→ quality. The retest-decay pass (Sub-chunk F) counts post-formation same-side
+re-entries into each level's zone and drops `retest_count > _MAX_RETESTS`; `quality`
+is then decayed by `_RETEST_DECAY ** retest_count` so fresh zones outrank retested
+ones (framework-canonical "fresh = highest probability").
 
 Degradation: missing/short ``1w``/``1mo`` history yields fewer/zero macro pivots →
 fewer/zero brackets → possibly an empty result, never a raise. Thresholds
@@ -150,14 +154,20 @@ def _fractal_pivots(df: pd.DataFrame, tf_source: str, window: int) -> list[SRLev
 
 
 def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
-    """Collapse one price cluster per contract clause 6 (confirmations never decreases).
+    """Collapse one same-side price cluster per contract clause 6 (confirmations never
+    decreases). Callers MUST pass a single-``pivot_type`` cluster — `_merge_by_price`
+    enforces this by partitioning before clustering, so a resistance and a support pivot
+    near the same price never collapse into one semantically invalid record.
 
     Zones use the outer envelope (min ``zone_low``, max ``zone_high``) with a
     max-width guard: if the envelope exceeds ``_MAX_ZONE_PCT`` of mid-price, fall back
     to the best contributor's zone (a 1w wide-wick + 1d tight pivot at the same cluster
     shouldn't produce a comically wide merged zone). Merged ``price`` is then pinned to
     the zone edge — resistance: ``zone_high``; support: ``zone_low`` — preserving the
-    SFP-pierce invariant ``_significant_level`` reads. VRVP is deliberately reset to
+    SFP-pierce invariant ``_significant_level`` reads. ``formed_at`` is the LATEST
+    contributor's formation timestamp (not the dominant contributor's) — the merged
+    record's zone shape only exists once the widening contributor has formed, so retest
+    counting must not back-date through pre-widening bars. VRVP is deliberately reset to
     ``False`` here — confluence is owned by the post-merge ``_score_with_vrvp`` pass on
     the final price, not carried through.
     """
@@ -177,7 +187,7 @@ def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
         pivot_type=best.pivot_type,
         confirmations=max(best.confirmations, len(lineages)),
         vrvp_confluence=False,
-        formed_at=best.formed_at,
+        formed_at=max(c.formed_at for c in cluster),
         last_test=max(l.last_test for l in cluster),
         zone_low=zone_low,
         zone_high=zone_high,
@@ -185,17 +195,26 @@ def _combine(cluster: list[SRLevelV2]) -> SRLevelV2:
 
 
 def _merge_by_price(levels: list[SRLevelV2], tol: float) -> list[SRLevelV2]:
-    """Group levels within ``tol`` (anchored on each cluster's lowest price) and combine."""
+    """Group levels within ``tol`` of each other AND of the same ``pivot_type``, then
+    combine. Splitting by side first guards against a resistance and a support pivot at
+    near-identical price collapsing into one semantically invalid zone (codex correctness
+    finding) — the two sides are tracked separately end-to-end."""
     if not levels:
         return []
-    ordered = sorted(levels, key=lambda l: l.price)
-    clusters: list[list[SRLevelV2]] = [[ordered[0]]]
-    for lvl in ordered[1:]:
-        if _within(lvl.price, clusters[-1][0].price, tol):
-            clusters[-1].append(lvl)
-        else:
-            clusters.append([lvl])
-    return [_combine(c) for c in clusters]
+    out: list[SRLevelV2] = []
+    for ptype in ("high", "low"):
+        same_side = [l for l in levels if l.pivot_type == ptype]
+        if not same_side:
+            continue
+        ordered = sorted(same_side, key=lambda l: l.price)
+        clusters: list[list[SRLevelV2]] = [[ordered[0]]]
+        for lvl in ordered[1:]:
+            if _within(lvl.price, clusters[-1][0].price, tol):
+                clusters[-1].append(lvl)
+            else:
+                clusters.append([lvl])
+        out.extend(_combine(c) for c in clusters)
+    return out
 
 
 def _find_htf_pivots(

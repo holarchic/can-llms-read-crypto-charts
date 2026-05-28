@@ -403,6 +403,66 @@ def test_combine_merged_price_pinned_to_zone_edge_support():
     assert merged.price == merged.zone_low
 
 
+def test_merge_by_price_does_not_collapse_opposite_sides():
+    """Codex correctness regression: a same-price `high` + `low` pair must NOT collapse
+    into one merged record — the zone shape and `pivot_type` would describe a level that
+    isn't a real wick-to-body cluster. `_merge_by_price` partitions by `pivot_type` first.
+    """
+    from scanner.sr_levels import _merge_by_price
+    res = _zlvl(100.0, "1d", "high", 99.5, 100.0)
+    sup = _zlvl(100.1, "1d", "low", 100.1, 100.6)
+    merged = _merge_by_price([res, sup], tol=0.01)
+    assert len(merged) == 2                                  # two side-segregated records
+    by_type = {m.pivot_type for m in merged}
+    assert by_type == {"high", "low"}
+    high = next(m for m in merged if m.pivot_type == "high")
+    low = next(m for m in merged if m.pivot_type == "low")
+    assert (high.zone_low, high.zone_high) == (99.5, 100.0)  # resistance zone untouched
+    assert (low.zone_low, low.zone_high) == (100.1, 100.6)   # support zone untouched
+
+
+def test_combine_formed_at_is_latest_contributor_not_dominant():
+    """Codex correctness regression: when a later, wider contributor merges with an
+    earlier one, the merged `formed_at` is the LATER timestamp — so retest counting
+    cannot back-date through bars that pre-date the widened zone shape."""
+    early = _zlvl(100.0, "1w", "high", 99.5, 100.0, formed="2026-01-01")
+    later = _zlvl(100.05, "1d", "high", 98.0, 100.05, formed="2026-03-01")
+    merged = _combine([early, later])
+    assert merged.formed_at == pd.Timestamp("2026-03-01")    # latest, not best's
+
+
+def test_count_retests_excludes_bars_before_widened_zone_formed():
+    """End-to-end of the formed_at fix: a February bar that sits inside the
+    March-widened zone but NOT inside the January contributor's zone must not count as
+    a retest of the merged record."""
+    early = _zlvl(100.0, "1w", "high", 99.5, 100.0, formed="2026-01-01")
+    later = _zlvl(100.05, "1d", "high", 98.0, 100.05, formed="2026-03-01")
+    merged = _combine([early, later])
+    # Build the frame with explicit (date, O, H, L, C) rows.
+    dated = [
+        ("2026-01-10", 95.0, 96.0, 94.0, 95.0),               # respect side, pre-widen (filtered by formed_at)
+        ("2026-02-01", 98.2, 98.6, 97.8, 98.1),               # inside WIDENED zone only — false-positive retest pre-fix
+        ("2026-02-10", 95.0, 96.0, 94.0, 95.0),               # respect side, still pre-formed_at
+        ("2026-03-10", 95.0, 96.0, 94.0, 95.0),               # respect side, post-formation (counts as side state)
+        ("2026-03-15", 98.3, 98.7, 97.9, 98.2),               # re-enter from respect side — retest 1
+        ("2026-03-20", 95.0, 96.0, 94.0, 95.0),               # back to respect side
+        ("2026-04-01", 98.3, 98.7, 97.9, 98.2),               # second post-formation re-entry — retest 2
+    ]
+    df = pd.DataFrame(
+        {
+            "Open":   [r[1] for r in dated],
+            "High":   [r[2] for r in dated],
+            "Low":    [r[3] for r in dated],
+            "Close":  [r[4] for r in dated],
+            "Volume": [1.0] * len(dated),
+        },
+        index=pd.to_datetime([r[0] for r in dated]),
+    )
+    # Post-fix: only the two re-entries after 2026-03-01 should count (Feb bar is
+    # filtered out by `after = df[df.index > level.formed_at]`).
+    assert _count_retests(merged, df) == 2
+
+
 # ── _count_retests ────────────────────────────────────────────────────────────
 
 
