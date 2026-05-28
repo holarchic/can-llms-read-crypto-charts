@@ -480,7 +480,7 @@ def derive_sr_levels(
     tol: float = _DEFAULT_TOL,
     n_sub: int = _DEFAULT_N_SUB,
 ) -> list[SRLevelV2]:
-    """Public seam: find → refine → merge → score → quality, sorted by price.
+    """Public seam: find → refine → merge → score → retest-decay → quality, sorted by price.
 
     Each TF frame is an explicit named parameter (canonical TFs ``weekly``/
     ``monthly``/``daily``/``three_day``) rather than a string-keyed dict — a missing

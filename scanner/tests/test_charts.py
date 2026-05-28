@@ -450,6 +450,34 @@ class TestZoneRendering:
             generate_chart(long_df, "NOQ", "4H", signal, sr_levels=[no_quality],
                            output_dir=tmp_charts)
 
+    def test_pre_score_srlevelv2_through_from_sr_level_v2_rejected_at_dispatch(
+        self, long_df, tmp_charts,
+    ):
+        """Codex arch r4 MEDIUM: a raw pre-`_assign_quality` `SRLevelV2` projected
+        through `from_sr_level_v2` MUST be rejected at the dispatch boundary. Pre-r4
+        the model default `quality=0.0` slipped past `quality is not None`; post-r4
+        `SRLevelV2.quality` is `None` until `_assign_quality` runs, so the projection
+        carries `quality=None` and the boundary catches it."""
+        from scanner.models import SRLevelV2
+        raw = SRLevelV2(
+            price=110.0, tf_source="1d", pivot_type="high",
+            confirmations=1, vrvp_confluence=False,
+            formed_at=pd.Timestamp("2025-12-01", tz="UTC"),
+            last_test=pd.Timestamp("2025-12-01", tz="UTC"),
+            zone_low=109.0, zone_high=110.0,
+        )
+        assert raw.quality is None                              # placeholder before _assign_quality
+        projected = SpineLevel.from_sr_level_v2(raw)
+        assert projected.quality is None                        # forwarded unchanged
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="PRE", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="pre-score",
+        )
+        with pytest.raises(ValueError, match="partial zone fields"):
+            generate_chart(long_df, "PRE", "4H", signal, sr_levels=[projected],
+                           output_dir=tmp_charts)
+
     def test_zoned_with_invalid_pivot_type_raises_at_dispatch(self, long_df, tmp_charts):
         """Codex arch r2 MEDIUM: a zoned level whose `pivot_type` is outside
         `{'high', 'low'}` must be rejected at the dispatch boundary — not silently
@@ -472,7 +500,7 @@ class TestZoneRendering:
 
     def test_zoned_with_missing_formed_at_raises_at_dispatch(self, long_df, tmp_charts):
         """Sub-G: a level with zone fields BUT `formed_at=None` is malformed under the
-        quadruple-shape contract. Without this, a producer bug would silently fall open
+        quintuple-shape contract. Without this, a producer bug would silently fall open
         to chart-left back-dating — the exact bug `_has_zoned_levels` is designed to
         prevent at the dispatch boundary (parallel to F arch-r2's triple-shape rejection)."""
         missing = SpineLevel(

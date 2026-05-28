@@ -83,16 +83,20 @@ class SRLevelV2:
     """
 
     price: float
-    tf_source: str          # "1mo" | "1w" | "3d" | "1d" — provenance + rank
-    pivot_type: str         # "high" | "low"
-    confirmations: int      # distinct-TF-lineage confirmations
+    tf_source: str             # "1mo" | "1w" | "3d" | "1d" — provenance + rank
+    pivot_type: str            # "high" | "low"
+    confirmations: int         # distinct-TF-lineage confirmations
     vrvp_confluence: bool
     formed_at: datetime
     last_test: datetime
-    zone_low: float         # required — no default (fail loud at construction)
-    zone_high: float        # required — no default
-    retest_count: int = 0   # derived post-hoc, not at pivot construction
-    quality: float = 0.0
+    zone_low: float            # required — no default (fail loud at construction)
+    zone_high: float           # required — no default
+    retest_count: int = 0      # derived post-hoc, not at pivot construction
+    # Quality stays None pre-``_assign_quality`` (the final stage of ``derive_sr_levels``).
+    # Surfacing the unset state as ``None`` rather than the lossy ``0.0`` sentinel is what
+    # lets the chart dispatch boundary reject a pre-score level forwarded by mistake
+    # (codex arch r4 finding).
+    quality: float | None = None
 
 
 @dataclass
