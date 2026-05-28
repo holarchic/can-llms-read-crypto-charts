@@ -168,26 +168,32 @@ _ZONED_PIVOT_TYPES = frozenset({"high", "low"})
 
 
 def _has_zoned_levels(sr_levels: list) -> bool:
-    """The v2 chart payload — every level carries a complete zone envelope
-    (``zone_low`` + ``zone_high`` + ``pivot_type ∈ {"high", "low"}`` + ``formed_at``
-    all set). A level with some but not all of those, OR a ``pivot_type`` outside the
-    legal set, is malformed and rejected at this boundary, never later inside
-    matplotlib (codex arch r2: ``pivot_type="bogus"`` previously passed boundary +
-    rendered as resistance via the ``_sr_zones`` colour-fallback). Mixed-shape
-    payloads (some zoned, some line-only) are likewise a producer bug and fail here
-    so a bad call never silently drops the line-only entries on the zoned render
-    path. v1 ``SpineLevel`` / ``SRLevel`` leave every zone field unset and the
-    renderer falls through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel``
-    populates every field via ``from_sr_level_v2``."""
+    """The v2 chart payload — every level carries a complete zone envelope.
+
+    The QUINTUPLE-shape contract: ``zone_low`` + ``zone_high`` + ``quality`` +
+    ``pivot_type ∈ {"high", "low"}`` + ``formed_at`` all set. A level with some but
+    not all of those, OR a ``pivot_type`` outside the legal set, is malformed and
+    rejected at this boundary, never later inside matplotlib. Mixed-shape payloads
+    (some zoned, some line-only) are likewise a producer bug and fail here so a bad
+    call never silently drops the line-only entries on the zoned render path. v1
+    ``SpineLevel`` / ``SRLevel`` leave every zone field unset and the renderer falls
+    through to the line-based ``_sr_hlines`` path; v2 ``SpineLevel`` populates every
+    field via ``from_sr_level_v2`` (production `SRLevelV2.quality` is always assigned
+    by `_assign_quality`'s final pass — `quality=None` here is a producer bug, not a
+    line-shape).
+
+    Codex iteration log: r2 added pivot_type-value validation; r3 added quality
+    presence so the boundary covers every field `_sr_zones` reads."""
     def _shape(lvl) -> str:
         zl = getattr(lvl, "zone_low", None)
         zh = getattr(lvl, "zone_high", None)
         pt = getattr(lvl, "pivot_type", "") or ""
         fa = getattr(lvl, "formed_at", None)
+        q = getattr(lvl, "quality", None)
         pt_present = pt in _ZONED_PIVOT_TYPES
         pt_absent = pt == ""
-        present = (zl is not None, zh is not None, pt_present, fa is not None)
-        absent = (zl is None, zh is None, pt_absent, fa is None)
+        present = (zl is not None, zh is not None, pt_present, fa is not None, q is not None)
+        absent = (zl is None, zh is None, pt_absent, fa is None, q is None)
         if all(present):
             return "zoned"
         if all(absent):
@@ -198,7 +204,7 @@ def _has_zoned_levels(sr_levels: list) -> bool:
     if "malformed" in shapes:
         raise ValueError(
             "chart S/R payload contains a level with partial zone fields — "
-            "every zoned level must set zone_low, zone_high, formed_at, "
+            "every zoned level must set zone_low, zone_high, quality, formed_at, "
             "and a pivot_type in {'high', 'low'} together."
         )
     if shapes == {"zoned", "line"}:

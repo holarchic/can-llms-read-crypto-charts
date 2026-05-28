@@ -431,6 +431,25 @@ class TestZoneRendering:
             generate_chart(long_df, "PART", "4H", signal, sr_levels=[partial],
                            output_dir=tmp_charts)
 
+    def test_zoned_with_missing_quality_raises_at_dispatch(self, long_df, tmp_charts):
+        """Codex arch r3 MEDIUM: a zoned level with `quality=None` must be rejected at
+        the dispatch boundary — `_sr_zones` reads quality for both top-N selection AND
+        alpha; pre-r3 a None quality silently fell back to 0.0, masking a producer bug.
+        Production `SRLevelV2.quality` is always populated by `_assign_quality`."""
+        no_quality = SpineLevel(
+            price=110.0, zone_low=109.0, zone_high=110.0,
+            pivot_type="high", quality=None,
+            formed_at=pd.Timestamp("2025-12-01", tz="UTC"),
+        )
+        context = build_context(long_df)
+        signal = SetupSignal(
+            coin="NOQ", setup_type=SetupType.A, direction=Direction.LONG,
+            confidence=0.6, key_level=100.0, context=context, description="noq",
+        )
+        with pytest.raises(ValueError, match="partial zone fields"):
+            generate_chart(long_df, "NOQ", "4H", signal, sr_levels=[no_quality],
+                           output_dir=tmp_charts)
+
     def test_zoned_with_invalid_pivot_type_raises_at_dispatch(self, long_df, tmp_charts):
         """Codex arch r2 MEDIUM: a zoned level whose `pivot_type` is outside
         `{'high', 'low'}` must be rejected at the dispatch boundary — not silently

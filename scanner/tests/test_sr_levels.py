@@ -747,9 +747,12 @@ def test_count_retests_classifies_cap_then_flip_as_flipped():
 
 
 def test_derive_sr_levels_post_g_substrate_bounded():
-    """End-to-end: every output zone is ≤ `_MAX_ZONE_PCT` (per-bar cap fires at
-    `_pivot`) AND no output level shows a flip on its own TF frame (drop-on-flip).
-    Pre-G this assertion would fail on both counts; post-G it holds for every level."""
+    """End-to-end: every output zone respects the per-bar cap (`width/mid <=
+    `_MAX_ZONE_PCT`). The drop-on-flip end-to-end behavior is covered separately by
+    `test_apply_retest_decay_drops_flipped_at_zero_retests` +
+    `test_derive_drops_level_when_retest_count_exceeds_max` — this test isolates the
+    width-cap invariant under a multi-bracket weekly fixture that pre-G would have
+    produced wide zones."""
     # Weekly: macro pivots at 80 (low) and 120 (high), wide-bodied so the raw envelope
     # would exceed `_MAX_ZONE_PCT` without G's per-bar cap.
     weekly_dates = pd.date_range("2024-01-01", periods=10, freq="7D")
