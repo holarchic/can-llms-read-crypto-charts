@@ -686,6 +686,11 @@ def run_scan(
     the summary dict.
     """
     cfg = config or ScannerConfig()
+    if cfg.shadow_mode:
+        # Seal shadow mode: drop exec_config so NO execution-only prefilters run
+        # (_resolve_testnet_coins, the pending-conditional skip) and no orders can place —
+        # the shadow cohort is every post-validator CONFIRM, independent of how it's called.
+        exec_config = None
     start = datetime.now(timezone.utc)
 
     exchange_label = get_exchange_meta(cfg.exchange)["label"]
