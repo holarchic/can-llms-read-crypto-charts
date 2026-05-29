@@ -668,17 +668,6 @@ class ShadowOutcome:
 
 
 @dataclass(frozen=True)
-class ShadowResolution:
-    """A persisted/loaded `shadow_resolutions` row — an outcome plus its keying
-    (which captured signal, under which entry/exit policy versions)."""
-
-    shadow_signal_id: int
-    exit_policy_version: str
-    entry_policy_version: str
-    outcome: ShadowOutcome
-
-
-@dataclass(frozen=True)
 class ExecutionRequest:
     """Right-sized typed contract for `execute_trade` (T-016 Phase 1b, SPEC #21).
 
