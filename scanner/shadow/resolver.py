@@ -34,7 +34,7 @@ from scanner.models import MachineBlock, ShadowOutcome
 
 __all__ = [
     "resolve_signal",
-    "ENTRY_POLICY_VERSION", "EXIT_POLICY_VERSION",
+    "ENTRY_POLICY_VERSION", "EXIT_POLICY_VERSION", "RETRYABLE",
     "RESOLVED", "OPEN", "TRIGGER_EXPIRED", "NO_FILL", "INVALIDATED", "DATA_INCOMPLETE",
 ]
 
@@ -48,10 +48,10 @@ NO_FILL = "NO_FILL"
 INVALIDATED = "INVALIDATED"
 DATA_INCOMPLETE = "DATA_INCOMPLETE"
 
-# HyperLiquid perp taker fee (~3.5 bps) and a conservative per-side slippage assumption.
-# These are venue COST constants, not parameters fitted to outcomes.
-_TAKER_FEE = 0.00035
-_SLIPPAGE = 0.0005
+# Statuses worth re-resolving on a later run: still in-flight (OPEN), or awaiting a fetch
+# window that reaches the signal (DATA_INCOMPLETE). The store reloads exactly these so the
+# tape stays re-runnable; the rest are terminal non-trades / trades.
+RETRYABLE = frozenset({OPEN, DATA_INCOMPLETE})
 
 
 def _slip(px: float, *, buy: bool, slippage: float) -> float:
@@ -65,7 +65,7 @@ def _resolve_entry(mb, fwd, is_long, slippage, buffer):
     hi_z = mb.entry_high * (1 + buffer)
     trig = mb.entry_trigger
 
-    if trig is None:  # IMMEDIATE — fill at the first forward bar's open
+    if trig is None:  # IMMEDIATE — fill at the signal bar's open
         px = float(fwd.iloc[0]["Open"])
         if not (lo_z <= px <= hi_z):
             return (NO_FILL, None, None, False)
@@ -75,19 +75,28 @@ def _resolve_entry(mb, fwd, is_long, slippage, buffer):
     trigger_px = mb.entry_trigger_price
     expiry = mb.expiry_candles or len(fwd)
     for i in range(min(expiry, len(fwd))):
-        hi = float(fwd.iloc[i]["High"])
-        lo = float(fwd.iloc[i]["Low"])
-        close = float(fwd.iloc[i]["Close"])
-        # Invalidation is checked BEFORE the trigger (live entry_monitor ordering): a
-        # pre-trigger kill wins over a same-bar trigger.
-        if inv is not None and ((is_long and lo <= inv) or (not is_long and hi >= inv)):
+        bar = fwd.iloc[i]
+        close = float(bar["Close"])
+        if trig == "limit_at":
+            # A resting limit: live polls spot, so invalidation trips on an intrabar wick
+            # touch and the fill is touch-based (low fidelity on a 1H frame). Invalidation
+            # is checked first so a pre-fill kill wins.
+            hi = float(bar["High"])
+            lo = float(bar["Low"])
+            if inv is not None and ((is_long and lo <= inv) or (not is_long and hi >= inv)):
+                return (INVALIDATED, None, None, False)
+            if lo <= trigger_px <= hi:
+                return ("FILL", _slip(trigger_px, buy=is_long, slippage=slippage), i, True)
+            continue
+        # candle_close_*: live evaluates BOTH invalidation and the trigger on the CLOSE,
+        # invalidation-first (a wick through inv that closes back is NOT a kill — mirrors
+        # entry_monitor.evaluate_entry_trigger).
+        if inv is not None and ((is_long and close <= inv) or (not is_long and close >= inv)):
             return (INVALIDATED, None, None, False)
         if trig == "candle_close_above" and close >= trigger_px:
             return _conditional_fill(close, lo_z, hi_z, is_long, slippage, i)
         if trig == "candle_close_below" and close <= trigger_px:
             return _conditional_fill(close, lo_z, hi_z, is_long, slippage, i)
-        if trig == "limit_at" and lo <= trigger_px <= hi:
-            return ("FILL", _slip(trigger_px, buy=is_long, slippage=slippage), i, True)
     return (TRIGGER_EXPIRED, None, None, False)
 
 
@@ -109,19 +118,23 @@ def resolve_signal(
     anchor_ts: datetime,
     frame: pd.DataFrame,
     *,
-    taker_fee: float = _TAKER_FEE,
-    slippage: float = _SLIPPAGE,
+    # Production sources the per-venue taker fee from EXCHANGE_META[exchange]["fee_rate"]
+    # (the resolve CLI passes it); these defaults are a fallback for direct / test calls.
+    taker_fee: float = 0.00035,
+    slippage: float = 0.0005,
     entry_zone_buffer: float = 0.02,
     max_hold_bars: int = 240,
 ) -> ShadowOutcome:
     """Walk one captured signal forward. `frame` is the venue's OHLCV (1H bars assumed —
     `expiry_candles` is in 1H units), index = bar-close datetime, cols Open/High/Low/Close."""
-    if len(frame) == 0 or frame.index[0] > anchor_ts:
-        # The bars right after the signal are not in the fetched window — can't resolve.
+    # `fetch_candles` indexes by candle-OPEN time, so the bar CONTAINING the signal is the
+    # last one whose open <= anchor_ts. Resolve from that bar (not the next), or an IMMEDIATE
+    # fill lands a full bar late and the OPEN/DATA_INCOMPLETE boundary shifts. If no bar opens
+    # at/before the signal, its bar is outside the fetched window — can't resolve faithfully.
+    prior = frame.index[frame.index <= anchor_ts]
+    if len(frame) == 0 or len(prior) == 0:
         return ShadowOutcome(status=DATA_INCOMPLETE)
-    fwd = frame[frame.index > anchor_ts]
-    if len(fwd) == 0:
-        return ShadowOutcome(status=OPEN)  # too recent — no forward bars yet
+    fwd = frame[frame.index >= prior[-1]]
 
     is_long = mb.direction.upper() == "LONG"
     raw_fill_marker, entry_fill, entry_pos, low_fid = _resolve_entry(
@@ -140,9 +153,20 @@ def resolve_signal(
 
     entry_fee_r = taker_fee * entry_fill / risk
     entry_slip_r = abs(entry_fill - entry_fill / (1 + slippage if is_long else 1 - slippage)) / risk
-    tp1_frac = (mb.tp1_exit_pct or 0) / 100 if tp1 else 0.0
+    # Mirror the live size split (sizing.calculate_position): with both targets the TP1
+    # fraction normalizes against the pct sum; with TP1 only, full size exits at TP1.
+    if tp1 and tp2:
+        _t1 = mb.tp1_exit_pct or 0
+        _t2 = mb.tp2_exit_pct if mb.tp2_exit_pct is not None else 0
+        tp1_frac = _t1 / (_t1 + _t2) if (_t1 + _t2) > 0 else 0.5
+    else:
+        tp1_frac = 1.0 if tp1 else 0.0
 
-    mgmt = fwd.iloc[entry_pos + 1:]
+    # IMMEDIATE enters at the signal bar's OPEN, so that bar's post-open range can hit
+    # SL/TP — include it. Conditional/limit enter at/after a bar close, so manage from the
+    # next bar (avoids counting the entry bar's pre-fill range).
+    mgmt_start = entry_pos if mb.entry_trigger is None else entry_pos + 1
+    mgmt = fwd.iloc[mgmt_start:]
     pnl_r = 0.0
     leg_fees_r = 0.0
     leg_slip_r = 0.0

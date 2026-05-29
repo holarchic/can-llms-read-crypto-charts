@@ -14,6 +14,8 @@ from typing import NamedTuple
 
 from scanner.models import MachineBlock, ScanResult, ShadowOutcome
 
+from .resolver import RESOLVED, RETRYABLE
+
 __all__ = [
     "save_shadow_signal",
     "LoadedShadowSignal",
@@ -35,15 +37,16 @@ class LoadedShadowSignal(NamedTuple):
 
 def save_shadow_signal(
     result: ScanResult, anchor_ts: datetime, exchange: str, conn,
-) -> None:
+) -> bool:
     """Persist `result` (a post-validator CONFIRM) to `shadow_signals`.
 
     `anchor_ts` is the scan-run moment — the time live would have acted, and the
     forward-resolution start. `exchange` (from `cfg.exchange`) pins the venue so the
-    resolver fetches the right book's OHLCV.
+    resolver fetches the right book's OHLCV. Returns True if a new row was inserted,
+    False if an existing `scan_id` was ignored (idempotent capture).
     """
     mb = result.machine_block
-    conn.execute(
+    cur = conn.execute(
         "INSERT OR IGNORE INTO shadow_signals "
         "(scan_id, coin, exchange, anchor_ts, setup_type, direction, "
         " prompt_version, confluence_count, machine_block, validator_verdict) "
@@ -62,30 +65,40 @@ def save_shadow_signal(
         ),
     )
     conn.commit()
+    return cur.rowcount == 1
 
 
 def load_unresolved_signals(
     conn, exit_policy_version: str, entry_policy_version: str,
 ) -> list[LoadedShadowSignal]:
-    """Captured signals with no terminal resolution yet for this (entry, exit) policy
-    pair — i.e. never resolved OR last left `OPEN` (still in-flight, re-resolve)."""
+    """Captured signals with no terminal resolution yet for this (entry, exit) policy pair —
+    never resolved, or last left in a `RETRYABLE` state (OPEN / DATA_INCOMPLETE) so the tape
+    stays re-runnable as forward data arrives. Reads fields by name; a persisted
+    `machine_block` that fails to rehydrate is a corrupt capture and fails loud here."""
+    placeholders = ", ".join("?" for _ in RETRYABLE)
     rows = conn.execute(
-        "SELECT s.id, s.coin, s.exchange, s.anchor_ts, s.machine_block "
+        "SELECT s.id AS id, s.coin AS coin, s.exchange AS exchange, "
+        "       s.anchor_ts AS anchor_ts, s.machine_block AS machine_block "
         "FROM shadow_signals s "
         "LEFT JOIN shadow_resolutions r "
         "  ON r.shadow_signal_id = s.id "
         "  AND r.exit_policy_version = ? AND r.entry_policy_version = ? "
-        "WHERE r.id IS NULL OR r.status = 'OPEN'",
-        (exit_policy_version, entry_policy_version),
+        f"WHERE r.id IS NULL OR r.status IN ({placeholders})",
+        (exit_policy_version, entry_policy_version, *sorted(RETRYABLE)),
     ).fetchall()
-    return [
-        LoadedShadowSignal(
-            id=row[0], coin=row[1], exchange=row[2],
-            anchor_ts=datetime.fromisoformat(row[3]),
-            machine_block=MachineBlock.from_raw(json.loads(row[4])),
-        )
-        for row in rows
-    ]
+    out: list[LoadedShadowSignal] = []
+    for row in rows:
+        mb = MachineBlock.from_raw(json.loads(row["machine_block"]))
+        if mb is None:
+            raise ValueError(
+                f"shadow_signals id={row['id']}: persisted machine_block failed to "
+                "rehydrate (corrupt capture) — refusing to resolve it"
+            )
+        out.append(LoadedShadowSignal(
+            id=row["id"], coin=row["coin"], exchange=row["exchange"],
+            anchor_ts=datetime.fromisoformat(row["anchor_ts"]), machine_block=mb,
+        ))
+    return out
 
 
 def save_resolution(
@@ -127,9 +140,9 @@ def resolved_r_values(
     """Per-trade net realized R for every RESOLVED trade under this policy pair — the
     expectancy sample. 0R outcomes stay in; non-trade statuses never have realized_r."""
     rows = conn.execute(
-        "SELECT realized_r FROM shadow_resolutions "
+        "SELECT realized_r AS realized_r FROM shadow_resolutions "
         "WHERE exit_policy_version = ? AND entry_policy_version = ? "
-        "AND status = 'RESOLVED' AND realized_r IS NOT NULL",
-        (exit_policy_version, entry_policy_version),
+        "AND status = ? AND realized_r IS NOT NULL",
+        (exit_policy_version, entry_policy_version, RESOLVED),
     ).fetchall()
-    return [float(row[0]) for row in rows]
+    return [float(row["realized_r"]) for row in rows]

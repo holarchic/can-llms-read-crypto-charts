@@ -24,6 +24,7 @@ EP = "v1"  # entry_policy_version
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row   # mirror production get_connection (named row access)
     schema._run_migrations(c)
     yield c
     c.close()

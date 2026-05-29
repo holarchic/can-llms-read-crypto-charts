@@ -100,8 +100,8 @@ def test_conditional_invalidation_wins_before_trigger():
     mb = _mb(entry_trigger="candle_close_above", entry_trigger_price=102.0,
              invalidation_price=98.0, expiry_candles=5)
     f = _frame([
-        (100, 101, 99, 100.5),
-        (100, 101, 97, 99),        # low 97 <= inval 98 -> INVALIDATED (no fill)
+        (100, 101, 99, 100.5),     # signal bar (no trigger, no inval close)
+        (100, 101, 96, 97),        # CLOSE 97 <= inval 98 -> INVALIDATED (close-based, not wick)
     ])
     out = resolve_signal(mb, _anchor(f), f)
     assert out.status == R.INVALIDATED
@@ -122,8 +122,8 @@ def test_conditional_trigger_expires():
 
 def test_immediate_outside_zone_is_no_fill():
     f = _frame([
-        (100, 101, 99, 100.5),
-        (110, 112, 109, 111),      # open 110 outside [98, 103.02] -> NO_FILL
+        (110, 112, 109, 111),      # signal bar: open 110 outside [98, 103.02] -> NO_FILL
+        (110, 112, 109, 111),
     ])
     out = resolve_signal(_mb(), _anchor(f), f)
     assert out.status == R.NO_FILL

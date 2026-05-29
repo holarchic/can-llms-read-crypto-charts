@@ -563,7 +563,7 @@ def _dry_execute_preview(confirms, verbose):
                 print(f"  {c.coin} {mb.direction}: SKIPPED — sizing failed")
 
 
-def _build_summary(signals, results, exec_results, alerted, elapsed):
+def _build_summary(signals, results, exec_results, alerted, elapsed, shadow_captured=0):
     """Aggregate the scan-outcome summary dict.
 
     `alerted` (stage3 return) and the raw `elapsed` float are threaded
@@ -590,6 +590,8 @@ def _build_summary(signals, results, exec_results, alerted, elapsed):
     }
     if n_validator_rejects:
         summary["validator_rejects"] = n_validator_rejects
+    if shadow_captured:
+        summary["shadow_captured"] = shadow_captured
     return summary
 
 
@@ -643,18 +645,23 @@ def stage4_shadow(
     independently; errors are caught so a capture failure never crashes the scan
     (mirrors `stage4_execute`'s per-CONFIRM isolation). Returns the captured count.
     """
+    import sqlite3
+
     from .shadow.store import save_shadow_signal
 
     conn = get_connection()
     captured = 0
     for confirm in confirms:
         try:
-            save_shadow_signal(confirm, anchor_ts, scanner_config.exchange, conn)
+            inserted = save_shadow_signal(confirm, anchor_ts, scanner_config.exchange, conn)
+        except sqlite3.Error as exc:  # a capture DB error must not abort the scan batch
+            print(f"  {confirm.coin}: SHADOW capture DB error — {exc}")
+            continue
+        if inserted:
             captured += 1
-            if verbose:
-                print(f"  {confirm.coin} {confirm.machine_block.direction}: SHADOW captured (no order)")
-        except Exception as exc:  # never crash the scan on a single capture failure
-            print(f"  {confirm.coin}: SHADOW capture failed — {exc}")
+        if verbose:
+            tag = "captured" if inserted else "already captured"
+            print(f"  {confirm.coin} {confirm.machine_block.direction}: SHADOW {tag} (no order)")
     return captured
 
 
@@ -668,7 +675,7 @@ def run_scan(
     exec_config=None,
     dry_execute: bool = False,
 ) -> dict:
-    """Full 3-stage scan pipeline — thin dispatcher.
+    """Full scan pipeline — thin dispatcher.
 
     prep → stage1 → guards → (pending filter) → stage2 → stage3 → stage4 →
     summary. Each step is one call; the accreted stage/policy/presentation
@@ -720,12 +727,13 @@ def run_scan(
     confirms = [r for r in results if r.is_confirm]
     exec_results = []
 
+    shadow_captured = 0
     if cfg.shadow_mode:
         # Shadow mode: capture the post-validator cohort, place NO orders (T-020.1).
         # `start` is the scan-run anchor — the moment live would have acted.
         if confirms:
             print(f"\nStage 4 (SHADOW): capturing {len(confirms)} CONFIRMs — no orders")
-            stage4_shadow(confirms, cfg, start, verbose=verbose)
+            shadow_captured = stage4_shadow(confirms, cfg, start, verbose=verbose)
     elif dry_execute and confirms:
         _dry_execute_preview(confirms, verbose)
     elif exec_config and exec_config.enabled and confirms:
@@ -734,7 +742,8 @@ def run_scan(
         exec_results = stage4_execute(confirms, cfg, exec_config, verbose=verbose)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-    summary = _build_summary(signals, results, exec_results, alerted, elapsed)
+    summary = _build_summary(signals, results, exec_results, alerted, elapsed,
+                             shadow_captured=shadow_captured)
 
     if verbose:
         _print_summary(summary, elapsed)

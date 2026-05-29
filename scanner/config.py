@@ -142,6 +142,11 @@ class ScannerConfig:
             raise ValueError(
                 f"Unknown setup_version: '{self.setup_version}'. Supported: {', '.join(SETUP_VERSIONS)}"
             )
+        if self.shadow_mode and self.setup_version != "v2":
+            raise ValueError(
+                f"shadow_mode requires setup_version='v2' (got '{self.setup_version}') — "
+                "shadow capture is the v2-only +R-gate path (SPEC #41)"
+            )
         # Floor < 1 would silently disable the gate (every signal has ≥1 confluence
         # factor). 1 is the valid inert setting; 2+ is active. (SPEC #33; arch-pass R1.)
         if self.v2_min_confluence < 1:
