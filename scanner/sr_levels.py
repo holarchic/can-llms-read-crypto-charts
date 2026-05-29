@@ -101,7 +101,7 @@ logger = logging.getLogger(__name__)
 # Public surface (enforced): the supported pipeline seam + the Chunk-4 VRVP primitive.
 # The derivation stages are private (`_find_htf_pivots` etc.); unit tests reach them
 # deliberately, but no production caller should.
-__all__ = ["derive_sr_levels", "derive_chart_levels", "anchor_vrvp_for_range"]
+__all__ = ["derive_sr_levels", "derive_chart_levels", "anchor_vrvp_for_range", "chartable_tfs"]
 
 # Provenance precedence as a rank scale, shifted +3 (Sub-chunk H) so LTF chart pivots
 # fit BELOW 1d while every rank stays ≥ 0 — preserving the `quality > 0` invariant
@@ -121,6 +121,13 @@ _CHART_TF_CHAIN: dict[str, tuple[str, ...]] = {
     "1h": ("4h", "1h"),
     "15m": ("4h", "1h", "15m"),
 }
+
+
+def chartable_tfs() -> frozenset[str]:
+    """The chartable-TF membership set — the public seam other layers validate their own
+    chart-TF maps against (e.g. `screener_v2._CHART_HTF`), so membership has ONE owner here
+    rather than being re-declared and reaching past this module's exports."""
+    return frozenset(_CHART_TF_CHAIN)
 _DEFAULT_TOL = 0.01      # price-cluster width, relative (1%) — v1 default
 _DEFAULT_WINDOW = 2      # fractal half-width on sparse HTF bars — v1 default
 _DEFAULT_N_SUB = 3       # max refined sub-levels per macro bracket — v1 default

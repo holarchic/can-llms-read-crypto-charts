@@ -229,9 +229,10 @@ def _analyze_one(
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
         if config.setup_version == "v2":
-            candle_sets, htf_emas, per_chart_levels = _v2_chart_inputs(signal, prefetched_candles, config)
+            chart_data = _v2_chart_inputs(signal, prefetched_candles, config)
             chart_paths = generate_charts_for_signal(
-                signal, candle_sets, enrich=True, htf_emas=htf_emas, per_chart_levels=per_chart_levels,
+                signal, chart_data.candle_sets, enrich=True,
+                htf_emas=chart_data.htf_emas, per_chart_levels=chart_data.per_chart_levels,
             )
         else:
             candle_sets = {}

@@ -587,12 +587,13 @@ class TestAnalyzeOnePerChartLevels:
 
     def test_pipeline_v2_branch_passes_per_chart_levels(self):
         from scanner.pipeline import _analyze_one
+        from scanner.screener_v2 import ChartInputs
 
         cfg = MagicMock()
         cfg.setup_version = "v2"
         per_chart = {"4h": ["L4h"], "1h": ["L1h"]}
         with patch("scanner.pipeline._v2_chart_inputs",
-                   return_value=({"4h": "df"}, {"4h": "ema"}, per_chart)), \
+                   return_value=ChartInputs({"4h": "df"}, {"4h": "ema"}, per_chart)), \
              patch("scanner.pipeline.generate_charts_for_signal", return_value=[]) as gcs, \
              patch("scanner.pipeline.analyze_for_scanner", return_value="RESULT"):
             result = _analyze_one(self._bs(), cfg, prefetched_candles=None)

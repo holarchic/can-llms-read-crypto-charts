@@ -50,7 +50,7 @@ from .setups_v2 import (
     detect_trend_continuation,
     detect_trend_reclaim,
 )
-from .sr_levels import _CHART_TF_CHAIN, derive_chart_levels
+from .sr_levels import chartable_tfs, derive_chart_levels
 from .trend_state import TrendDirection
 
 
@@ -83,16 +83,15 @@ _SCORE_SATURATION = 5
 # chart), so an absent/all-NaN entry is graceful, not an error.
 _CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h", "15m": "1h"}
 
-# Single source of truth for chartable-TF MEMBERSHIP: this map's keys and
-# `sr_levels._CHART_TF_CHAIN`'s keys (the per-chart refinement chains) must name the same
-# set. They live in different layers — producer HTF-anchors here, S/R-derivation chains
-# there — so they can't collapse into one dict, but the membership DECISION is enforced in
-# one place (this import-time guard) so the two views can't drift (cf. the Chunk 8c/8d
+# Chartable-TF MEMBERSHIP has one owner: `sr_levels.chartable_tfs()` (the public seam over
+# the per-chart refinement chains). `_CHART_HTF` is this layer's HTF-anchor VIEW of that set
+# — a different value concern, so it can't collapse into the chain map, but its membership
+# is validated against the owner at import so the two views can't drift (cf. the Chunk 8c/8d
 # prompt-map raise-guard).
-if set(_CHART_HTF) != set(_CHART_TF_CHAIN):
+if set(_CHART_HTF) != chartable_tfs():
     raise RuntimeError(
         f"chartable-TF set drift: _CHART_HTF={sorted(_CHART_HTF)} != "
-        f"_CHART_TF_CHAIN={sorted(_CHART_TF_CHAIN)}"
+        f"chartable_tfs()={sorted(chartable_tfs())}"
     )
 
 
