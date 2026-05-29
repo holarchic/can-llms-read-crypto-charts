@@ -87,6 +87,8 @@ class ScannerConfig:
     exchange: str = "hyperliquid"
     min_volume_usd: float = 2_000_000
     max_pairs: int = 80
+    # v2-only: capture post-validator CONFIRMs (no orders) for the +R gate (T-020.1, SPEC #41)
+    shadow_mode: bool = False
 
     # Candle counts per timeframe
     candle_counts: dict = field(default_factory=lambda: {

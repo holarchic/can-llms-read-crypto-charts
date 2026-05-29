@@ -631,6 +631,33 @@ def _post_scan_ops_log(summary, results, exchange_label, cfg):
     send_ops_log(f"Scan Complete [{exchange_label}]", ops_fields, COLOR_WARN if warn else COLOR_OK, cfg)
 
 
+def stage4_shadow(
+    confirms: list[ScanResult],
+    scanner_config: ScannerConfig,
+    anchor_ts: datetime,
+    verbose: bool = True,
+) -> int:
+    """Shadow capture (T-020.1, SPEC #41): persist each POST-validator CONFIRM to
+    `shadow_signals` and place NO orders — the faithful tradeable cohort the forward
+    resolver walks for the Acceptance-#10 +R gate. Each capture is attempted
+    independently; errors are caught so a capture failure never crashes the scan
+    (mirrors `stage4_execute`'s per-CONFIRM isolation). Returns the captured count.
+    """
+    from .shadow.store import save_shadow_signal
+
+    conn = get_connection()
+    captured = 0
+    for confirm in confirms:
+        try:
+            save_shadow_signal(confirm, anchor_ts, scanner_config.exchange, conn)
+            captured += 1
+            if verbose:
+                print(f"  {confirm.coin} {confirm.machine_block.direction}: SHADOW captured (no order)")
+        except Exception as exc:  # never crash the scan on a single capture failure
+            print(f"  {confirm.coin}: SHADOW capture failed — {exc}")
+    return captured
+
+
 def run_scan(
     config: ScannerConfig | None = None,
     coin: str | None = None,
@@ -689,11 +716,17 @@ def run_scan(
     # Stage 3
     alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)
 
-    # Stage 4: Execution (if enabled)
+    # Stage 4: Execution (if enabled) — or shadow capture (no orders, SPEC #41)
     confirms = [r for r in results if r.is_confirm]
     exec_results = []
 
-    if dry_execute and confirms:
+    if cfg.shadow_mode:
+        # Shadow mode: capture the post-validator cohort, place NO orders (T-020.1).
+        # `start` is the scan-run anchor — the moment live would have acted.
+        if confirms:
+            print(f"\nStage 4 (SHADOW): capturing {len(confirms)} CONFIRMs — no orders")
+            stage4_shadow(confirms, cfg, start, verbose=verbose)
+    elif dry_execute and confirms:
         _dry_execute_preview(confirms, verbose)
     elif exec_config and exec_config.enabled and confirms:
         # Always print — execution status is critical ops info

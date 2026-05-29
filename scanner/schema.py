@@ -98,6 +98,22 @@ CREATE TABLE IF NOT EXISTS scan_universe (
 )
 """
 
+CREATE_SHADOW_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS shadow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT NOT NULL UNIQUE,
+    coin TEXT NOT NULL,
+    exchange TEXT NOT NULL DEFAULT 'hyperliquid',
+    anchor_ts TEXT NOT NULL,
+    setup_type TEXT,
+    direction TEXT,
+    prompt_version TEXT,
+    confluence_count INTEGER,
+    machine_block TEXT NOT NULL,
+    validator_verdict TEXT
+)
+"""
+
 CREATE_STRATEGIES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_signals_strategy
 ON signals (strategy_id)
@@ -158,6 +174,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_SIGNALS_INDEX)
     conn.execute(CREATE_STRATEGIES_TABLE)
     conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
+    conn.execute(CREATE_SHADOW_SIGNALS_TABLE)  # T-020.1 shadow-mode capture (SPEC #41)
     # Migrate: add strategy_id to existing tables
     _ensure_column(conn, "signals", "strategy_id", "TEXT", "'v0'")
     _ensure_column(conn, "scans", "strategy_id", "TEXT", "'v0'")
