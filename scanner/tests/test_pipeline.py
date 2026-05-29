@@ -575,3 +575,46 @@ class TestAnalyzeOneErrorPaths:
         errs.assert_called_once()
         assert "malformed response" in errs.call_args[0][0]
         ops.assert_not_called()
+
+
+class TestAnalyzeOnePerChartLevels:
+    """Sub-chunk H: the v2 dispatch threads the per-chart-TF level map through to the
+    renderer; the v1 path is untouched (no `_v2_chart_inputs`, no `per_chart_levels`)."""
+
+    def _bs(self):
+        from scanner.models import BoundarySignal
+        return BoundarySignal.from_setup_signal(_make_signal(coin="BTC"), "4h")
+
+    def test_pipeline_v2_branch_passes_per_chart_levels(self):
+        from scanner.pipeline import _analyze_one
+
+        cfg = MagicMock()
+        cfg.setup_version = "v2"
+        per_chart = {"4h": ["L4h"], "1h": ["L1h"]}
+        with patch("scanner.pipeline._v2_chart_inputs",
+                   return_value=({"4h": "df"}, {"4h": "ema"}, per_chart)), \
+             patch("scanner.pipeline.generate_charts_for_signal", return_value=[]) as gcs, \
+             patch("scanner.pipeline.analyze_for_scanner", return_value="RESULT"):
+            result = _analyze_one(self._bs(), cfg, prefetched_candles=None)
+
+        assert result == "RESULT"
+        gcs.assert_called_once()
+        kwargs = gcs.call_args.kwargs
+        assert kwargs["per_chart_levels"] is per_chart    # the producer map flows to the renderer
+        assert kwargs["enrich"] is True
+
+    def test_pipeline_v1_branch_unchanged(self):
+        from scanner.pipeline import _analyze_one
+
+        cfg = MagicMock()
+        cfg.setup_version = "v1"
+        cfg.candle_counts = {"4h": 400, "1d": 100, "1h": 100}
+        with patch("scanner.pipeline.fetch_candles", return_value=MagicMock()), \
+             patch("scanner.pipeline._v2_chart_inputs") as v2ci, \
+             patch("scanner.pipeline.generate_charts_for_signal", return_value=[]) as gcs, \
+             patch("scanner.pipeline.analyze_for_scanner", return_value="RESULT"):
+            result = _analyze_one(self._bs(), cfg, prefetched_candles=None)
+
+        assert result == "RESULT"
+        v2ci.assert_not_called()                          # v1 never touches the v2 chart-inputs seam
+        assert "per_chart_levels" not in gcs.call_args.kwargs   # v1 passes no per-chart map

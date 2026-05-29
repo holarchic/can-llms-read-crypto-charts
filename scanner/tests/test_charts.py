@@ -5,7 +5,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.charts import _sr_zones, cleanup_charts, generate_chart, generate_charts_for_signal
+from scanner.charts import (
+    _MAX_ZONES_PER_CHART,
+    _sr_zones,
+    cleanup_charts,
+    generate_chart,
+    generate_charts_for_signal,
+)
 from scanner.indicators import build_context
 from scanner.ma_indicators import compute_stoch_rsi
 from scanner.models import Direction, SetupSignal, SetupType, SpineLevel
@@ -567,3 +573,96 @@ class TestGenerateChartsForSignal:
         candle_sets = {tf: df for tf in ("1d", "4h", "1h")}
         paths = generate_charts_for_signal(signal, candle_sets, output_dir=tmp_charts)
         assert [p.stem.split("_")[1] for p in paths] == ["1D", "4H", "1H"]
+
+
+# ── Sub-chunk H: per-chart-TF level routing ─────────────────────────────────────
+
+
+def _zoned_level(price, zone_low, zone_high, *, quality=1.0, pivot_type="high", formed_at=None):
+    return SpineLevel(
+        price=price, degraded=False, zone_low=zone_low, zone_high=zone_high,
+        quality=quality, pivot_type=pivot_type,
+        formed_at=formed_at if formed_at is not None else pd.Timestamp("2025-12-01", tz="UTC"),
+    )
+
+
+def test_generate_charts_for_signal_uses_per_chart_levels_when_supplied(signal, long_df, tmp_charts, monkeypatch):
+    """Each chart renders ITS TF's level set — including an explicit empty list (flows as
+    `sr_levels=[]`, not None) so a TF with no levels renders zero zones rather than falling
+    back to the signal's macro context."""
+    from scanner import charts
+    seen = {}
+
+    def spy(df, coin, timeframe, sig, sr_levels=None, output_dir=None, *, enrich=False, htf_ema=None):
+        seen[timeframe] = sr_levels
+        return output_dir
+
+    monkeypatch.setattr(charts, "generate_chart", spy)
+    per_chart = {
+        "1d": [_zoned_level(150, 149, 150)],
+        "4h": [_zoned_level(160, 159, 160)],
+        "1h": [],
+    }
+    charts.generate_charts_for_signal(
+        signal, {"1d": long_df, "4h": long_df, "1h": long_df},
+        output_dir=tmp_charts, per_chart_levels=per_chart,
+    )
+    assert seen["1D"] == per_chart["1d"]
+    assert seen["4H"] == per_chart["4h"]
+    assert seen["1H"] == []                       # explicit empty flows through (NOT None)
+
+
+def test_generate_charts_for_signal_falls_back_to_signal_context_when_per_chart_levels_none(signal, long_df, tmp_charts, monkeypatch):
+    """v1 path (no per_chart_levels): every chart gets `sr_levels=None`, so generate_chart
+    falls back to `signal.context.sr_levels` internally — byte-identical to pre-H."""
+    from scanner import charts
+    seen = {}
+
+    def spy(df, coin, timeframe, sig, sr_levels=None, output_dir=None, *, enrich=False, htf_ema=None):
+        seen[timeframe] = sr_levels
+        return output_dir
+
+    monkeypatch.setattr(charts, "generate_chart", spy)
+    charts.generate_charts_for_signal(signal, {"4h": long_df}, output_dir=tmp_charts)
+    assert seen["4H"] is None
+
+
+def test_generate_chart_explicit_empty_per_chart_does_not_fall_back_to_signal_context(signal, long_df, tmp_charts, capture_plot):
+    """`sr_levels=[]` renders zero S/R and does NOT silently fall back to the signal's
+    context (the `is not None` dispatch, not `or`). `sr_levels=None` DOES fall back."""
+    assert signal.context.sr_levels               # precondition: there ARE context levels to fall back to
+    generate_chart(long_df, "FALLBACK", "4H", signal, sr_levels=None, output_dir=tmp_charts)
+    assert "hlines" in capture_plot               # None → falls back → renders context levels
+    generate_chart(long_df, "EMPTY", "4H", signal, sr_levels=[], output_dir=tmp_charts)
+    assert "hlines" not in capture_plot           # [] → zero zones, NO fallback (H.5 fix)
+
+
+def test_generate_chart_renders_ltf_zones_inside_chart_window(long_df):
+    """A zoned level whose `formed_at` falls inside the rendered window draws a forward-only
+    Rectangle from the formation bar (x > -0.5), not back-dated to chart-left."""
+    import matplotlib.pyplot as plt
+    mid = len(long_df) // 2
+    lvl = _zoned_level(150.0, 149.0, 150.0, formed_at=long_df.index[mid])
+    fig, ax = plt.subplots()
+    try:
+        assert _sr_zones([lvl], long_df, ax) == 1
+        patch = ax.patches[0]
+        assert patch.get_x() > -0.5                                   # forward-only from formation bar
+        assert patch.get_x() + patch.get_width() == len(long_df.index) - 0.5
+    finally:
+        plt.close(fig)
+
+
+def test_generate_chart_ltf_renders_when_macro_below_cap_capacity(long_df):
+    """The Sub-H target case: when in-window candidates are FEWER than the per-chart top-N
+    cap (macro sits outside the LTF cushion, so LTF candidates don't fill it), every zone
+    survives the cap and renders."""
+    n = _MAX_ZONES_PER_CHART - 2
+    levels = [_zoned_level(120.0 + i, 119.0 + i, 120.0 + i, quality=0.5 + 0.01 * i) for i in range(n)]
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    try:
+        assert _sr_zones(levels, long_df, ax) == n                    # none clipped — under capacity
+        assert len(ax.patches) == n
+    finally:
+        plt.close(fig)

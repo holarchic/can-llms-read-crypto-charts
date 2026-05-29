@@ -11,7 +11,7 @@ from .analysis import LLMOverloaded, analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
-from .data_plane_v2 import fetch_multi_tf
+from .data_plane_v2 import build_market_context_v2, fetch_multi_tf
 from .db import get_connection
 from .indicators import build_context
 from .models import BoundarySignal, ExecutionRequest, ScanResult
@@ -204,15 +204,21 @@ def stage1_screen(
 
 def _v2_chart_inputs(
     signal: BoundarySignal, prefetched: Stage1ArtifactsV2 | None, config: ScannerConfig,
-) -> tuple[dict, dict]:
-    """Resolve the coin's stage-1 bundle entry (defensive refetch if absent — the
-    producer bundles every emitted coin) and hand it to the producer-owned
-    `screener_v2.chart_inputs`, which owns the frame/HTF-EMA selection. Stage 2 holds
-    only the bundle-miss I/O recovery, not the bundle's internal shape."""
+) -> tuple[dict, dict, dict]:
+    """Resolve the coin's stage-1 bundle entry + macro substrate and hand them to the
+    producer-owned `screener_v2.chart_inputs` (which owns frame/HTF-EMA selection AND the
+    per-chart-TF level map). Happy path reads BOTH the candles and the macro `SRLevelV2`
+    set from `prefetched` (built once at stage 1, so no `derive_sr_levels` recompute). A
+    bundle miss refetches candles AND recomputes the macro substrate via
+    `build_market_context_v2` — recovery-only (the producer bundles every emitted coin),
+    so the happy path stays 1x macro work per coin per scan."""
     candles = prefetched.candles_by_coin.get(signal.coin) if prefetched else None
-    if candles is None:
+    if candles is not None:
+        macro_levels = prefetched.macro_levels_by_coin[signal.coin]
+    else:
         candles = fetch_multi_tf(signal.coin, config)
-    return chart_inputs(candles)
+        macro_levels = build_market_context_v2(signal.coin, candles).sr_levels
+    return chart_inputs(candles, macro_levels=macro_levels)
 
 
 def _analyze_one(
@@ -223,8 +229,10 @@ def _analyze_one(
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
     try:
         if config.setup_version == "v2":
-            candle_sets, htf_emas = _v2_chart_inputs(signal, prefetched_candles, config)
-            chart_paths = generate_charts_for_signal(signal, candle_sets, enrich=True, htf_emas=htf_emas)
+            candle_sets, htf_emas, per_chart_levels = _v2_chart_inputs(signal, prefetched_candles, config)
+            chart_paths = generate_charts_for_signal(
+                signal, candle_sets, enrich=True, htf_emas=htf_emas, per_chart_levels=per_chart_levels,
+            )
         else:
             candle_sets = {}
             for tf in ["1d", "4h", "1h"]:

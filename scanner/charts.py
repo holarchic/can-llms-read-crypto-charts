@@ -13,7 +13,7 @@ from matplotlib.patches import Rectangle
 
 from .config import CHARTS_DIR
 from .ma_indicators import compute_ema_band, compute_longer_set, compute_stoch_rsi
-from .models import BoundarySignal
+from .models import BoundarySignal, SpineLevel
 
 # Light theme — better LLM visual acuity on white backgrounds
 STYLE = mpf.make_mpf_style(
@@ -340,7 +340,10 @@ def generate_chart(
     # Title shows coin + timeframe only — no setup type (avoids anchoring the LLM)
     title = f"{coin}/USDT {timeframe}"
 
-    levels_for_render = sr_levels or signal.context.sr_levels
+    # `is not None`, not `or`: an explicit empty per-chart payload (`sr_levels=[]`, e.g. a
+    # TF whose `derive_chart_levels` returned nothing) MUST render zero zones, not silently
+    # fall back to the signal's macro context. None means "caller passed nothing" (v1 path).
+    levels_for_render = sr_levels if sr_levels is not None else signal.context.sr_levels
     use_zones = _has_zoned_levels(levels_for_render)
 
     filename = f"{coin}_{timeframe}_{signal.setup_type.value}.png"
@@ -410,6 +413,7 @@ def generate_charts_for_signal(
     *,
     enrich: bool = False,
     htf_emas: dict[str, pd.Series] | None = None,
+    per_chart_levels: dict[str, list[SpineLevel]] | None = None,
 ) -> list[Path]:
     """Generate all charts for a signal. Returns list of file paths.
 
@@ -418,8 +422,12 @@ def generate_charts_for_signal(
     (`screener_v2.chart_inputs`) supplies all four (Chunk 8 / 8.2). ``enrich`` /
     ``htf_emas`` are the v2 dispatch's enriched-chart path (Chunk 7b.2b): when
     ``enrich=True`` each chart adds the v10 substrate overlays, and ``htf_emas`` (per-TF,
-    pre-aligned by the data plane) supplies the next-HTF anchor EMA. The v1 path passes
-    neither — default-off keeps the blind contract (Decision #5)."""
+    pre-aligned by the data plane) supplies the next-HTF anchor EMA. ``per_chart_levels``
+    (Sub-chunk H) is the per-chart-TF S/R map (`screener_v2.chart_inputs`): each chart
+    renders ITS TF's locally-refined zones (`sr_levels=per_chart_levels[tf]`) rather than
+    one shared macro set; an explicit empty list renders zero zones (no fallback). The v1
+    path passes none of these — default-off keeps the blind contract (Decision #5), and
+    `signal.context.sr_levels` flows through unchanged."""
     chart_paths = []
     htf_emas = htf_emas or {}
 
@@ -429,11 +437,13 @@ def generate_charts_for_signal(
     # set is the producer's decision, so a TF the producer intends is never silently
     # dropped here.
     for tf, df in candle_sets.items():
+        sr_for_tf = per_chart_levels.get(tf) if per_chart_levels is not None else None
         path = generate_chart(
             df,
             signal.coin,
             tf.upper(),
             signal,
+            sr_levels=sr_for_tf,
             output_dir=output_dir,
             enrich=enrich,
             htf_ema=htf_emas.get(tf),

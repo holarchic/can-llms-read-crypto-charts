@@ -368,8 +368,9 @@ def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
 def test_v2_chart_inputs_align_next_htf_ema():
     candles = _realistic_candles()
     sig = _bsig(coin="BTC")
-    candle_sets, htf_emas = _v2_chart_inputs(
-        sig, Stage1ArtifactsV2(candles_by_coin={"BTC": candles}), ScannerConfig(setup_version="v2"),
+    candle_sets, htf_emas, _ = _v2_chart_inputs(
+        sig, Stage1ArtifactsV2(candles_by_coin={"BTC": candles}, macro_levels_by_coin={"BTC": []}),
+        ScannerConfig(setup_version="v2"),
     )
 
     # the 1d/4h/1h/15m detector frames feed the charts (15m added Chunk 8/8.2)
@@ -380,3 +381,110 @@ def test_v2_chart_inputs_align_next_htf_ema():
     # the next-HTF 200 EMA has real (non-NaN) values: 4h-200 on 1h, 1h-200 on 15m
     assert htf_emas["1h"].notna().any()
     assert htf_emas["15m"].notna().any()
+
+
+# --- 8. Sub-chunk H: per-chart-TF levels + macro plumbing ----------------------
+
+
+def test_chart_inputs_returns_per_chart_spinelevels():
+    """chart_inputs returns a 3-tuple; the 3rd entry maps each chart-TF to a SpineLevel
+    list (projected at the producer — never raw SRLevelV2)."""
+    candles = _realistic_candles()
+    macro = build_market_context_v2("BTC", candles).sr_levels
+    result = screener_v2.chart_inputs(candles, macro_levels=macro)
+    assert len(result) == 3
+    candle_sets, _htf_emas, per_chart = result
+    assert set(per_chart) == set(candle_sets)
+    for levels in per_chart.values():
+        assert isinstance(levels, list)
+        assert all(isinstance(lvl, SpineLevel) for lvl in levels)
+
+
+def test_chart_inputs_does_not_call_derive_sr_levels(monkeypatch):
+    """chart_inputs is a pure consumer of the pre-computed macro — it never recomputes
+    `derive_sr_levels`. Pins the architectural contract: stage 1 owns macro, stage 2 reads it."""
+    import scanner.sr_levels as srmod
+    candles = _realistic_candles()
+    macro = build_market_context_v2("BTC", candles).sr_levels   # the precompute (real path)
+    called = []
+    monkeypatch.setattr(srmod, "derive_sr_levels", lambda *a, **k: called.append(1))
+    screener_v2.chart_inputs(candles, macro_levels=macro)
+    assert called == []
+
+
+def test_chart_inputs_per_chart_levels_have_quality_set():
+    """Every projected SpineLevel carries a post-`_assign_quality` quality (not None)."""
+    candles = _realistic_candles()
+    macro = build_market_context_v2("BTC", candles).sr_levels
+    _, _, per_chart = screener_v2.chart_inputs(candles, macro_levels=macro)
+    assert any(per_chart[tf] for tf in per_chart)        # anti-vacuity: some TF has levels
+    for levels in per_chart.values():
+        for lvl in levels:
+            assert lvl.quality is not None
+
+
+def test_chart_inputs_per_chart_levels_keyed_only_by_chart_htf():
+    """Keys are exactly the chartable-TF set (`_CHART_HTF`) — no leak, single owner."""
+    candles = _realistic_candles()
+    macro = build_market_context_v2("BTC", candles).sr_levels
+    _, _, per_chart = screener_v2.chart_inputs(candles, macro_levels=macro)
+    assert set(per_chart) <= set(screener_v2._CHART_HTF)
+    assert set(per_chart) == {"1d", "4h", "1h", "15m"}
+
+
+def test_v2_chart_inputs_bundle_hit_uses_prefetched_macro(monkeypatch):
+    """Happy path: macro is read from the prefetched bundle (identity) — NOT recomputed."""
+    import scanner.pipeline as pipemod
+    candles = _realistic_candles()
+    macro = build_market_context_v2("BTC", candles).sr_levels
+    prefetched = Stage1ArtifactsV2(candles_by_coin={"BTC": candles}, macro_levels_by_coin={"BTC": macro})
+    monkeypatch.setattr(pipemod, "build_market_context_v2",
+                        lambda *a, **k: pytest.fail("recomputed macro on a bundle hit"))
+    captured = {}
+    real_ci = pipemod.chart_inputs
+
+    def spy_ci(c, macro_levels):
+        captured["m"] = macro_levels
+        return real_ci(c, macro_levels=macro_levels)
+
+    monkeypatch.setattr(pipemod, "chart_inputs", spy_ci)
+    _v2_chart_inputs(_bsig(coin="BTC"), prefetched, ScannerConfig(setup_version="v2"))
+    assert captured["m"] is macro       # the prefetched list itself, no recompute
+
+
+def test_v2_chart_inputs_bundle_miss_recomputes_macro(monkeypatch):
+    """Bundle miss (prefetched=None): refetch candles AND recompute the macro substrate
+    exactly once via build_market_context_v2 — recovery-only path."""
+    import scanner.pipeline as pipemod
+    candles = _realistic_candles()
+    monkeypatch.setattr(pipemod, "fetch_multi_tf", lambda coin, config: candles)
+    real_bmc = pipemod.build_market_context_v2
+    calls = []
+
+    def spy_bmc(coin, c):
+        calls.append(coin)
+        return real_bmc(coin, c)
+
+    monkeypatch.setattr(pipemod, "build_market_context_v2", spy_bmc)
+    captured = {}
+    real_ci = pipemod.chart_inputs
+
+    def spy_ci(c, macro_levels):
+        captured["m"] = macro_levels
+        return real_ci(c, macro_levels=macro_levels)
+
+    monkeypatch.setattr(pipemod, "chart_inputs", spy_ci)
+    _v2_chart_inputs(_bsig(coin="BTC"), None, ScannerConfig(setup_version="v2"))
+    assert calls == ["BTC"]                                       # exactly one recompute
+    assert captured["m"] == real_bmc("BTC", candles).sr_levels    # the recomputed macro flows in
+
+
+def test_detection_substrate_unaffected_by_chart_levels():
+    """The detection substrate is macro-only regardless of LTF richness in `candles` —
+    build_market_context_v2 returns only W/M/D/3D tf_source entries; derive_chart_levels is
+    a separate seam never reached from detection. Pins the AT_SR calibration invariance
+    structurally (survives the `_TF_RANK` +3 rescale, which is tf_source-agnostic)."""
+    candles = _realistic_candles()                # 4h/1h/15m frames are full of LTF pivots
+    ctx2 = build_market_context_v2("BTC", candles)
+    assert ctx2.sr_levels                          # anti-vacuity: a real macro substrate exists
+    assert all(lvl.tf_source in {"1mo", "1w", "3d", "1d"} for lvl in ctx2.sr_levels)

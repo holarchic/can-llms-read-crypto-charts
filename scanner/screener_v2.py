@@ -39,6 +39,7 @@ from .models import (
     SetupSignalV2,
     SpineContext,
     SpineLevel,
+    SRLevelV2,
 )
 from .scan_queries import is_duplicate
 from .setups_v2 import (
@@ -49,16 +50,20 @@ from .setups_v2 import (
     detect_trend_continuation,
     detect_trend_reclaim,
 )
+from .sr_levels import derive_chart_levels
 from .trend_state import TrendDirection
 
 
 class Stage1ArtifactsV2(NamedTuple):
-    """Per-coin multi-TF closed-bar candle bundle handed from stage 1 to stage 2 on the
-    v2 path. Stage-2 enriched charts render from the same frames the v2 detectors used
-    (no refetch divergence). v1 keeps its untyped 4H candle_map dict — that path retires
-    at the cutover."""
+    """Per-coin multi-TF closed-bar candle bundle + the macro `SRLevelV2` substrate built
+    once at stage 1, handed from stage 1 to stage 2 on the v2 path. Stage-2 enriched charts
+    render from the same frames the v2 detectors used (no refetch divergence); `chart_inputs`
+    layers per-chart-TF LTF pivots onto `macro_levels_by_coin` rather than recomputing
+    `derive_sr_levels` (so stage 2 never re-emits the public-seam INFO log per coin). v1
+    keeps its untyped 4H candle_map dict — that path retires at the cutover."""
 
     candles_by_coin: dict[str, dict[str, pd.DataFrame]]
+    macro_levels_by_coin: dict[str, list[SRLevelV2]]    # ctx2.sr_levels stamped per coin
 
 
 # The one-TF-lower ladder for the `lower_tf_reclaim` derivation. 15m is the floor —
@@ -264,6 +269,7 @@ def screen_v2(
     disabled = {t for t in (disabled_types or set())}
 
     bundles: dict[str, dict[str, pd.DataFrame]] = {}
+    macro_by_coin: dict[str, list[SRLevelV2]] = {}
     candidates: list[BoundarySignal] = []
     errors = 0
     for coin in coins:
@@ -289,6 +295,7 @@ def screen_v2(
                 print(f"  {coin} — error: {e}")
             continue
         bundles[coin] = candles
+        macro_by_coin[coin] = ctx2.sr_levels    # the macro substrate, built once here
         candidates.extend(coin_candidates)
 
     # A few per-coin failures are ordinary scan noise; EVERY coin failing means the v2
@@ -309,22 +316,31 @@ def screen_v2(
     # Prune the bundle to coins that survived — the only frames stage 2 will chart.
     survivor_coins = {b.coin for b in survivors}
     bundle = {coin: bundles[coin] for coin in survivor_coins}
-    return survivors, Stage1ArtifactsV2(candles_by_coin=bundle)
+    macro_bundle = {coin: macro_by_coin[coin] for coin in survivor_coins}
+    return survivors, Stage1ArtifactsV2(candles_by_coin=bundle, macro_levels_by_coin=macro_bundle)
 
 
-def chart_inputs(candles: dict[str, pd.DataFrame]) -> tuple[dict, dict]:
+def chart_inputs(
+    candles: dict[str, pd.DataFrame],
+    macro_levels: list[SRLevelV2],
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.Series], dict[str, list[SpineLevel]]]:
     """The v2 enriched-chart inputs from a coin's closed-bar candle dict (a `screen_v2`
-    bundle entry): the chartable frames (HTF→LTF) the detectors used + the next-HTF 200EMA
-    aligned onto each chart's index, so enriched charts render from the SAME frames as
-    detection. `_CHART_HTF` is the single owner of the chartable-TF set (its keys, ordered
-    1d/4h/1h/15m) + each TF's HTF anchor (its values); both the frame selection and the
-    anchor derive from it. Producer-owned so stage 2 consumes one helper rather than
-    reaching into bundle shape. Pure; renderer skips a line whose HTF frame is too short
-    to seed the 200EMA."""
+    bundle entry): the chartable frames (HTF→LTF) the detectors used, the next-HTF 200EMA
+    aligned onto each chart's index, AND the per-chart-TF S/R level map — so enriched charts
+    render from the SAME frames as detection and each TF carries its own locally-refined
+    zones. `_CHART_HTF` is the single owner of the chartable-TF set (its keys, ordered
+    1d/4h/1h/15m) + each TF's HTF anchor (its values). `macro_levels` is the pre-computed
+    stage-1 substrate (`ctx2.sr_levels`); `derive_chart_levels` layers chart-TF-local pivots
+    onto it per chart (no `derive_sr_levels` recompute), and the `SRLevelV2 → SpineLevel`
+    projection happens HERE so the renderer stays SRLevelV2-agnostic. Producer-owned; pure;
+    renderer skips a line whose HTF frame is too short to seed the 200EMA."""
     candle_sets = {tf: candles[tf] for tf in _CHART_HTF if tf in candles}
     htf_emas: dict[str, pd.Series] = {}
+    per_chart_levels: dict[str, list[SpineLevel]] = {}
     for tf, frame in candle_sets.items():
         htf = _CHART_HTF.get(tf)
         if htf and htf in candles:
             htf_emas[tf] = htf_ema_for_chart(candles[htf], frame.index)
-    return candle_sets, htf_emas
+        srlvs = derive_chart_levels(tf, candles, macro_levels=macro_levels)
+        per_chart_levels[tf] = [SpineLevel.from_sr_level_v2(lvl) for lvl in srlvs]
+    return candle_sets, htf_emas, per_chart_levels
