@@ -7,7 +7,7 @@ by the caller (`shadow-resolve` fetches it for the signal's venue).
 
 Fidelity (faithful to the live entry/exit path, deliberately pessimistic for a go-live
 gate):
-- **Entry, `entry_policy=v1`:** IMMEDIATE fills at the next bar's open; `candle_close_*`
+- **Entry, `entry_policy=v1`:** IMMEDIATE fills at the signal bar's open; `candle_close_*`
   on the confirming close; `limit_at` when a bar's range spans the limit (flagged
   `low_fidelity` — a 1H frame can't see the true intrabar fill). A fill outside
   `[entry_low, entry_high] ± entry_zone_buffer` is `NO_FILL` (live `price_outside_zone`).
@@ -126,7 +126,7 @@ def resolve_signal(
     max_hold_bars: int = 240,
 ) -> ShadowOutcome:
     """Walk one captured signal forward. `frame` is the venue's OHLCV (1H bars assumed —
-    `expiry_candles` is in 1H units), index = bar-close datetime, cols Open/High/Low/Close."""
+    `expiry_candles` is in 1H units), index = candle-OPEN datetime (ccxt), cols Open/High/Low/Close."""
     # `fetch_candles` indexes by candle-OPEN time, so the bar CONTAINING the signal is the
     # last one whose open <= anchor_ts. Resolve from that bar (not the next), or an IMMEDIATE
     # fill lands a full bar late and the OPEN/DATA_INCOMPLETE boundary shifts. If no bar opens
@@ -157,7 +157,7 @@ def resolve_signal(
     # fraction normalizes against the pct sum; with TP1 only, full size exits at TP1.
     if tp1 and tp2:
         _t1 = mb.tp1_exit_pct or 0
-        _t2 = mb.tp2_exit_pct if mb.tp2_exit_pct is not None else 0
+        _t2 = mb.tp2_exit_pct if mb.tp2_exit_pct is not None else 50
         tp1_frac = _t1 / (_t1 + _t2) if (_t1 + _t2) > 0 else 0.5
     else:
         tp1_frac = 1.0 if tp1 else 0.0
@@ -208,6 +208,8 @@ def resolve_signal(
             remaining -= tp1_frac
             tp1_done = True
             exit_reason, exit_price = "TP1", tp1
+            if remaining <= 1e-9:  # full size exits at TP1 (single-target / 100-0 split)
+                return _terminal("TP1", tp1, j + 1)
         if tp2 and remaining > 0 and ((is_long and hi >= tp2) or (not is_long and lo <= tp2)):
             p, f, s = _exit_leg(entry_fill, tp2, remaining, is_long, slippage, taker_fee, risk)
             pnl_r += p

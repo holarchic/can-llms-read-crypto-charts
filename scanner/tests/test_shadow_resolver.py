@@ -149,6 +149,25 @@ def test_open_when_no_terminal_event_by_frame_end():
     assert out.entry_fill is not None and out.realized_r is None
 
 
+def test_single_target_resolves_fully_at_tp1():
+    # tp1-only (no tp2) → full size exits at TP1; must terminate at TP1, not TP1_TIME/OPEN.
+    mb = MachineBlock.from_raw({
+        "entry_low": 100.0, "entry_high": 101.0, "stop_loss": 95.0,
+        "tp1": 110.0, "tp1_exit_pct": 100, "direction": "LONG",
+        "setup_type": "trend_continuation", "setup_quality": "textbook",
+        "confidence": 7, "leverage": 5,
+    })
+    f = _frame([
+        (100, 101, 99, 100.5),     # signal bar
+        (100.5, 101, 100, 100.5),
+        (105, 111, 104, 108),      # TP1 (full size) — terminal here
+        (108, 109, 94, 95),        # must NOT be reached (would otherwise stop the runner)
+    ])
+    out = resolve_signal(mb, _anchor(f), f)
+    assert out.status == R.RESOLVED and out.exit_reason == "TP1"
+    assert out.realized_r > 0
+
+
 def test_short_immediate_runs_to_tp2():
     mb = _mb(direction="SHORT", stop_loss=105.0, tp1=90.0, tp2=80.0)
     f = _frame([

@@ -12,6 +12,7 @@ import json
 from datetime import datetime
 from typing import NamedTuple
 
+from scanner.config import EXCHANGE_META
 from scanner.models import MachineBlock, ScanResult, ShadowOutcome
 
 from .resolver import RESOLVED, RETRYABLE
@@ -93,6 +94,11 @@ def load_unresolved_signals(
             raise ValueError(
                 f"shadow_signals id={row['id']}: persisted machine_block failed to "
                 "rehydrate (corrupt capture) — refusing to resolve it"
+            )
+        if row["exchange"] not in EXCHANGE_META:
+            raise ValueError(
+                f"shadow_signals id={row['id']}: unknown exchange '{row['exchange']}' "
+                "(corrupt capture) — refusing to resolve it"
             )
         out.append(LoadedShadowSignal(
             id=row["id"], coin=row["coin"], exchange=row["exchange"],

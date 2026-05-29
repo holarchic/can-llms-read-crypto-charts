@@ -649,19 +649,22 @@ def stage4_shadow(
 
     from .shadow.store import save_shadow_signal
 
-    conn = get_connection()
+    conn = get_connection()  # fresh connection per call (scanner/db.py) — close it below
     captured = 0
-    for confirm in confirms:
-        try:
-            inserted = save_shadow_signal(confirm, anchor_ts, scanner_config.exchange, conn)
-        except sqlite3.Error as exc:  # a capture DB error must not abort the scan batch
-            print(f"  {confirm.coin}: SHADOW capture DB error — {exc}")
-            continue
-        if inserted:
-            captured += 1
-        if verbose:
-            tag = "captured" if inserted else "already captured"
-            print(f"  {confirm.coin} {confirm.machine_block.direction}: SHADOW {tag} (no order)")
+    try:
+        for confirm in confirms:
+            try:
+                inserted = save_shadow_signal(confirm, anchor_ts, scanner_config.exchange, conn)
+            except sqlite3.Error as exc:  # a capture DB error must not abort the scan batch
+                print(f"  {confirm.coin}: SHADOW capture DB error — {exc}")
+                continue
+            if inserted:
+                captured += 1
+            if verbose:
+                tag = "captured" if inserted else "already captured"
+                print(f"  {confirm.coin} {confirm.machine_block.direction}: SHADOW {tag} (no order)")
+    finally:
+        conn.close()
     return captured
 
 
@@ -721,7 +724,9 @@ def run_scan(
     results = validate_confirms(results, cfg)
 
     # Stage 3
-    alerted = stage3_alert(results, cfg, skip_discord=skip_discord, verbose=verbose)
+    # Shadow mode is self-contained: it never places orders, so it must never emit
+    # live-trade alerts (stage 3) either — derive skip_discord, don't make callers pair it.
+    alerted = stage3_alert(results, cfg, skip_discord=skip_discord or cfg.shadow_mode, verbose=verbose)
 
     # Stage 4: Execution (if enabled) — or shadow capture (no orders, SPEC #41)
     confirms = [r for r in results if r.is_confirm]
