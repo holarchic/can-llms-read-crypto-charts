@@ -59,7 +59,7 @@ def _slip(px: float, *, buy: bool, slippage: float) -> float:
     return px * (1 + slippage) if buy else px * (1 - slippage)
 
 
-def _resolve_entry(mb, fwd, is_long, slippage, buffer):
+def _resolve_entry(mb, fwd, is_long, slippage, buffer, max_expiry):
     """Returns ('FILL', fill_price, bar_pos, low_fidelity) or (status, None, None, False)."""
     lo_z = mb.entry_low * (1 - buffer)
     hi_z = mb.entry_high * (1 + buffer)
@@ -73,7 +73,9 @@ def _resolve_entry(mb, fwd, is_long, slippage, buffer):
 
     inv = mb.invalidation_price
     trigger_px = mb.entry_trigger_price
-    expiry = mb.expiry_candles or len(fwd)
+    # Mirror live entry_monitor's clamp: default 12 when unset, then clamp to [1, max_expiry].
+    raw_expiry = mb.expiry_candles if mb.expiry_candles is not None else 12
+    expiry = max(1, min(int(raw_expiry), max_expiry))
     for i in range(min(expiry, len(fwd))):
         bar = fwd.iloc[i]
         close = float(bar["Close"])
@@ -123,6 +125,7 @@ def resolve_signal(
     taker_fee: float = 0.00035,
     slippage: float = 0.0005,
     entry_zone_buffer: float = 0.02,
+    max_expiry: int = 24,  # mirrors execution conditional_entry_max_expiry
     max_hold_bars: int = 240,
 ) -> ShadowOutcome:
     """Walk one captured signal forward. `frame` is the venue's OHLCV (1H bars assumed —
@@ -138,7 +141,7 @@ def resolve_signal(
 
     is_long = mb.direction.upper() == "LONG"
     raw_fill_marker, entry_fill, entry_pos, low_fid = _resolve_entry(
-        mb, fwd, is_long, slippage, entry_zone_buffer,
+        mb, fwd, is_long, slippage, entry_zone_buffer, max_expiry,
     )
     if raw_fill_marker != "FILL":
         return ShadowOutcome(status=raw_fill_marker, low_fidelity=False)

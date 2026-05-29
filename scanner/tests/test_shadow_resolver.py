@@ -108,6 +108,18 @@ def test_conditional_invalidation_wins_before_trigger():
     assert out.realized_r is None
 
 
+def test_conditional_expiry_clamped_when_zero():
+    # expiry_candles=0 must clamp to 1 (mirrors live entry_monitor), not span the window.
+    mb = _mb(entry_trigger="candle_close_above", entry_trigger_price=102.0,
+             invalidation_price=98.0, expiry_candles=0)
+    f = _frame([
+        (100, 101, 99, 100.5),     # signal bar (bar 0) — no trigger (close 100.5 < 102)
+        (101, 103, 100, 102.5),    # would trigger, but expiry clamped to 1 already passed bar 0
+    ])
+    out = resolve_signal(mb, _anchor(f), f)
+    assert out.status == R.TRIGGER_EXPIRED
+
+
 def test_conditional_trigger_expires():
     mb = _mb(entry_trigger="candle_close_above", entry_trigger_price=102.0,
              invalidation_price=98.0, expiry_candles=2)
