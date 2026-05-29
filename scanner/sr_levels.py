@@ -6,9 +6,13 @@ confluence to a level, never creates one. This module is that derivation, opposi
 to v1's local-swing ``cluster_sr_levels`` (which flattens every 2+-touch cluster
 with no provenance). The output is structurally *fewer, higher-quality* levels.
 
-Public surface = ``derive_sr_levels`` (the supported seam) + ``anchor_vrvp_for_range``
-(the Chunk-4 VRVP-anchor primitive). The derivation stages are private — callers
-get the whole pipeline, not partial assemblies against internal sequencing.
+Public surface = ``derive_sr_levels`` (the detection-facing macro seam) +
+``derive_chart_levels`` (Sub-chunk H: the render-facing per-chart-TF seam — the macro
+substrate plus chart-TF-local fractal pivots, for chart rendering only; detection stays
+macro-only) + ``anchor_vrvp_for_range`` (the Chunk-4 VRVP-anchor primitive). The
+derivation stages are private — callers get the whole pipeline, not partial assemblies
+against internal sequencing. ``SRLevelV2`` is TF-source-agnostic: the same record type
+carries 4h/1h/15m LTF chart pivots, not just the macro W/M/D/3D set.
 
 Pure derivation. The only I/O is a single INFO log at the public ``derive_sr_levels``
 seam when the retest-decay pass drops levels — observable for operators, scoped to that
@@ -96,9 +100,26 @@ logger = logging.getLogger(__name__)
 # Public surface (enforced): the supported pipeline seam + the Chunk-4 VRVP primitive.
 # The derivation stages are private (`_find_htf_pivots` etc.); unit tests reach them
 # deliberately, but no production caller should.
-__all__ = ["derive_sr_levels", "anchor_vrvp_for_range"]
+__all__ = ["derive_sr_levels", "derive_chart_levels", "anchor_vrvp_for_range"]
 
-_TF_RANK = {"1mo": 3, "1w": 2, "3d": 1, "1d": 0}
+# Provenance precedence as a rank scale, shifted +3 (Sub-chunk H) so LTF chart pivots
+# fit BELOW 1d while every rank stays ≥ 0 — preserving the `quality > 0` invariant
+# (decision #38) that `_assign_quality` and its tests rely on. Macro ordering
+# (1mo > 1w > 3d > 1d) is byte-identical; LTF ranks sit strictly below 1d so macro
+# wins on conflict when `_merge_by_price` collapses an adjacent chart-TF + macro pair.
+_TF_RANK = {
+    "1mo": 6, "1w": 5, "3d": 4, "1d": 3,   # macro (top-down W/M → D/3D)
+    "4h": 2, "1h": 1, "15m": 0,            # LTF chart-local pivots (chart render only)
+}
+# Chart-TF refinement chains (Sub-chunk H): each chartable TF renders the macro substrate
+# PLUS its own + intermediate-HTF local fractal pivots. 1d is macro-only; the 15m chart
+# stacks the deepest. A chart_tf absent from this map is unsupported (fail-loud).
+_CHART_TF_CHAIN: dict[str, tuple[str, ...]] = {
+    "1d": (),
+    "4h": ("4h",),
+    "1h": ("4h", "1h"),
+    "15m": ("4h", "1h", "15m"),
+}
 _DEFAULT_TOL = 0.01      # price-cluster width, relative (1%) — v1 default
 _DEFAULT_WINDOW = 2      # fractal half-width on sparse HTF bars — v1 default
 _DEFAULT_N_SUB = 3       # max refined sub-levels per macro bracket — v1 default
@@ -508,4 +529,57 @@ def derive_sr_levels(
             decay.dropped_flipped + decay.dropped_capped,
             decay.dropped_flipped, decay.dropped_capped, _MAX_RETESTS,
         )
+    return sorted(_assign_quality(decay.kept), key=lambda l: l.price)
+
+
+def derive_chart_levels(
+    chart_tf: str,
+    candles: dict[str, pd.DataFrame],
+    macro_levels: list[SRLevelV2],
+    *,
+    window: int = _DEFAULT_WINDOW,
+    tol: float = _DEFAULT_TOL,
+) -> list[SRLevelV2]:
+    """Per-chart-TF S/R: the pre-computed macro substrate + chart-TF-local fractal pivots.
+
+    the framework draws each chart's own locally-refined reaction highs/lows on top of the macro
+    structure: the ``1d`` chart is macro-only, ``4h`` adds 4h-local pivots, ``1h`` adds
+    4h+1h, ``15m`` adds 4h+1h+15m (``_CHART_TF_CHAIN``). This is a chart-RENDER substrate —
+    detection (``_near_sr`` / ``MarketContextV2.sr_levels``) stays macro-only via
+    ``derive_sr_levels``, so Sub-G's AT_SR calibration is unaffected.
+
+    ``macro_levels`` is the pre-computed ``derive_sr_levels`` output (built once per coin
+    at stage 1) — never recomputed here. LTF pivots inherit the same ``SRLevelV2``
+    invariants: ``_pivot``'s per-bar width cap (decision #39); ``_merge_by_price`` collapses
+    a chart-TF pivot adjacent to a macro level (macro wins on the higher ``_TF_RANK``);
+    ``_apply_retest_decay`` drops flipped / over-retested levels against each level's own
+    ``tf_source`` frame; ``_assign_quality`` rescores the union so every kept level carries
+    a positive ``quality``. Macro records round-trip idempotently when their frames are in
+    ``candles`` (only ``quality`` magnitude shifts, from the union-wide recency rescale).
+
+    Fail-loud: ``chart_tf`` MUST be in ``_CHART_TF_CHAIN`` (unsupported TF is a producer
+    bug) AND present in ``candles`` (the chart's own frame is mandatory — a missing chart
+    frame means no chart, filtered upstream at ``chart_inputs``, so reaching here without
+    it is a bug). An INTERMEDIATE chain TF missing from ``candles`` (e.g. a 15m chart whose
+    ``1h`` frame is absent on a new listing / short feed) is SILENTLY SKIPPED — degraded
+    LTF input is legitimate, not a producer error.
+    """
+    if chart_tf not in _CHART_TF_CHAIN:
+        raise ValueError(
+            f"derive_chart_levels: unsupported chart_tf {chart_tf!r} "
+            f"(expected one of {sorted(_CHART_TF_CHAIN)})"
+        )
+    if chart_tf not in candles:
+        raise ValueError(
+            f"derive_chart_levels: chart_tf {chart_tf!r} frame absent from candles "
+            "(the chart's own frame is mandatory)"
+        )
+    ltf_pivots: list[SRLevelV2] = []
+    for tf in _CHART_TF_CHAIN[chart_tf]:
+        frame = candles.get(tf)
+        if frame is None or frame.empty:
+            continue  # degraded input: missing/short refinement parent → skip this layer
+        ltf_pivots.extend(_fractal_pivots(frame, tf, window))
+    merged = _merge_by_price(list(macro_levels) + ltf_pivots, tol)
+    decay = _apply_retest_decay(merged, candles)
     return sorted(_assign_quality(decay.kept), key=lambda l: l.price)

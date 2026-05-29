@@ -25,9 +25,11 @@ from scanner.models import SRLevelV2
 from scanner.sr_levels import (
     _CAP_HI,
     _CAP_LO,
+    _CHART_TF_CHAIN,
     _MAX_RETESTS,
     _MAX_ZONE_PCT,
     _RETEST_DECAY,
+    _TF_RANK,
     _assign_quality,
     _combine,
     _count_retests,
@@ -37,6 +39,7 @@ from scanner.sr_levels import (
     _refine_pivots_on_lower_tf,
     _score_with_vrvp,
     anchor_vrvp_for_range,
+    derive_chart_levels,
     derive_sr_levels,
 )
 
@@ -776,3 +779,153 @@ def test_derive_sr_levels_post_g_substrate_bounded():
         assert (lvl.zone_high - lvl.zone_low) / mid <= _MAX_ZONE_PCT + 1e-9, (
             f"zone width/mid > _MAX_ZONE_PCT for {lvl}"
         )
+
+
+# ── Sub-chunk H: derive_chart_levels (per-chart-TF render substrate) ─────────────
+
+
+def _pivot_then_respect(peak, start="2024-06-01"):
+    """A frame with ONE clean resistance pivot at ``peak`` (centered tent); price then
+    drops away and never closes back above — survives retest-decay with 0 retests."""
+    highs = [peak - 4, peak - 2, peak, peak - 2, peak - 4, peak - 5, peak - 6, peak - 7]
+    lows = [h - 1 for h in highs]
+    return _frame(highs, lows, start=start)
+
+
+def _wide_pivot_frame(peak, start="2024-06-01"):
+    """Resistance-pivot bar with a deep wick (body far below the high), so `_pivot`'s
+    per-bar width cap must clip the zone inward to `_MAX_ZONE_PCT`."""
+    highs = [peak - 4, peak - 2, peak, peak - 2, peak - 4, peak - 5, peak - 6, peak - 7]
+    lows = [h - 1 for h in highs]
+    lows[2] = peak * 0.5     # deep wick on the pivot bar → body (open=close) ≈ 0.75*peak
+    return _frame(highs, lows, start=start)
+
+
+def _flip_then_close_above(peak, start="2024-06-01"):
+    """A resistance pivot at ``peak`` that price later CLOSES above (acceptance) → the
+    close-based flip predicate fires, so `_apply_retest_decay` drops it."""
+    highs = [peak - 4, peak - 2, peak, peak - 2, peak - 4, peak - 1, peak + 2, peak + 3]
+    lows = [peak - 6, peak - 4, peak - 2, peak - 4, peak - 6, peak - 3, peak, peak + 1]
+    return _frame(highs, lows, start=start)
+
+
+def test_derive_chart_levels_1d_matches_derive_sr_levels():
+    """1d chart's chain is empty → output is the passed-in macro substrate, byte-for-byte
+    (re-merge + re-decay + re-quality is idempotent when the macro frames are present)."""
+    w = _frame([40, 45, 50, 45, 40, 140, 145, 150, 145, 140], freq="7D")
+    m = _frame([41, 46, 50, 46, 41, 141, 146, 150, 146, 141], freq="30D")
+    d = _frame([98, 99, 100, 99, 98], start="2024-06-01")
+    macro = derive_sr_levels(weekly=w, monthly=m, daily=d)
+    assert macro  # fixture sanity: non-empty substrate
+    candles = {"1w": w, "1mo": m, "1d": d}
+    assert derive_chart_levels("1d", candles, macro) == macro
+
+
+def test_derive_chart_levels_4h_includes_4h_local_pivot():
+    """4h chart layers a 4h-local pivot the macro scan never produced."""
+    out = derive_chart_levels("4h", {"4h": _pivot_then_respect(100.0)}, [])
+    assert any(l.tf_source == "4h" and abs(l.price - 100.0) < 0.01 for l in out)
+
+
+def test_derive_chart_levels_1h_includes_4h_and_1h_pivots():
+    """1h chart stacks both the intermediate (4h) and chart-TF (1h) local pivots."""
+    candles = {"4h": _pivot_then_respect(150.0), "1h": _pivot_then_respect(100.0)}
+    out = derive_chart_levels("1h", candles, [])
+    tfs = {l.tf_source for l in out}
+    assert "4h" in tfs and "1h" in tfs
+
+
+def test_derive_chart_levels_15m_includes_4h_1h_15m_pivots():
+    """15m chart stacks the full LTF chain (4h + 1h + 15m)."""
+    candles = {
+        "4h": _pivot_then_respect(150.0),
+        "1h": _pivot_then_respect(120.0),
+        "15m": _pivot_then_respect(100.0),
+    }
+    out = derive_chart_levels("15m", candles, [])
+    tfs = {l.tf_source for l in out}
+    assert {"4h", "1h", "15m"} <= tfs
+
+
+def test_derive_chart_levels_unsupported_tf_raises():
+    """A chart_tf outside `_CHART_TF_CHAIN` is a producer bug — fail loud."""
+    with pytest.raises(ValueError, match="unsupported chart_tf"):
+        derive_chart_levels("3d", {"3d": _pivot_then_respect(100.0)}, [])
+
+
+def test_derive_chart_levels_chart_tf_frame_missing_raises():
+    """The chart's OWN frame is mandatory — absence is a producer bug (filtered upstream)."""
+    with pytest.raises(ValueError, match="frame absent"):
+        derive_chart_levels("4h", {"1d": _pivot_then_respect(100.0)}, [])
+
+
+def test_derive_chart_levels_missing_refinement_parent_skips_layer():
+    """An INTERMEDIATE chain TF missing from candles (15m chart, no 1h frame) is silently
+    skipped — degraded LTF input from a new listing is legitimate, not a raise."""
+    candles = {"4h": _pivot_then_respect(150.0), "15m": _pivot_then_respect(100.0)}  # no "1h"
+    out = derive_chart_levels("15m", candles, [])      # must not raise
+    tfs = {l.tf_source for l in out}
+    assert "4h" in tfs and "15m" in tfs and "1h" not in tfs
+
+
+def test_derive_chart_levels_ltf_pivot_width_capped_at_pivot():
+    """A wide-wick 4h pivot is clipped to `_MAX_ZONE_PCT` by `_pivot` (cap fires on LTF too)."""
+    out = derive_chart_levels("4h", {"4h": _wide_pivot_frame(100.0)}, [])
+    high = next(l for l in out if l.tf_source == "4h" and l.pivot_type == "high")
+    assert high.zone_low == pytest.approx(100.0 * _CAP_LO)
+    mid = (high.zone_low + high.zone_high) / 2.0
+    assert (high.zone_high - high.zone_low) / mid <= _MAX_ZONE_PCT + 1e-9
+
+
+def test_derive_chart_levels_drops_flipped_4h_pivot():
+    """A 4h pivot price later closes through → drop-on-flip removes it from the output."""
+    out = derive_chart_levels("4h", {"4h": _flip_then_close_above(100.0)}, [])
+    assert not any(l.tf_source == "4h" and l.pivot_type == "high" and abs(l.price - 100.0) < 0.5 for l in out)
+
+
+def test_derive_chart_levels_merges_adjacent_4h_and_macro():
+    """A 4h pivot within `tol` of a macro level collapses into ONE record — macro wins
+    (higher `_TF_RANK`), no near-duplicate zone."""
+    macro = [_lvl(100.0, "1d", "high")]
+    candles = {"4h": _pivot_then_respect(100.3), "1d": _empty()}  # 100.3 within 1% of 100
+    out = derive_chart_levels("4h", candles, macro)
+    highs = [l for l in out if l.pivot_type == "high"]
+    assert len(highs) == 1
+    assert highs[0].tf_source == "1d"          # macro wins on conflict
+
+
+def test_derive_chart_levels_ltf_quality_ranks_below_macro():
+    """At otherwise-equal inputs, a 1d-rank level outranks a 4h-rank level, both > 0
+    (the `_TF_RANK` +3 shift preserves the positive-quality contract)."""
+    scored = _assign_quality([_lvl(100.0, "1d", "high"), _lvl(150.0, "4h", "high")])
+    by_tf = {l.tf_source: l.quality for l in scored}
+    assert by_tf["1d"] > by_tf["4h"] > 0
+
+
+def test_tf_rank_shifted_macro_ordering_preserved():
+    """The +3 shift keeps macro ordering, places LTF strictly below 1d, and all ranks ≥ 0."""
+    assert _TF_RANK["1mo"] > _TF_RANK["1w"] > _TF_RANK["3d"] > _TF_RANK["1d"]
+    assert _TF_RANK["1d"] > _TF_RANK["4h"] > _TF_RANK["1h"] > _TF_RANK["15m"]
+    assert all(v >= 0 for v in _TF_RANK.values())
+    assert set(_CHART_TF_CHAIN) == {"1d", "4h", "1h", "15m"}
+
+
+def test_derive_chart_levels_macro_passthrough_preserves_detection_fields():
+    """Adding LTF pivots leaves each macro record's detection-side fields intact; only
+    `quality` magnitude shifts (union-wide recency rescale)."""
+    w = _frame([196, 198, 200, 198, 196], freq="7D")
+    m = _frame([197, 199, 200, 199, 197], freq="30D")
+    macro = derive_sr_levels(weekly=w, monthly=m)
+    assert macro
+    candles = {"1w": w, "1mo": m, "4h": _pivot_then_respect(100.0)}  # 4h far from macro @200
+    out = derive_chart_levels("4h", candles, macro)
+    macro_tfs = {"1mo", "1w", "3d", "1d"}
+    out_macro = sorted((l for l in out if l.tf_source in macro_tfs), key=lambda l: l.price)
+    assert len(out_macro) == len(macro)
+    stable = ("price", "zone_low", "zone_high", "pivot_type", "formed_at",
+              "retest_count", "tf_source", "confirmations", "vrvp_confluence")
+    for orig, got in zip(sorted(macro, key=lambda l: l.price), out_macro):
+        for field in stable:
+            assert getattr(got, field) == getattr(orig, field), field
+    assert all(l.quality and l.quality > 0 for l in out_macro)
+    assert any(l.tf_source == "4h" for l in out)        # the LTF addition that forced the rescale
