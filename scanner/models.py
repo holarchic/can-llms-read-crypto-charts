@@ -647,6 +647,38 @@ class ScanResult:
 
 
 @dataclass(frozen=True)
+class ShadowOutcome:
+    """Pure result of walking ONE shadow signal forward (T-020.1, SPEC #41).
+
+    `status` is a terminal state or `OPEN`. `realized_r` is net of fees + slippage and
+    is non-None ONLY when the signal became a trade (`status == "RESOLVED"`); the
+    non-trade statuses (`TRIGGER_EXPIRED`/`NO_FILL`/`INVALIDATED`/`DATA_INCOMPLETE`) and
+    `OPEN` carry `realized_r is None` so they are excluded from the expectancy sample.
+    """
+
+    status: str
+    entry_fill: float | None = None
+    exit_price: float | None = None
+    exit_reason: str | None = None
+    realized_r: float | None = None
+    fees_r: float | None = None
+    slippage_r: float | None = None
+    bars_held: int | None = None
+    low_fidelity: bool = False
+
+
+@dataclass(frozen=True)
+class ShadowResolution:
+    """A persisted/loaded `shadow_resolutions` row — an outcome plus its keying
+    (which captured signal, under which entry/exit policy versions)."""
+
+    shadow_signal_id: int
+    exit_policy_version: str
+    entry_policy_version: str
+    outcome: ShadowOutcome
+
+
+@dataclass(frozen=True)
 class ExecutionRequest:
     """Right-sized typed contract for `execute_trade` (T-016 Phase 1b, SPEC #21).
 

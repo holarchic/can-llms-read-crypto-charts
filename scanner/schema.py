@@ -114,6 +114,26 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
 )
 """
 
+CREATE_SHADOW_RESOLUTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS shadow_resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shadow_signal_id INTEGER NOT NULL,
+    exit_policy_version TEXT NOT NULL,
+    entry_policy_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    entry_fill REAL,
+    exit_price REAL,
+    exit_reason TEXT,
+    realized_r REAL,
+    fees_r REAL,
+    slippage_r REAL,
+    bars_held INTEGER,
+    low_fidelity INTEGER NOT NULL DEFAULT 0,
+    resolved_at TEXT NOT NULL,
+    UNIQUE (shadow_signal_id, exit_policy_version, entry_policy_version)
+)
+"""
+
 CREATE_STRATEGIES_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_signals_strategy
 ON signals (strategy_id)
@@ -175,6 +195,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_STRATEGIES_TABLE)
     conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
     conn.execute(CREATE_SHADOW_SIGNALS_TABLE)  # T-020.1 shadow-mode capture (SPEC #41)
+    conn.execute(CREATE_SHADOW_RESOLUTIONS_TABLE)  # T-020.1 shadow forward-resolution
     # Migrate: add strategy_id to existing tables
     _ensure_column(conn, "signals", "strategy_id", "TEXT", "'v0'")
     _ensure_column(conn, "scans", "strategy_id", "TEXT", "'v0'")
