@@ -16,10 +16,11 @@ carries 4h/1h/15m LTF chart pivots, not just the macro W/M/D/3D set.
 
 Pure derivation. The only I/O is a single INFO log at the public ``derive_sr_levels``
 seam when the retest-decay pass drops levels — observable for operators, scoped to that
-one boundary; every private stage stays pure. Substrate-only: nothing wires this into
-the pipeline yet (Chunk 7), and the range-detection that supplies an anchor index to
-``anchor_vrvp_for_range`` lives in Chunk 4 (``regime``) — here that function is the
-pure ``(df, anchor_idx) -> VolumeProfile`` primitive.
+one boundary; every private stage stays pure. Both derivation seams are wired into the
+pipeline: ``derive_sr_levels`` feeds detection via ``build_market_context_v2`` (Chunk 7b),
+and ``derive_chart_levels`` feeds chart rendering via ``screener_v2.chart_inputs`` (Sub-chunk
+H). ``anchor_vrvp_for_range`` stays a pure ``(df, anchor_idx) -> VolumeProfile`` primitive
+whose range-anchor source (Chunk 4 ``regime``) is not yet wired.
 
 Algorithm contract (provenance precedence ``1mo > 1w > 3d > 1d``):
 1. macro = tie-tolerant W & M fractal pivots, merged by price.

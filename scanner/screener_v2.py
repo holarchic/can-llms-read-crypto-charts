@@ -50,7 +50,7 @@ from .setups_v2 import (
     detect_trend_continuation,
     detect_trend_reclaim,
 )
-from .sr_levels import derive_chart_levels
+from .sr_levels import _CHART_TF_CHAIN, derive_chart_levels
 from .trend_state import TrendDirection
 
 
@@ -77,11 +77,23 @@ _TF_RANK: dict[str, int] = {"1d": 3, "4h": 2, "1h": 1, "15m": 0}
 # Confluence count at which the deterministic screener rank saturates (pre-8b).
 _SCORE_SATURATION = 5
 
-# The single owner of the v2 chartable-TF set: keys = the frames charted (ordered
-# HTF→LTF; `chart_inputs` selects exactly these), values = each frame's next-HTF anchor
-# EMA. The renderer skips a line whose HTF frame is too short to seed the 200EMA (e.g.
-# 1w on a 1d chart), so an absent/all-NaN entry is graceful, not an error.
+# The v2 chartable-TF set, HTF-anchor view: keys = the frames charted (ordered HTF→LTF;
+# `chart_inputs` selects exactly these), values = each frame's next-HTF anchor EMA. The
+# renderer skips a line whose HTF frame is too short to seed the 200EMA (e.g. 1w on a 1d
+# chart), so an absent/all-NaN entry is graceful, not an error.
 _CHART_HTF = {"1d": "1w", "4h": "1d", "1h": "4h", "15m": "1h"}
+
+# Single source of truth for chartable-TF MEMBERSHIP: this map's keys and
+# `sr_levels._CHART_TF_CHAIN`'s keys (the per-chart refinement chains) must name the same
+# set. They live in different layers — producer HTF-anchors here, S/R-derivation chains
+# there — so they can't collapse into one dict, but the membership DECISION is enforced in
+# one place (this import-time guard) so the two views can't drift (cf. the Chunk 8c/8d
+# prompt-map raise-guard).
+if set(_CHART_HTF) != set(_CHART_TF_CHAIN):
+    raise RuntimeError(
+        f"chartable-TF set drift: _CHART_HTF={sorted(_CHART_HTF)} != "
+        f"_CHART_TF_CHAIN={sorted(_CHART_TF_CHAIN)}"
+    )
 
 
 def _latest(series: pd.Series) -> float:
@@ -320,20 +332,35 @@ def screen_v2(
     return survivors, Stage1ArtifactsV2(candles_by_coin=bundle, macro_levels_by_coin=macro_bundle)
 
 
+class ChartInputs(NamedTuple):
+    """The producer-owned bundle the v2 dispatch hands to the chart renderer — a named
+    record, not a positional tuple, so widening it can't silently shift a caller's
+    unpacking. `candle_sets` = chartable frames (HTF→LTF); `htf_emas` = each chart's
+    next-HTF anchor EMA; `per_chart_levels` = each chart-TF's S/R `SpineLevel` list (the
+    macro substrate + that TF's local pivots)."""
+
+    candle_sets: dict[str, pd.DataFrame]
+    htf_emas: dict[str, pd.Series]
+    per_chart_levels: dict[str, list[SpineLevel]]
+
+
 def chart_inputs(
     candles: dict[str, pd.DataFrame],
     macro_levels: list[SRLevelV2],
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.Series], dict[str, list[SpineLevel]]]:
+) -> ChartInputs:
     """The v2 enriched-chart inputs from a coin's closed-bar candle dict (a `screen_v2`
     bundle entry): the chartable frames (HTF→LTF) the detectors used, the next-HTF 200EMA
     aligned onto each chart's index, AND the per-chart-TF S/R level map — so enriched charts
     render from the SAME frames as detection and each TF carries its own locally-refined
-    zones. `_CHART_HTF` is the single owner of the chartable-TF set (its keys, ordered
-    1d/4h/1h/15m) + each TF's HTF anchor (its values). `macro_levels` is the pre-computed
-    stage-1 substrate (`ctx2.sr_levels`); `derive_chart_levels` layers chart-TF-local pivots
-    onto it per chart (no `derive_sr_levels` recompute), and the `SRLevelV2 → SpineLevel`
-    projection happens HERE so the renderer stays SRLevelV2-agnostic. Producer-owned; pure;
-    renderer skips a line whose HTF frame is too short to seed the 200EMA."""
+    zones. `_CHART_HTF` is the HTF-anchor view of the chartable-TF set (its keys, ordered
+    1d/4h/1h/15m; membership shared with `_CHART_TF_CHAIN`, drift-guarded at import) + each
+    TF's HTF anchor (its values). `macro_levels` is the pre-computed stage-1 substrate
+    (`ctx2.sr_levels`); `derive_chart_levels` layers chart-TF-local pivots onto it per chart
+    (no `derive_sr_levels` recompute), and the `SRLevelV2 → SpineLevel` projection happens
+    HERE so the renderer stays SRLevelV2-agnostic. `per_chart_levels` is keyed by EXACTLY
+    the rendered TFs (== `candle_sets` keys) — the renderer indexes it per TF, no fallback.
+    Producer-owned; pure; renderer skips a line whose HTF frame is too short to seed the
+    200EMA."""
     candle_sets = {tf: candles[tf] for tf in _CHART_HTF if tf in candles}
     htf_emas: dict[str, pd.Series] = {}
     per_chart_levels: dict[str, list[SpineLevel]] = {}
@@ -343,4 +370,4 @@ def chart_inputs(
             htf_emas[tf] = htf_ema_for_chart(candles[htf], frame.index)
         srlvs = derive_chart_levels(tf, candles, macro_levels=macro_levels)
         per_chart_levels[tf] = [SpineLevel.from_sr_level_v2(lvl) for lvl in srlvs]
-    return candle_sets, htf_emas, per_chart_levels
+    return ChartInputs(candle_sets, htf_emas, per_chart_levels)

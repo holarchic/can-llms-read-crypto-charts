@@ -393,6 +393,8 @@ def test_chart_inputs_returns_per_chart_spinelevels():
     macro = build_market_context_v2("BTC", candles).sr_levels
     result = screener_v2.chart_inputs(candles, macro_levels=macro)
     assert len(result) == 3
+    # named record (ChartInputs), not a positional tuple — named access AND unpack both work
+    assert result.candle_sets is result[0] and result.per_chart_levels is result[2]
     candle_sets, _htf_emas, per_chart = result
     assert set(per_chart) == set(candle_sets)
     for levels in per_chart.values():

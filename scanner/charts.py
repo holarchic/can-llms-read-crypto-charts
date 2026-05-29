@@ -437,7 +437,11 @@ def generate_charts_for_signal(
     # set is the producer's decision, so a TF the producer intends is never silently
     # dropped here.
     for tf, df in candle_sets.items():
-        sr_for_tf = per_chart_levels.get(tf) if per_chart_levels is not None else None
+        # When the producer supplies per_chart_levels it MUST cover every rendered TF
+        # (`chart_inputs` keys it identically to candle_sets); a missing key is a producer
+        # bug and raises here rather than silently falling back to the macro context. An
+        # explicit empty list is legal — it renders zero zones (the `is not None` dispatch).
+        sr_for_tf = per_chart_levels[tf] if per_chart_levels is not None else None
         path = generate_chart(
             df,
             signal.coin,

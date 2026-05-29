@@ -18,7 +18,7 @@ from .models import BoundarySignal, ExecutionRequest, ScanResult
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
-from .screener_v2 import Stage1ArtifactsV2, chart_inputs, screen_v2
+from .screener_v2 import ChartInputs, Stage1ArtifactsV2, chart_inputs, screen_v2
 from .setup_validator import validate_confirms
 from .strategy.store import get_strategy
 
@@ -204,7 +204,7 @@ def stage1_screen(
 
 def _v2_chart_inputs(
     signal: BoundarySignal, prefetched: Stage1ArtifactsV2 | None, config: ScannerConfig,
-) -> tuple[dict, dict, dict]:
+) -> ChartInputs:
     """Resolve the coin's stage-1 bundle entry + macro substrate and hand them to the
     producer-owned `screener_v2.chart_inputs` (which owns frame/HTF-EMA selection AND the
     per-chart-TF level map). Happy path reads BOTH the candles and the macro `SRLevelV2`
