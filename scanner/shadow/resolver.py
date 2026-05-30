@@ -17,11 +17,13 @@ gate):
 - **Exit, `exit_policy=v1`:** SL / TP1 partial / TP2 / time-invalidation (`max_hold_bars`).
   **Pessimistic intrabar rule:** a bar whose range spans both the stop and a TP counts
   as SL-first. v1 takes NO BE rescue, so every non-TP loser is a full −1R.
-- **Exit, `exit_policy=v2` (T-020.11):** as v1, plus a threshold-free BE rescue — once the
-  TP1 leg fills, the remaining size's stop ratchets to `entry_fill` (breakeven, ruleset
-  §6.4), so a post-TP1 reversal exits at BE (`TP1_BE`, ≈ −costs) instead of the original
-  stop (`TP1_SL`, ≈ −1R). BE applies from the bar AFTER the TP1 fill (intrabar SL-first
-  preserved). The post-TP1 setup-TF trail + runner-size floor are the sibling T2 chunks.
+- **Exit, `exit_policy=v2` (T2, complete):** as v1, plus the full post-TP1 management policy:
+  (a) **BE rescue** (#50) — once the TP1 leg fills, the remainder's stop ratchets to `entry_fill`
+  (breakeven, ruleset §6.4), so a reversal exits `TP1_BE` (≈ −costs) not `TP1_SL` (≈ −1R);
+  (b) **setup-TF trail** (#51) — the remainder stop then ratchets UP (tighten-only) to confirmed
+  `setup_tf` swings (`TP1_TRAIL`); (c) **runner-size floor** (#52) — the TP1 bank is capped at
+  `_MAX_TP1_EXIT_FRAC` so a ≥2/3 runner rides (a) + (b). BE/trail apply from the bar AFTER the
+  TP1 fill (intrabar SL-first preserved). The label tracks the stop STATE, never the policy flag.
 - Exits reanchor to the actual fill (`reanchor_exit_prices`) so realized R uses the
   intended stop distance; slippage is adverse on every leg; fees are taker per leg.
 
@@ -242,8 +244,9 @@ def resolve_signal(
 
     entry_fee_r = taker_fee * entry_fill / risk
     entry_slip_r = abs(entry_fill - entry_fill / (1 + slippage if is_long else 1 - slippage)) / risk
-    # Mirror the live size split (sizing.calculate_position): with both targets the TP1
-    # fraction normalizes against the pct sum; with TP1 only, full size exits at TP1.
+    # Baseline size split, mirroring the live `sizing.calculate_position` (the LLM/v1 split):
+    # with both targets the TP1 fraction normalizes against the pct sum; with TP1 only, the
+    # base is full size at TP1. v2 then caps this below (#52) so a runner always survives.
     if tp1 and tp2:
         _t1 = mb.tp1_exit_pct or 0
         _t2 = mb.tp2_exit_pct if mb.tp2_exit_pct is not None else 50

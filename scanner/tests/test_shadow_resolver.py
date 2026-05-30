@@ -428,3 +428,35 @@ def test_v2_runner_floor_noop_below_ceiling():
     v2 = resolve_signal(mb, _anchor(f), f, exit_policy="v2", setup_tf=None)
     assert v1.exit_reason == "TP1_TP2" and v2.exit_reason == "TP1_TP2"
     assert v2.realized_r == pytest.approx(v1.realized_r)
+
+
+def test_v2_runner_floor_caps_to_exactly_one_third():
+    # Pin the EXACT 1/3 ceiling (not just the bracket): a 50/50 split capped under v2 must equal a
+    # NATURAL 1:2 (=1/3) split under v1 on the same clean TP1→TP2 winner (BE armed but never bites).
+    # If _MAX_TP1_EXIT_FRAC drifted off 1/3, the capped R would no longer match the 1/3 reference.
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100.5, 101, 100, 100.5),
+        (105, 111, 104, 108),      # TP1
+        (108, 121, 107, 119),      # TP2
+    ])
+    ref = resolve_signal(_mb(tp1_exit_pct=1, tp2_exit_pct=2), _anchor(f), f, exit_policy="v1")
+    capped = resolve_signal(_mb(tp1_exit_pct=50, tp2_exit_pct=50), _anchor(f), f,
+                            exit_policy="v2", setup_tf=None)
+    assert ref.exit_reason == "TP1_TP2" and capped.exit_reason == "TP1_TP2"
+    assert capped.realized_r == pytest.approx(ref.realized_r)   # v2 cap == exactly 1/3
+
+
+def test_v2_runner_floor_tp1_only_runner_open_when_unresolved():
+    # The 2/3 runner is never silently dropped: a TP1-only v2 frame that ends right after the TP1
+    # fill (no TP2/trail/time-expiry) surfaces as OPEN (retryable, #41) carrying the TP1 partial.
+    mb = _tp1_only_mb()
+    f = _frame([
+        (100, 101, 99, 100.5),     # entry fill
+        (105, 111, 104, 108),      # TP1 (high≥110): 1/3 banked, 2/3 runner
+        (108, 109, 107, 108),      # no further exit; frame ends
+    ])
+    out = resolve_signal(mb, _anchor(f), f, exit_policy="v2", setup_tf=None)
+    assert out.status == R.OPEN
+    assert out.exit_reason == "TP1"        # TP1 partial recorded; the runner is still open
+    assert out.realized_r is None          # OPEN carries no realized R
