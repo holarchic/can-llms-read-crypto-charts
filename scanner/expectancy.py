@@ -14,7 +14,11 @@ project-standard one (Acceptance #2/#8/#10): **n ≥ min_n AND the bootstrap 95%
 import random
 from dataclasses import dataclass
 
-__all__ = ["ExpectancyReport", "bootstrap_ci", "expectancy_report"]
+__all__ = ["DEFAULT_MIN_N", "ExpectancyReport", "bootstrap_ci", "expectancy_report"]
+
+# Single owner of the cohort-size floor (Acceptance #2/#8/#10) — `expectancy_report`'s
+# `min_n` default AND the CLI's PASS/PENDING/FAIL split read this, so it lives in one place.
+DEFAULT_MIN_N = 30
 
 
 @dataclass(frozen=True)
@@ -46,7 +50,7 @@ def bootstrap_ci(
 
 
 def expectancy_report(
-    realized_rs: list[float], *, min_n: int = 30, iters: int = 10000, seed: int = 0,
+    realized_rs: list[float], *, min_n: int = DEFAULT_MIN_N, iters: int = 10000, seed: int = 0,
 ) -> ExpectancyReport:
     """n / win% / avg R / profit factor / bootstrap CI + the gate pass flag (n≥min_n ∧ ci_lo>0)."""
     rs = list(realized_rs)

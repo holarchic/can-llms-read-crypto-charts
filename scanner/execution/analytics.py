@@ -2,7 +2,7 @@
 read model (T-016 Phase 2a, SPEC #22). No DB access here: `get_closed_trades`
 / `llm_cost_summary` live in `scanner.execution.storage`."""
 
-from scanner.expectancy import expectancy_report
+from scanner.expectancy import DEFAULT_MIN_N, expectancy_report
 from scanner.models import MetricsWindow, RiskedOutcomes, TradeRecord, VersionCohort
 
 
@@ -105,11 +105,11 @@ def _version_sort_key(item: tuple[str | None, list[float]]) -> tuple:
     try:
         return (0, tuple(int(p) for p in v.split(".")))
     except (ValueError, AttributeError):
-        return (1, ())
+        return (1, (v,))  # unparseable: deterministic raw-string tiebreaker (total order)
 
 
 def per_version_expectancy(
-    trades: list[TradeRecord], *, min_n: int = 30, seed: int = 0,
+    trades: list[TradeRecord], *, min_n: int = DEFAULT_MIN_N, seed: int = 0,
 ) -> tuple[VersionCohort, ...]:
     """Per-prompt-version cohort expectancy (Acceptance #8, SPEC #43).
 
