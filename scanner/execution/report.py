@@ -34,6 +34,7 @@ def format_execution_report(
         _row("Max drawdown", f"{metrics_7d.max_drawdown_pct:.1f}%", f"{metrics_28d.max_drawdown_pct:.1f}%"),
         _row("Avg holding", f"{metrics_7d.avg_holding_hours:.1f}h", f"{metrics_28d.avg_holding_hours:.1f}h"),
         _row("Avg slippage", f"{metrics_7d.avg_slippage_r:.4f}R", f"{metrics_28d.avg_slippage_r:.4f}R"),
+        _row("Avg fees", f"{metrics_7d.avg_fees_r:.4f}R", f"{metrics_28d.avg_fees_r:.4f}R"),
         "",
         "LLM Cost",
         f"  7d:   ${cost_7d:,.2f}",
@@ -65,6 +66,7 @@ def _window_embed(metrics: MetricsWindow, cost: float, label: str, mode: str) ->
         {"name": "Max DD", "value": f"{metrics.max_drawdown_pct:.1f}%", "inline": True},
         {"name": "Avg Holding", "value": f"{metrics.avg_holding_hours:.1f}h", "inline": True},
         {"name": "Avg Slippage", "value": f"{metrics.avg_slippage_r:.4f}R", "inline": True},
+        {"name": "Avg Fees", "value": f"{metrics.avg_fees_r:.4f}R", "inline": True},
         {"name": "LLM Cost", "value": f"${cost:,.2f}", "inline": True},
     ]
     return {

@@ -24,16 +24,17 @@ def _tr(
     scan_id, coin, direction, entry_fill, exit_fill, exit_type,
     realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
     slippage_r, execution_mode, exchange="hyperliquid", *, usable_risk=None,
+    fees_r=0.0,
 ):
     """TradeRecord factory mirroring the storage-owned construction: derives
     `usable_risk = risk_amount > 0` (T-016 Phase 3, SPEC #26 c) unless an
     explicit override is given (used by the C3 contradictory-fixture anti-
     vacuity test). Keyword-safe so future frozen-field adds don't break the
-    ~20 positional call sites."""
+    ~20 positional call sites (`fees_r` keyword-only, defaults 0 — SPEC #42)."""
     return TradeRecord(
         scan_id, coin, direction, entry_fill, exit_fill, exit_type,
         realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
-        slippage_r, execution_mode,
+        slippage_r, fees_r, execution_mode,
         usable_risk=(risk_amount > 0) if usable_risk is None else usable_risk,
         exchange=exchange,
     )
@@ -59,7 +60,8 @@ def conn():
 def _insert_trade(conn, scan_id="s1", coin="BTC", direction="LONG",
                    entry_fill=62000, exit_fill=59800, exit_type="stop_loss",
                    quantity=0.1, stop_price=59800, leverage=5,
-                   execution_mode="testnet", machine_block=None):
+                   execution_mode="testnet", machine_block=None,
+                   exchange="hyperliquid"):
     """Insert a complete trade (entry + exit) into orders table."""
     entry_oid = new_order_id()
     exit_oid = new_order_id()
@@ -77,7 +79,7 @@ def _insert_trade(conn, scan_id="s1", coin="BTC", direction="LONG",
         "fill_price": entry_fill,
         "quantity": quantity,
         "leverage": leverage,
-        "exchange": "hyperliquid",
+        "exchange": exchange,
         "execution_mode": execution_mode,
         "placed_at": "2026-02-24T00:00:00+00:00",
         "filled_at": "2026-02-24T00:00:01+00:00",
@@ -95,7 +97,7 @@ def _insert_trade(conn, scan_id="s1", coin="BTC", direction="LONG",
         "trigger_price": stop_price,
         "fill_price": exit_fill if exit_type == "stop_loss" else None,
         "quantity": quantity,
-        "exchange": "hyperliquid",
+        "exchange": exchange,
         "execution_mode": execution_mode,
         "filled_at": "2026-02-24T12:00:00+00:00" if exit_type == "stop_loss" else None,
         "created_at": "2026-02-24T00:00:00+00:00",
@@ -113,7 +115,7 @@ def _insert_trade(conn, scan_id="s1", coin="BTC", direction="LONG",
             "trigger_price": exit_fill,
             "fill_price": exit_fill,
             "quantity": quantity,
-            "exchange": "hyperliquid",
+            "exchange": exchange,
             "execution_mode": execution_mode,
             "filled_at": "2026-02-24T12:00:00+00:00",
             "created_at": "2026-02-24T00:00:00+00:00",
@@ -203,16 +205,19 @@ class TestGetClosedTrades:
         assert len(trades) == 0
 
     def test_realized_r_calculation(self, conn):
-        """LONG: buy at 62000, SL hit at 59800 -> -1R."""
+        """LONG: buy at 62000, SL hit at 59800 -> ~-1R, slightly worse net of fees."""
         _insert_trade(conn, scan_id="s1", direction="LONG",
                        entry_fill=62000, exit_fill=59800,
                        exit_type="stop_loss", stop_price=59800, quantity=0.1)
         trades = get_closed_trades(conn)
         assert len(trades) == 1
         # risk = |62000 - 59800| * 0.1 = 220
-        # pnl = (59800 - 62000) * 0.1 = -220
-        # R = -220 / 220 = -1.0
-        assert abs(trades[0].realized_r - (-1.0)) < 0.01
+        # gross pnl = (59800 - 62000) * 0.1 = -220
+        # fee = 0.00035 * (62000*0.1 + 59800*0.1) = 0.00035 * 12180 = 4.263
+        # net pnl = -220 - 4.263 = -224.263  ;  R = -224.263 / 220 = -1.01938 (SPEC #42)
+        assert trades[0].realized_pnl == pytest.approx(-224.263, abs=1e-3)
+        assert trades[0].realized_r == pytest.approx(-1.01938, abs=1e-4)
+        assert trades[0].fees_r == pytest.approx(4.263 / 220, abs=1e-6)
 
 
     def test_multi_exit_pnl(self, conn):
@@ -257,8 +262,10 @@ class TestGetClosedTrades:
 
         trades = get_closed_trades(conn)
         assert len(trades) == 1
-        # PnL = (65000-62000)*0.05 + (68000-62000)*0.05 = 150 + 300 = 450
-        assert abs(trades[0].realized_pnl - 450) < 0.01
+        # gross = (65000-62000)*0.05 + (68000-62000)*0.05 = 150 + 300 = 450
+        # fee = 0.00035 * (62000*0.1 + 65000*0.05 + 68000*0.05) = 0.00035 * 12850 = 4.4975
+        # net = 450 - 4.4975 = 445.5025 (SPEC #42)
+        assert trades[0].realized_pnl == pytest.approx(445.5025, abs=1e-3)
         assert trades[0].exit_type == "TP2"  # Last exit determines label
 
     def test_tp1_then_sl_pnl(self, conn):
@@ -294,8 +301,10 @@ class TestGetClosedTrades:
 
         trades = get_closed_trades(conn)
         assert len(trades) == 1
-        # PnL = (65000-62000)*0.05 + (59800-62000)*0.05 = 150 + (-110) = 40
-        assert abs(trades[0].realized_pnl - 40) < 0.01
+        # gross = (65000-62000)*0.05 + (59800-62000)*0.05 = 150 + (-110) = 40
+        # fee = 0.00035 * (62000*0.1 + 65000*0.05 + 59800*0.05) = 0.00035 * 12440 = 4.354
+        # net = 40 - 4.354 = 35.646 (SPEC #42)
+        assert trades[0].realized_pnl == pytest.approx(35.646, abs=1e-3)
         assert trades[0].exit_type == "SL"  # Last exit by filled_at
 
     def test_missing_exit_price_trade_skipped(self, conn, caplog):
@@ -646,3 +655,94 @@ class TestRiskedOutcomesSingleOwner:
         assert m.count == 2          # non-R aggregates over all
         assert m.risked_count == 1   # only the usable trade
         assert m.win_rate == 1.0     # the one risked trade is a win
+
+
+class TestFeeNetting:
+    """T-020.2 / SPEC #42 — per-exchange taker fees netted into realized_pnl
+    (hence realized_r / win_rate / profit_factor / total_pnl), fees_r diagnostic."""
+
+    def test_get_closed_trades_nets_taker_fee(self, conn):
+        """Hand-computed round-trip taker fee subtracted from gross PnL (anti-vacuity)."""
+        # LONG 1.0 unit, entry 100, TP exit 110, stop 95 → gross +10, risk 5.
+        _insert_trade(conn, scan_id="s_fee", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0)
+        t = get_closed_trades(conn)[0]
+        # fee = 0.00035 * (100*1 + 110*1) = 0.00035 * 210 = 0.0735
+        # net pnl = 10 - 0.0735 = 9.9265 ; risk = 5 ; R = 9.9265/5 = 1.9853
+        assert t.realized_pnl == pytest.approx(9.9265, abs=1e-4)
+        assert t.realized_r == pytest.approx(9.9265 / 5, abs=1e-6)
+        assert t.fees_r == pytest.approx(0.0735 / 5, abs=1e-9)
+
+    def test_gross_positive_net_negative_flips_to_loss(self, conn):
+        """A tiny gross winner that fees push net-negative classifies as a LOSS,
+        and profit_factor stays coherent (it contributes negative dollars)."""
+        # gross = (100.05-100)*1 = 0.05 ; fee = 0.00035*(100+100.05) = 0.0700175
+        # net = -0.0200175 ; risk = |100-99|*1 = 1
+        _insert_trade(conn, scan_id="s_flip", entry_fill=100, exit_fill=100.05,
+                       exit_type="tp1", stop_price=99, quantity=1.0)
+        t = get_closed_trades(conn)[0]
+        assert t.realized_pnl == pytest.approx(-0.0200175, abs=1e-6)
+        assert t.realized_r < 0          # net-negative → a loss, not a win
+        assert t.fees_r > 0
+        m = compute_live_metrics([t])
+        assert m.win_rate == 0.0         # the gross-winner is now a net loss
+        assert m.profit_factor == 0      # no wins, one (net) loss — coherent
+        assert m.total_pnl == pytest.approx(-0.02, abs=1e-2)
+
+    def test_per_exchange_fee_rate(self, conn):
+        """bybit (0.00055) charges a larger fees_r than hyperliquid (0.00035) — same trade."""
+        _insert_trade(conn, scan_id="s_hl", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0, exchange="hyperliquid")
+        _insert_trade(conn, scan_id="s_by", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0, exchange="bybit")
+        by_id = {t.scan_id: t for t in get_closed_trades(conn)}
+        assert by_id["s_by"].fees_r == pytest.approx(
+            by_id["s_hl"].fees_r * (0.00055 / 0.00035), rel=1e-6)
+
+    def test_unknown_exchange_fails_loud(self, conn):
+        """Unknown exchange raises — no silent HL-rate fallback on the gate metric."""
+        _insert_trade(conn, scan_id="s_bad", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0, exchange="kraken")
+        with pytest.raises(ValueError):
+            get_closed_trades(conn)
+
+    def test_risk_amount_zero_clamps_fees_r_but_nets_pnl(self, conn):
+        """No usable SL → fees_r/realized_r clamp to 0 (R undefined), but the dollar
+        fee is still netted out of realized_pnl (which flows into total_pnl)."""
+        # entry + tp1, NO stop_loss row → original_stop_price None → risk_amount 0.
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_norisk", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 100, "fill_price": 100, "quantity": 1.0,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T00:00:01+00:00", "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_norisk", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp1", "status": "FILLED",
+            "trigger_price": 110, "fill_price": 110, "quantity": 1.0,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T06:00:00+00:00", "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        t = get_closed_trades(conn)[0]
+        assert t.usable_risk is False
+        assert t.fees_r == 0          # "no R anchor", NOT "no dollar fees"
+        assert t.realized_r == 0
+        # fee = 0.00035*(100+110) = 0.0735 ; net pnl = 10 - 0.0735 = 9.9265
+        assert t.realized_pnl == pytest.approx(9.9265, abs=1e-4)
+        m = compute_live_metrics([t])
+        assert m.risked_count == 0
+        assert m.total_pnl == pytest.approx(9.93, abs=1e-2)
+
+    def test_expectancy_de_biased_by_avg_fees_r(self, conn):
+        """expectancy_r == gross_expectancy − avg_fees_r exactly (r_mult==1), and
+        total_pnl is reduced by Σ fee_usd."""
+        # Two identical SL losers; each: gross -220, fee 4.263, risk 220 → gross_r -1.0.
+        _insert_trade(conn, scan_id="s_a", entry_fill=62000, exit_fill=59800,
+                       exit_type="stop_loss", stop_price=59800, quantity=0.1)
+        _insert_trade(conn, scan_id="s_b", coin="ETH", entry_fill=62000, exit_fill=59800,
+                       exit_type="stop_loss", stop_price=59800, quantity=0.1)
+        m = compute_live_metrics(get_closed_trades(conn))
+        assert m.avg_fees_r == pytest.approx(4.263 / 220, abs=1e-3)
+        assert m.expectancy_r == pytest.approx(-1.0 - m.avg_fees_r, abs=1e-4)
+        assert m.total_pnl == pytest.approx(-448.53, abs=1e-2)

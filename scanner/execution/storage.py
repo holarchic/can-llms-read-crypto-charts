@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import NAMESPACE_OID, uuid4, uuid5
 
+from scanner.config import get_exchange_meta
 from scanner.models import TradeRecord
 
 log = logging.getLogger(__name__)
@@ -682,10 +683,11 @@ def get_closed_trades(
         if entry_qty - filled_exit_qty > 1e-9:
             continue
 
-        # Sum PnL across all exit legs. Skip the whole trade if any leg lacks
-        # a price — silent 0-fallback fabricates PnL (e.g. manual-close rows
-        # inserted without a price field).
-        realized_pnl = 0
+        # Sum gross PnL + exit notional across all exit legs. Skip the whole
+        # trade if any leg lacks a price — silent 0-fallback fabricates PnL
+        # (e.g. manual-close rows inserted without a price field).
+        gross_pnl = 0
+        exit_notional = 0
         missing_price = False
         for exit_order in exits:
             exit_fill = _exit_price(exit_order)
@@ -697,10 +699,11 @@ def get_closed_trades(
                 missing_price = True
                 break
             exit_qty = exit_order.get("quantity", 0)
+            exit_notional += exit_fill * exit_qty
             if entry["direction"] == "LONG":
-                realized_pnl += (exit_fill - entry_fill) * exit_qty
+                gross_pnl += (exit_fill - entry_fill) * exit_qty
             else:
-                realized_pnl += (entry_fill - exit_fill) * exit_qty
+                gross_pnl += (entry_fill - exit_fill) * exit_qty
 
         if missing_price:
             continue
@@ -738,8 +741,21 @@ def get_closed_trades(
             stop_distance = abs(entry_fill - stop_price)
             risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
 
-        # Realized R (scaled by risk_mult for counter-trend position-weighted R)
+        # Net taker fees out of the dollar PnL so every derived metric inherits
+        # one net cost basis (SPEC #42, T-020.2). Fee = per-exchange taker rate ×
+        # round-trip notional (entry + every filled exit leg); taker assumed on
+        # all legs (pessimistic, mirrors the shadow resolver). `realized_pnl` is
+        # therefore net (exchange convention). `get_exchange_meta` raises on a
+        # blank/unknown exchange — fail-loud > silently mis-rating the gate metric.
+        fee_rate = get_exchange_meta(entry["exchange"])["fee_rate"]
+        fee_usd = fee_rate * (entry_fill * entry_qty + exit_notional)
+        realized_pnl = gross_pnl - fee_usd
+
+        # Realized R (scaled by risk_mult for counter-trend position-weighted R).
+        # Fees are already inside realized_pnl, so they are netted before scaling.
+        # fees_r is a RAW pre-r_mult diagnostic (same basis as slippage_r).
         realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0
+        fees_r = fee_usd / risk_amount if risk_amount > 0 else 0
         r_mult = float(entry.get("risk_mult") or 1.0)
         if r_mult < 1.0 - 1e-9:
             realized_r *= r_mult
@@ -780,6 +796,7 @@ def get_closed_trades(
             holding_hours=holding_hours,
             funding_paid=funding_paid,
             slippage_r=slippage_r,
+            fees_r=fees_r,
             execution_mode=entry.get("execution_mode", "testnet"),
             usable_risk=risk_amount > 0,
             exchange=entry.get("exchange", "hyperliquid"),

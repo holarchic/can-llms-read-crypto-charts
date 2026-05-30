@@ -36,6 +36,9 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+from scanner.config import get_exchange_meta
 from scanner.execution.analytics import compute_live_metrics
 from scanner.execution.storage import (
     EXIT_ORDER_TYPES_SQL,
@@ -57,7 +60,11 @@ _CORPUS = _json.loads(
 # verbatim; the only deviations are non-value-bearing: the missing-exit-price
 # `log.warning(...)` side-effect is omitted (does not affect any TradeRecord
 # field) and records are built from the relocated `scanner.models.TradeRecord`
-# (same shape). This is the immutable baseline — do NOT "fix" it.
+# (same shape). This is the pre-2a baseline — do NOT "fix" it, with ONE
+# intentional exception: T-020.2 (SPEC #42) nets per-exchange taker fees into
+# `realized_pnl`/`realized_r` + adds `fees_r`. The frozen copy applies the SAME
+# net edit so it stays an independent join/aggregation cross-check on the net
+# basis; the fee-arithmetic anti-vacuity lives in `test_analytics.TestFeeNetting`.
 # ---------------------------------------------------------------------------
 
 def _frozen_exit_price(exit_order: dict) -> float | None:
@@ -128,7 +135,8 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
         filled_exit_qty = sum(x.get("quantity", 0) for x in exits)
         if entry_qty - filled_exit_qty > 1e-9:
             continue
-        realized_pnl = 0
+        gross_pnl = 0
+        exit_notional = 0
         missing_price = False
         for exit_order in exits:
             exit_fill = _frozen_exit_price(exit_order)
@@ -136,10 +144,11 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
                 missing_price = True
                 break
             exit_qty = exit_order.get("quantity", 0)
+            exit_notional += exit_fill * exit_qty
             if entry["direction"] == "LONG":
-                realized_pnl += (exit_fill - entry_fill) * exit_qty
+                gross_pnl += (exit_fill - entry_fill) * exit_qty
             else:
-                realized_pnl += (entry_fill - exit_fill) * exit_qty
+                gross_pnl += (entry_fill - exit_fill) * exit_qty
         if missing_price:
             continue
         last_exit = exits[-1]
@@ -162,7 +171,12 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
         stop_price = float(stop_order["trigger_price"]) if stop_order else 0
         stop_distance = abs(entry_fill - stop_price)
         risk_amount = stop_distance * entry_qty if stop_distance > 0 else 0
+        # T-020.2 (SPEC #42): same net-of-fee edit as prod get_closed_trades.
+        fee_rate = get_exchange_meta(entry["exchange"])["fee_rate"]
+        fee_usd = fee_rate * (entry_fill * entry_qty + exit_notional)
+        realized_pnl = gross_pnl - fee_usd
         realized_r = realized_pnl / risk_amount if risk_amount > 0 else 0
+        fees_r = fee_usd / risk_amount if risk_amount > 0 else 0
         r_mult = float(entry.get("risk_mult") or 1.0)
         if r_mult < 1.0 - 1e-9:
             realized_r *= r_mult
@@ -187,6 +201,7 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
             entry_fill=entry_fill, exit_fill=last_exit_fill, exit_type=exit_type,
             realized_pnl=realized_pnl, realized_r=realized_r, risk_amount=risk_amount,
             holding_hours=holding_hours, funding_paid=funding_paid, slippage_r=slippage_r,
+            fees_r=fees_r,
             execution_mode=entry.get("execution_mode", "testnet"),
             usable_risk=risk_amount > 0,
             exchange=entry.get("exchange", "hyperliquid"),
@@ -212,7 +227,7 @@ def _frozen_compute_live_metrics(trades) -> dict:
     if not trades:
         return {"count": 0, "win_rate": 0, "expectancy_r": 0, "profit_factor": 0,
                 "total_pnl": 0, "max_drawdown_pct": 0, "avg_holding_hours": 0,
-                "avg_slippage_r": 0, "total_funding_r": 0, "fill_rate": 0,
+                "avg_slippage_r": 0, "avg_fees_r": 0, "total_funding_r": 0, "fill_rate": 0,
                 "data_source": "db_only",
                 "quality_warnings": _frozen_compute_quality_warnings([])}
     wins = [t for t in trades if t.realized_r > 0]
@@ -240,12 +255,14 @@ def _frozen_compute_live_metrics(trades) -> dict:
         max_dd_pct = 0
     avg_holding = sum(t.holding_hours for t in trades) / len(trades)
     avg_slippage = sum(t.slippage_r for t in trades) / len(trades)
+    avg_fees = sum(t.fees_r for t in trades) / len(trades)
     total_funding = sum(t.funding_paid for t in trades)
     total_funding_r = total_funding / total_risk if total_risk > 0 else 0
     return {"count": len(trades), "win_rate": round(win_rate, 4),
             "expectancy_r": round(expectancy_r, 4), "profit_factor": round(profit_factor, 4),
             "total_pnl": round(total_pnl, 2), "max_drawdown_pct": round(max_dd_pct, 2),
             "avg_holding_hours": round(avg_holding, 1), "avg_slippage_r": round(avg_slippage, 4),
+            "avg_fees_r": round(avg_fees, 4),
             "total_funding_r": round(total_funding_r, 4), "fill_rate": 0,
             "data_source": "db_only",
             "quality_warnings": _frozen_compute_quality_warnings(trades)}
@@ -350,7 +367,7 @@ def test_metrics_relocation_faithful_except_documented_24_exclusion():
     new = compute_live_metrics(get_closed_trades(conn))
 
     for k in ("win_rate", "expectancy_r", "profit_factor",
-              "avg_slippage_r", "total_funding_r"):
+              "avg_slippage_r", "avg_fees_r", "total_funding_r"):
         assert getattr(new, k) == exp_r[k], f"R-field {k}: new={getattr(new,k)} exp={exp_r[k]}"
     for k in ("count", "total_pnl", "max_drawdown_pct", "avg_holding_hours",
               "fill_rate", "data_source"):
@@ -488,17 +505,18 @@ def test_adversarial_anti_vacuity_realized_r_diverges():
     and new == the hand-derived original-SL R. A regression that re-introduces
     undefined-order SL selection fails closed here.
 
-    LONG entry 105, drift_close fill 102, qty 1 → pnl = (102-105)*1 = -3.
-      frozen-old risk = |105 - 95| * 1 = 10  → R = -3/10 = -0.3
-      new       risk = |105 -100| * 1 =  5  → R = -3/ 5 = -0.6
+    LONG entry 105, drift_close fill 102, qty 1 → gross = (102-105)*1 = -3.
+      fee = 0.00035*(105 + 102) = 0.07245 → net pnl = -3 - 0.07245 = -3.07245 (SPEC #42)
+      frozen-old risk = |105 - 95| * 1 = 10 → R = -3.07245/10 = -0.307245
+      new       risk = |105 -100| * 1 =  5 → R = -3.07245/ 5 = -0.614490
     """
     conn = _load_adversarial()
     old = {t.scan_id: t for t in _frozen_get_closed_trades(conn)}
     new = {t.scan_id: t for t in get_closed_trades(conn)}
     assert _ADV in old and _ADV in new
     o, n = old[_ADV], new[_ADV]
-    assert o.realized_r == -0.3          # bug: anchored on non-original SL
-    assert n.realized_r == -0.6          # fix: anchored on original SL
+    assert o.realized_r == pytest.approx(-0.307245, abs=1e-6)  # bug: non-original SL
+    assert n.realized_r == pytest.approx(-0.614490, abs=1e-6)  # fix: original SL
     assert n.realized_r != o.realized_r  # anti-vacuity: provably diverges
-    assert n.risk_amount == 5.0          # |105 - 100| * 1, hand-derived
+    assert n.risk_amount == 5.0          # |105 - 100| * 1, hand-derived (fee-independent)
     assert o.risk_amount == 10.0         # |105 -  95| * 1

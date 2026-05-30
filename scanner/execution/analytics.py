@@ -27,7 +27,7 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
         return MetricsWindow(
             count=0, risked_count=0, win_rate=0, expectancy_r=0, profit_factor=0,
             total_pnl=0, max_drawdown_pct=0,
-            avg_holding_hours=0, avg_slippage_r=0, total_funding_r=0,
+            avg_holding_hours=0, avg_slippage_r=0, avg_fees_r=0, total_funding_r=0,
             fill_rate=0, data_source="db_only",
             quality_warnings=_compute_quality_warnings([]),
         )
@@ -42,9 +42,11 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
     expectancy_r = sum(t.realized_r for t in risked) / len(risked) if risked else 0
     total_pnl = sum(t.realized_pnl for t in trades)
 
-    gross_profit = sum(t.realized_pnl for t in wins)
-    gross_loss = abs(sum(t.realized_pnl for t in losses))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
+    # PnL sums are net of taker fees (realized_pnl is net, SPEC #42) — coherent
+    # with the realized_r-signed win/loss partition (sign(realized_r) == sign(realized_pnl)).
+    profit = sum(t.realized_pnl for t in wins)
+    loss = abs(sum(t.realized_pnl for t in losses))
+    profit_factor = profit / loss if loss > 0 else float("inf") if profit > 0 else 0
 
     total_risk = sum(t.risk_amount for t in risked)
 
@@ -68,8 +70,9 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
         max_dd_pct = 0
 
     avg_holding = sum(t.holding_hours for t in trades) / len(trades)
-    # avg_slippage_r / total_funding_r are R-normalized → over `risked`.
+    # avg_slippage_r / avg_fees_r / total_funding_r are R-normalized → over `risked`.
     avg_slippage = sum(t.slippage_r for t in risked) / len(risked) if risked else 0
+    avg_fees = sum(t.fees_r for t in risked) / len(risked) if risked else 0
     total_funding = sum(t.funding_paid for t in risked)
     total_funding_r = total_funding / total_risk if total_risk > 0 else 0
 
@@ -83,6 +86,7 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
         max_drawdown_pct=round(max_dd_pct, 2),
         avg_holding_hours=round(avg_holding, 1),
         avg_slippage_r=round(avg_slippage, 4),
+        avg_fees_r=round(avg_fees, 4),
         total_funding_r=round(total_funding_r, 4),
         fill_rate=0,  # Placeholder — CONFIRM-context wiring out of Phase-2a scope
         data_source="db_only",

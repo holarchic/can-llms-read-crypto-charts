@@ -701,7 +701,16 @@ class ExecutionRequest:
 class TradeRecord:
     """One closed trade, built by the storage-owned read model (T-016 Phase 2a,
     SPEC #22). Frozen: constructed once in `execution/storage.get_closed_trades`,
-    read-only downstream (compute/report)."""
+    read-only downstream (compute/report).
+
+    `realized_pnl` is dollar PnL **net of taker fees** (exchange convention —
+    realized PnL is reported after fees; T-020.2, SPEC #42), so `realized_r`
+    derived from it is net too, and every aggregate (win/loss partition,
+    profit_factor, total_pnl, drawdown) inherits the same net basis coherently.
+    `fees_r` is the round-trip taker fee that was subtracted, expressed in R, for
+    visibility — it is NOT a further subtraction. `fees_r` is a RAW pre-`r_mult`
+    diagnostic (same basis as `slippage_r`): on counter-trend trades (`r_mult<1`)
+    the *weighted* `realized_r` does not move by exactly `fees_r`."""
 
     scan_id: str
     coin: str
@@ -709,12 +718,13 @@ class TradeRecord:
     entry_fill: float
     exit_fill: float
     exit_type: str  # SL, TP1, TP2, TIMEOUT, EMERGENCY, DRIFT
-    realized_pnl: float
+    realized_pnl: float  # NET of taker fees (SPEC #42)
     realized_r: float
     risk_amount: float
     holding_hours: float
     funding_paid: float
     slippage_r: float
+    fees_r: float  # round-trip taker fee in R, raw pre-r_mult diagnostic (SPEC #42)
     execution_mode: str
     # Explicit single-owner of the "no/degenerate original SL" classification
     # (T-016 Phase 3, SPEC #26 c; KL#9 c). `usable_risk ≡ risk_amount > 0` by
@@ -741,6 +751,7 @@ class MetricsWindow:
     max_drawdown_pct: float
     avg_holding_hours: float
     avg_slippage_r: float
+    avg_fees_r: float  # mean round-trip taker fee in R over risked trades (SPEC #42)
     total_funding_r: float
     fill_rate: float
     data_source: str

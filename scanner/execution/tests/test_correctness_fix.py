@@ -485,7 +485,10 @@ def test_fix2_no_sl_trades_get_zero_risk():
     trades = {t.scan_id: t for t in get_closed_trades(_fix2_corpus())}
     assert trades["sA"].risk_amount == 0 and trades["sA"].realized_r == 0
     assert trades["sB"].risk_amount == 0 and trades["sB"].realized_r == 0
-    assert trades["sC"].risk_amount == 10.0 and trades["sC"].realized_r == 2.0
+    # net of taker fees (SPEC #42): gross R 2.0, fee 0.00035*(100+120)/10 = 0.0077 → 1.9923
+    assert trades["sC"].risk_amount == 10.0
+    assert trades["sC"].realized_r == pytest.approx(1.9923, abs=1e-4)
+    assert trades["sC"].fees_r == pytest.approx(0.0077, abs=1e-6)
 
 
 def _frozen_old_metrics(trades):
@@ -506,9 +509,10 @@ def test_fix2_metrics_exclude_no_risk_and_diverge_from_frozen_old():
 
     # NEW: only sC (risked) drives R-metrics; sA/sB stay in count/pnl.
     assert m.count == 3
-    assert m.total_pnl == pytest.approx(25.0)          # 10 - 5 + 20, all 3
+    # net of taker fees (SPEC #42): gross (10-5+20)=25 minus per-leg taker fees
+    assert m.total_pnl == pytest.approx(24.78, abs=1e-2)
     assert m.win_rate == pytest.approx(1.0)            # 1/1 risked, a win
-    assert m.expectancy_r == pytest.approx(2.0)        # sC only
+    assert m.expectancy_r == pytest.approx(1.9923, abs=1e-4)  # sC only, net of fees
     assert m.profit_factor == float("inf")             # no risked losers
     assert any("2 trades with no usable risk anchor" in w
                for w in m.quality_warnings)
@@ -516,8 +520,8 @@ def test_fix2_metrics_exclude_no_risk_and_diverge_from_frozen_old():
     # Frozen-old would fold sA/sB in as break-even losses → divergence.
     old_wr, old_exp, old_pf = _frozen_old_metrics(trades)
     assert old_wr == pytest.approx(1 / 3)              # bug: diluted
-    assert old_exp == pytest.approx(2 / 3)             # bug: diluted
-    assert old_pf == pytest.approx(4.0)                # bug: +pnl no-SL in gross_loss
+    assert old_exp == pytest.approx(1.9923 / 3, abs=1e-4)  # bug: diluted (net of fees)
+    assert old_pf == pytest.approx(4.101, abs=1e-3)    # bug: +pnl no-SL in gross_loss
     assert m.win_rate != pytest.approx(old_wr)         # anti-vacuity
     assert m.expectancy_r != pytest.approx(old_exp)
     assert m.profit_factor != old_pf
