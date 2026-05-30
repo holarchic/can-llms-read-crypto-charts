@@ -5,6 +5,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 
+from scanner.expectancy import ExpectancyReport
+
 
 class Structure(Enum):
     BULLISH = "BULLISH"
@@ -733,6 +735,10 @@ class TradeRecord:
     # sentinel re-derived across analytics/report sites.
     usable_risk: bool
     exchange: str = "hyperliquid"
+    # Provenance joined from `scans.prompt_version` (T-020.3, SPEC #43) — the
+    # per-version cohort partition key. `None` for legacy rows with no/NULL
+    # `scans.prompt_version`; such trades form the `(unversioned)` cohort.
+    prompt_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -770,3 +776,14 @@ class RiskedOutcomes:
     risked: tuple[TradeRecord, ...]
     wins: tuple[TradeRecord, ...]
     losses: tuple[TradeRecord, ...]
+
+
+@dataclass(frozen=True)
+class VersionCohort:
+    """One prompt-version's closed-trade cohort + its per-trade-R expectancy
+    (T-020.3, SPEC #43). `prompt_version is None` is the `(unversioned)` cohort
+    (legacy rows). `report` is the shared `scanner.expectancy.ExpectancyReport`
+    (n / win% / avg R / PF / bootstrap CI / Acceptance-#8 gate), net of fees (#42)."""
+
+    prompt_version: str | None
+    report: ExpectancyReport

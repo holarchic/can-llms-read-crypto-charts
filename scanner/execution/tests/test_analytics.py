@@ -7,6 +7,7 @@ import pytest
 
 from scanner.execution.analytics import (
     compute_live_metrics,
+    per_version_expectancy,
     risked_outcomes,
     rolling_expectancy,
 )
@@ -24,19 +25,20 @@ def _tr(
     scan_id, coin, direction, entry_fill, exit_fill, exit_type,
     realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
     slippage_r, execution_mode, exchange="hyperliquid", *, usable_risk=None,
-    fees_r=0.0,
+    fees_r=0.0, prompt_version=None,
 ):
     """TradeRecord factory mirroring the storage-owned construction: derives
     `usable_risk = risk_amount > 0` (T-016 Phase 3, SPEC #26 c) unless an
     explicit override is given (used by the C3 contradictory-fixture anti-
     vacuity test). Keyword-safe so future frozen-field adds don't break the
-    ~20 positional call sites (`fees_r` keyword-only, defaults 0 — SPEC #42)."""
+    ~20 positional call sites (`fees_r` keyword-only SPEC #42; `prompt_version`
+    keyword-only SPEC #43)."""
     return TradeRecord(
         scan_id, coin, direction, entry_fill, exit_fill, exit_type,
         realized_pnl, realized_r, risk_amount, holding_hours, funding_paid,
         slippage_r, fees_r, execution_mode,
         usable_risk=(risk_amount > 0) if usable_risk is None else usable_risk,
-        exchange=exchange,
+        exchange=exchange, prompt_version=prompt_version,
     )
 
 
@@ -51,7 +53,8 @@ def conn():
             scan_id TEXT PRIMARY KEY,
             machine_block TEXT,
             cost_usd REAL DEFAULT 0,
-            created_at TEXT
+            created_at TEXT,
+            prompt_version TEXT
         )
     """)
     return c
@@ -778,3 +781,77 @@ class TestFeeNetting:
         assert m.avg_fees_r == pytest.approx(4.263 / 220, abs=1e-3)
         assert m.expectancy_r == pytest.approx(-1.0 - m.avg_fees_r, abs=1e-4)
         assert m.total_pnl == pytest.approx(-448.53, abs=1e-2)
+
+    def test_prompt_version_joined_from_scans(self, conn):
+        """get_closed_trades joins scans.prompt_version onto the TradeRecord;
+        a trade with no scans row → prompt_version None (SPEC #43)."""
+        _insert_trade(conn, scan_id="s1", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0)
+        conn.execute(
+            "INSERT OR REPLACE INTO scans (scan_id, prompt_version) VALUES (?, ?)",
+            ("s1", "9.11"),
+        )
+        conn.commit()
+        # s2 has NO scans row → LEFT JOIN yields prompt_version None
+        _insert_trade(conn, scan_id="s2", coin="ETH", entry_fill=100, exit_fill=110,
+                       exit_type="tp1", stop_price=95, quantity=1.0)
+        by_id = {t.scan_id: t for t in get_closed_trades(conn)}
+        assert by_id["s1"].prompt_version == "9.11"
+        assert by_id["s2"].prompt_version is None
+        assert len(by_id) == 2  # LEFT JOIN never drops the unversioned trade
+
+
+class TestPerVersionExpectancy:
+    """T-020.3 / SPEC #43 — per-prompt-version cohort partition + bootstrap-CI expectancy."""
+
+    def test_partitions_by_version_with_independent_stats(self):
+        # v9.11: 4 trades avg +0.5R ; v10.00: 2 trades avg -1.0R (distinct distributions)
+        trades = (
+            [_tr(f"a{i}", "BTC", "LONG", 100, 110, "TP1", 50, r, 100, 1, 0, 0,
+                 "testnet", prompt_version="9.11")
+             for i, r in enumerate([1.0, 0.0, 1.0, 0.0])]
+            + [_tr(f"b{i}", "ETH", "LONG", 100, 90, "SL", -50, -1.0, 50, 1, 0, 0,
+                   "testnet", prompt_version="10.00") for i in range(2)]
+        )
+        cohorts = per_version_expectancy(trades)
+        assert [c.prompt_version for c in cohorts] == ["9.11", "10.00"]  # dotted-numeric order
+        c911, c1000 = cohorts
+        assert c911.report.n == 4 and c911.report.avg_r == pytest.approx(0.5)
+        assert c1000.report.n == 2 and c1000.report.avg_r == pytest.approx(-1.0)
+
+    def test_dotted_numeric_order_and_unversioned_last(self):
+        trades = [
+            _tr("v10", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 100, 1, 0, 0, "testnet",
+                prompt_version="10.00"),
+            _tr("v9", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 100, 1, 0, 0, "testnet",
+                prompt_version="9.11"),
+            _tr("vn", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 100, 1, 0, 0, "testnet",
+                prompt_version=None),
+        ]
+        cohorts = per_version_expectancy(trades)
+        # 9.11 < 10.00 numerically (not lexically); None last
+        assert [c.prompt_version for c in cohorts] == ["9.11", "10.00", None]
+
+    def test_excludes_unrisked_trades(self):
+        trades = [
+            _tr("r", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 100, 1, 0, 0, "testnet",
+                prompt_version="9.11"),
+            # usable_risk False → excluded from the cohort (R undefined)
+            _tr("u", "ETH", "LONG", 100, 110, "TP1", 50, 1.0, 0, 1, 0, 0, "testnet",
+                prompt_version="9.11", usable_risk=False),
+        ]
+        cohorts = per_version_expectancy(trades)
+        assert len(cohorts) == 1 and cohorts[0].report.n == 1  # only the risked trade
+
+    def test_empty_input(self):
+        assert per_version_expectancy([]) == ()
+
+    def test_gate_status_pending_vs_pass(self):
+        # 5 winners, all +1R. Default min_n=30 → PENDING (n<30, gate_pass False).
+        trades = [_tr(f"w{i}", "BTC", "LONG", 100, 110, "TP1", 50, 1.0, 100, 1, 0, 0,
+                      "testnet", prompt_version="9.11") for i in range(5)]
+        pending = per_version_expectancy(trades)[0].report
+        assert pending.n == 5 and pending.gate_pass is False  # PENDING (n<30)
+        # min_n lowered to 3 + a strictly-positive sample → CI_lo>0 → PASS
+        passed = per_version_expectancy(trades, min_n=3)[0].report
+        assert passed.gate_pass is True

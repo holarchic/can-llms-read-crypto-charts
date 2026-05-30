@@ -652,8 +652,12 @@ def get_closed_trades(
 
     where = " AND ".join(clauses)
 
+    # LEFT JOIN scans for prompt_version provenance (T-020.3, SPEC #43): scans.scan_id
+    # is PRIMARY KEY so this never multiplies entry rows; a missing scans row yields
+    # prompt_version=None (the (unversioned) cohort), never a dropped trade.
     entries = conn.execute(
-        f"SELECT e.* FROM orders e WHERE {where} ORDER BY e.created_at",
+        f"SELECT e.*, s.prompt_version FROM orders e "
+        f"LEFT JOIN scans s ON s.scan_id = e.scan_id WHERE {where} ORDER BY e.created_at",
         params,
     ).fetchall()
 
@@ -800,6 +804,7 @@ def get_closed_trades(
             execution_mode=entry.get("execution_mode", "testnet"),
             usable_risk=risk_amount > 0,
             exchange=entry.get("exchange", "hyperliquid"),
+            prompt_version=entry.get("prompt_version"),
         ))
 
     return trades

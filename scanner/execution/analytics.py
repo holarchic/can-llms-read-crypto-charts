@@ -2,7 +2,8 @@
 read model (T-016 Phase 2a, SPEC #22). No DB access here: `get_closed_trades`
 / `llm_cost_summary` live in `scanner.execution.storage`."""
 
-from scanner.models import MetricsWindow, RiskedOutcomes, TradeRecord
+from scanner.expectancy import expectancy_report
+from scanner.models import MetricsWindow, RiskedOutcomes, TradeRecord, VersionCohort
 
 
 def risked_outcomes(trades: list[TradeRecord]) -> RiskedOutcomes:
@@ -91,6 +92,39 @@ def compute_live_metrics(trades: list[TradeRecord]) -> MetricsWindow:
         fill_rate=0,  # Placeholder — CONFIRM-context wiring out of Phase-2a scope
         data_source="db_only",
         quality_warnings=_compute_quality_warnings(trades),
+    )
+
+
+def _version_sort_key(item: tuple[str | None, list[float]]) -> tuple:
+    """Dotted-numeric version order (`9.11` before `10.00`); `None`/unparseable last.
+    The leading group int segregates the three classes so the mixed second-element
+    types (int-tuple vs empty tuple) are never compared across groups."""
+    v = item[0]
+    if v is None:
+        return (2, ())
+    try:
+        return (0, tuple(int(p) for p in v.split(".")))
+    except (ValueError, AttributeError):
+        return (1, ())
+
+
+def per_version_expectancy(
+    trades: list[TradeRecord], *, min_n: int = 30, seed: int = 0,
+) -> tuple[VersionCohort, ...]:
+    """Per-prompt-version cohort expectancy (Acceptance #8, SPEC #43).
+
+    Partitions the RISKED trades (`usable_risk`, single-owned per SPEC #26 b — no-risk
+    trades have undefined R) by `prompt_version`, and computes the shared per-trade-R
+    `expectancy_report` (net of fees per #42) for each cohort. Cohorts are returned
+    dotted-numeric-version-sorted, the `(unversioned)` `None` cohort last. Empty input
+    (or no risked trades) → empty tuple."""
+    risked = risked_outcomes(trades).risked
+    by_version: dict[str | None, list[float]] = {}
+    for t in risked:
+        by_version.setdefault(t.prompt_version, []).append(t.realized_r)
+    return tuple(
+        VersionCohort(version, expectancy_report(rs, min_n=min_n, seed=seed))
+        for version, rs in sorted(by_version.items(), key=_version_sort_key)
     )
 
 

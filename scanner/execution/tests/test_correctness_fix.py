@@ -80,7 +80,7 @@ def _conn():
     # an empty table is fine (no row → slippage_r 0).
     c.execute(
         "CREATE TABLE IF NOT EXISTS scans (scan_id TEXT PRIMARY KEY, "
-        "machine_block TEXT, cost_usd REAL, created_at TEXT)"
+        "machine_block TEXT, cost_usd REAL, created_at TEXT, prompt_version TEXT)"
     )
     return c
 

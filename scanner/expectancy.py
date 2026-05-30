@@ -1,9 +1,13 @@
-"""Expectancy readout for the shadow tape (T-020.1, SPEC #41) — emits the Acceptance-#10
-cutover verdict.
+"""Per-trade-R cohort expectancy — the shared statistic behind both validation gates.
 
-Pure. Operates on the per-trade net-R sample (`store.resolved_r_values`): 0R outcomes
-stay in the sample; non-trade statuses were already excluded upstream. The gate is the
-project-standard one (Acceptance #2/#8): **n ≥ min_n AND the bootstrap 95% CI lower bound
+Single owner of "a list of per-trade R → n / win% / avg R / profit factor / bootstrap 95% CI
+/ pass-flag". Used by the shadow cutover gate (Acceptance #10, `scanner/shadow`) AND the live
+per-version cohort surface (Acceptance #8, `scanner/execution/analytics.per_version_expectancy`).
+
+Pure + stdlib-only (no `scanner.execution`/`scanner.shadow`/`scanner.models` import) so it is a
+true leaf both subsystems depend on without inverting the layering. Operates on the per-trade
+net-R sample: 0R outcomes stay in; non-trade statuses are excluded upstream. The gate is the
+project-standard one (Acceptance #2/#8/#10): **n ≥ min_n AND the bootstrap 95% CI lower bound
 > 0** — "excludes zero" means the CI bound, NOT dropping zero-R trades.
 """
 
@@ -44,7 +48,7 @@ def bootstrap_ci(
 def expectancy_report(
     realized_rs: list[float], *, min_n: int = 30, iters: int = 10000, seed: int = 0,
 ) -> ExpectancyReport:
-    """n / win% / avg R / profit factor / bootstrap CI + the Gate-#10 pass flag."""
+    """n / win% / avg R / profit factor / bootstrap CI + the gate pass flag (n≥min_n ∧ ci_lo>0)."""
     rs = list(realized_rs)
     n = len(rs)
     if n == 0:

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 import scanner.schema as schema
+from scanner.expectancy import bootstrap_ci, expectancy_report
 from scanner.models import ConfluenceFactor, MachineBlock, ShadowOutcome
-from scanner.shadow.expectancy import bootstrap_ci, expectancy_report
 from scanner.shadow.store import (
     load_unresolved_signals,
     resolved_r_values,

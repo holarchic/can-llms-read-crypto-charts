@@ -116,7 +116,8 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
         )""")
     where = " AND ".join(clauses)
     entries = conn.execute(
-        f"SELECT e.* FROM orders e WHERE {where} ORDER BY e.created_at", params,
+        f"SELECT e.*, s.prompt_version FROM orders e "
+        f"LEFT JOIN scans s ON s.scan_id = e.scan_id WHERE {where} ORDER BY e.created_at", params,
     ).fetchall()
     trades = []
     for entry in entries:
@@ -205,6 +206,7 @@ def _frozen_get_closed_trades(conn, execution_mode=None, days=None) -> list[Trad
             execution_mode=entry.get("execution_mode", "testnet"),
             usable_risk=risk_amount > 0,
             exchange=entry.get("exchange", "hyperliquid"),
+            prompt_version=entry.get("prompt_version"),
         ))
     return trades
 
@@ -275,7 +277,7 @@ def _frozen_compute_live_metrics(trades) -> dict:
 def _scans_table(conn):
     conn.execute(
         "CREATE TABLE IF NOT EXISTS scans (scan_id TEXT PRIMARY KEY, "
-        "machine_block TEXT, cost_usd REAL, created_at TEXT)"
+        "machine_block TEXT, cost_usd REAL, created_at TEXT, prompt_version TEXT)"
     )
 
 
