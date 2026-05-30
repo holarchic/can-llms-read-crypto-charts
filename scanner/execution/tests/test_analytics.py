@@ -734,6 +734,38 @@ class TestFeeNetting:
         assert m.risked_count == 0
         assert m.total_pnl == pytest.approx(9.93, abs=1e-2)
 
+    def test_counter_trend_fee_before_rmult_scaling_fees_r_raw(self, conn):
+        """Counter-trend (risk_mult<1): fees are subtracted from realized_pnl BEFORE
+        the r_mult scaling, and fees_r is the RAW (unscaled) pre-r_mult diagnostic."""
+        # entry carries risk_mult=0.5; LONG 100 → tp1 110, stop 95, qty 1.
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_ct", "coin": "BTC",
+            "direction": "LONG", "order_type": "entry", "status": "FILLED",
+            "entry_price": 100, "fill_price": 100, "quantity": 1.0, "risk_mult": 0.5,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T00:00:01+00:00", "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_ct", "coin": "BTC",
+            "direction": "LONG", "order_type": "stop_loss", "status": "CANCELLED",
+            "trigger_price": 95, "quantity": 1.0,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        save_order({
+            "order_id": new_order_id(), "scan_id": "s_ct", "coin": "BTC",
+            "direction": "LONG", "order_type": "tp1", "status": "FILLED",
+            "trigger_price": 110, "fill_price": 110, "quantity": 1.0,
+            "exchange": "hyperliquid", "execution_mode": "testnet",
+            "filled_at": "2026-02-24T06:00:00+00:00", "created_at": "2026-02-24T00:00:00+00:00",
+        }, conn)
+        t = get_closed_trades(conn)[0]
+        # gross 10, fee 0.00035*(100+110)=0.0735, risk |100-95|=5.
+        # realized_r = (10 - 0.0735)/5 * 0.5 = 0.99265 (fee netted BEFORE *r_mult)
+        assert t.realized_r == pytest.approx((10 - 0.0735) / 5 * 0.5, abs=1e-6)
+        # fees_r is RAW (0.0735/5 = 0.0147), NOT scaled by r_mult (would be 0.00735)
+        assert t.fees_r == pytest.approx(0.0147, abs=1e-9)
+
     def test_expectancy_de_biased_by_avg_fees_r(self, conn):
         """expectancy_r == gross_expectancy − avg_fees_r exactly (r_mult==1), and
         total_pnl is reduced by Σ fee_usd."""
