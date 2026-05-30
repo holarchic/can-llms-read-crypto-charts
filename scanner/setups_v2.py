@@ -594,13 +594,14 @@ def detect_sfp_range(
     ``max_age``/``sweep_atr``/``react_atr`` are the freshness / real-sweep-depth /
     reaction-momentum gates; the defaults are the calibrated v2 values (this detector runs
     only on the v2 path). The detector owns the ATR scaling and hands ``_sweep`` the
-    derived price-space minima."""
+    derived price-space minima. Gated to the ROTATIONAL regime only (T-020.9a): the ruleset
+    scopes range setups to a volume-validated range; TRANSITIONAL is "no clean setup"."""
     if len(context.df) < min_bars:
         return []
     atr = context.atr
     if _isnan(atr) or atr <= 0:
         return []
-    if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
+    if substrate.regime.regime is not Regime.ROTATIONAL:
         return []
     swept = _sweep(context.df, sr_levels, context.range_bounds,
                    reaction_window=reaction_window, max_age=max_age,
@@ -634,13 +635,14 @@ def detect_rsi_divergence_range(
     rsi_lo: float = 30.0,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
-    """RSI divergence at a range extreme in a rotational/transitional regime."""
+    """RSI divergence at a range extreme in a ROTATIONAL regime (T-020.9a: the ruleset's
+    range regime — a volume-validated range; TRANSITIONAL is "no clean setup")."""
     if len(context.df) < min_bars:
         return []
     price, atr = context.current_price, context.atr
     if _isnan(price) or _isnan(atr) or atr <= 0:
         return []
-    if substrate.regime.regime not in (Regime.ROTATIONAL, Regime.TRANSITIONAL):
+    if substrate.regime.regime is not Regime.ROTATIONAL:
         return []
     div = _rsi_divergence(context.df, context.swings, rsi_len=rsi_len, max_gap=div_max_gap)
     if div is None:
@@ -653,7 +655,7 @@ def detect_rsi_divergence_range(
         return []
     if direction is Direction.LONG and not swing.price < price:
         return []
-    # The rotation context is the regime gate above (not TRENDING); the divergence
+    # The rotation context is the regime gate above (ROTATIONAL only); the divergence
     # swing is itself a local extreme, so no separate classify_structure==RANGING gate
     # — that requirement is jointly infeasible with the no-50-reset rule (a RANGING
     # structure's deep lows drive RSI through 50 between the swings). Matches the
