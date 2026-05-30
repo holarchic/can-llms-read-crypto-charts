@@ -79,6 +79,10 @@ _FRAME_DELTA = timedelta(hours=1)                       # the resolver frame is 
 if set(_TRAIL_RULE) != set(SETUP_TFS):
     raise RuntimeError(f"_TRAIL_RULE keys {sorted(_TRAIL_RULE)} != SETUP_TFS {sorted(SETUP_TFS)}")
 
+# v2 runner-size floor (#52): the most that may bank at TP1, so the remainder (≥ 2/3) rides the
+# BE+setup-TF trail — fixes the negative-skew "capped wins" (worst for TP1-only, else 100% at TP1).
+_MAX_TP1_EXIT_FRAC = 1 / 3
+
 
 def _trail_swings(frame, setup_tf):
     """Setup-TF swing points + the TF bar duration, for the post-TP1 trail.
@@ -246,6 +250,8 @@ def resolve_signal(
         tp1_frac = _t1 / (_t1 + _t2) if (_t1 + _t2) > 0 else 0.5
     else:
         tp1_frac = 1.0 if tp1 else 0.0
+    if be_after_tp1:  # v2 runner-size floor (#52): cap the TP1 bank so a ≥2/3 runner rides on
+        tp1_frac = min(tp1_frac, _MAX_TP1_EXIT_FRAC)
 
     # IMMEDIATE enters at the signal bar's OPEN, so that bar's post-open range can hit
     # SL/TP — include it. Conditional/limit enter at/after a bar close, so manage from the

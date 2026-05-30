@@ -247,9 +247,12 @@ def test_v2_be_at_tp1_short_remainder_stop():
     assert v2.exit_price < v1.exit_price          # SHORT BE (entry) below the original stop
 
 
-def test_v2_full_winner_unchanged():
-    # TP1 then TP2: BE is armed at the TP1 fill but never hit (price runs to TP2),
-    # so v2 == v1 — the rescue only bites when the remainder reverses.
+def test_v2_runner_floor_caps_default_split():
+    # The default 50/50 split on a clean TP1→TP2 winner: the .13 runner floor caps the TP1 bank
+    # to 1/3, so 2/3 (not 1/2) banks at the higher TP2 → v2 R > v1 R. BE is armed at TP1 but never
+    # bites here (no reversal), so the delta is purely the runner-floor split. (This is the .11
+    # full-winner case — whose v2==v1 premise .13 deliberately changes; the BE-doesn't-bite-a-clean-
+    # winner invariant is now pinned by test_v2_runner_floor_noop_below_ceiling.)
     f = _frame([
         (100, 101, 99, 100.5),
         (100.5, 101, 100, 100.5),
@@ -259,7 +262,7 @@ def test_v2_full_winner_unchanged():
     v1 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v1")
     v2 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2")
     assert v1.exit_reason == "TP1_TP2" and v2.exit_reason == "TP1_TP2"
-    assert v2.realized_r == pytest.approx(v1.realized_r)
+    assert v2.realized_r > v1.realized_r
 
 
 def test_v2_no_rescue_before_tp1_matches_v1():
@@ -380,3 +383,48 @@ def test_trail_swings_drops_partial_leading_bucket():
     a = [(s.timestamp, s.price) for s in _trail_swings(aligned, "4h")[0]]
     m = [(s.timestamp, s.price) for s in _trail_swings(mid, "4h")[0]]
     assert a and a == m   # non-empty (anti-vacuity) + the partial bucket forged no phantom swing
+
+
+# --- exit_policy=v2: runner-size floor / TP1-exit ceiling (T-020.13) --------------
+
+def _tp1_only_mb():
+    return MachineBlock.from_raw({
+        "entry_low": 100.0, "entry_high": 101.0, "stop_loss": 95.0,
+        "tp1": 110.0, "tp1_exit_pct": 100, "direction": "LONG",
+        "setup_type": "trend_continuation", "setup_quality": "textbook",
+        "confidence": 7, "leverage": 5,
+    })
+
+
+def test_v2_runner_floor_keeps_runner_on_tp1_only():
+    # The worst negative-skew case: a TP1-only setup that runs PAST TP1. v1 banks 100% at TP1
+    # (capped win); v2 caps the TP1 bank to 1/3, so the 2/3 runner rides on and exits higher
+    # (here via time-expiry at the rising close) — R strictly greater.
+    mb = _tp1_only_mb()
+    f = _frame([
+        (100, 101, 99, 100.5),     # entry fill ~100.05
+        (105, 111, 104, 108),      # TP1 (high≥110)
+        (108, 115, 107, 113),
+        (113, 119, 112, 118),      # max_hold=3 → remainder time-expires at close 118 (> TP1)
+    ])
+    v1 = resolve_signal(mb, _anchor(f), f, exit_policy="v1", max_hold_bars=3)
+    v2 = resolve_signal(mb, _anchor(f), f, exit_policy="v2", max_hold_bars=3, setup_tf=None)
+    assert v1.status == R.RESOLVED and v2.status == R.RESOLVED
+    assert v1.exit_reason == "TP1"          # v1 fully banks at TP1 (capped win)
+    assert v2.exit_reason == "TP1_TIME"     # v2 keeps a 2/3 runner past TP1
+    assert v2.realized_r > v1.realized_r
+
+
+def test_v2_runner_floor_noop_below_ceiling():
+    # A 25/75 split (tp1_frac 0.25 ≤ 1/3) is unchanged by the cap; with no reversal the BE floor
+    # never bites either, so v2 == v1 (the min() is a no-op below the ceiling).
+    mb = _mb(tp1_exit_pct=25, tp2_exit_pct=75)
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (105, 111, 104, 108),      # TP1
+        (108, 121, 107, 119),      # TP2
+    ])
+    v1 = resolve_signal(mb, _anchor(f), f, exit_policy="v1")
+    v2 = resolve_signal(mb, _anchor(f), f, exit_policy="v2", setup_tf=None)
+    assert v1.exit_reason == "TP1_TP2" and v2.exit_reason == "TP1_TP2"
+    assert v2.realized_r == pytest.approx(v1.realized_r)
