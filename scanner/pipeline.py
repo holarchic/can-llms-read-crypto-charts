@@ -11,10 +11,10 @@ from .analysis import LLMOverloaded, analyze_for_scanner
 from .charts import cleanup_charts, generate_charts_for_signal
 from .config import ScannerConfig, get_exchange_meta
 from .data import fetch_candles, fetch_candles_batch, fetch_pairs_with_volume, get_max_leverage
-from .data_plane_v2 import build_market_context_v2, fetch_multi_tf
+from .data_plane_v2 import SETUP_TFS, build_market_context_v2, fetch_multi_tf
 from .db import get_connection
 from .indicators import build_context
-from .models import BoundarySignal, ExecutionRequest, ScanResult
+from .models import BoundarySignal, ExecutionRequest, ScanResult, SetupTypeV2
 from .scan_queries import daily_cost, is_duplicate
 from .scan_store import mark_alerted, save_result, save_scan_universe, save_signals
 from .screener import detect_all_setups
@@ -364,6 +364,19 @@ def stage3_alert(
     return alerted_count
 
 
+# IMMEDIATE-only v2 setups (ruleset §3.1) get a tighter, setup-TF-aware execute-time freshness guard
+# than the universal staleness skip (T-020.10 / #49). The set is by IMMEDIATE trigger semantics, not
+# regime family (deviation_reclaim is TRENDING; sfp_range is the range one).
+_IMMEDIATE_FRESHNESS_SETUPS = frozenset({SetupTypeV2.SFP_RANGE, SetupTypeV2.DEVIATION_RECLAIM})
+# Setup-TF bar durations (seconds). The TF SET is owned by `data_plane_v2.SETUP_TFS`; this map only
+# adds durations, parity-guarded at import so the key set can't drift from that owner (cf. the
+# screener_v2 `_CHART_HTF` vs `chartable_tfs()` guard). A TF outside the map gets no freshness skip
+# (fail-open — the universal staleness guard still applies).
+_TF_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+if set(_TF_SECONDS) != set(SETUP_TFS):
+    raise RuntimeError(f"_TF_SECONDS keys {sorted(_TF_SECONDS)} != SETUP_TFS {sorted(SETUP_TFS)}")
+
+
 def stage4_execute(
     confirms: list[ScanResult],
     scanner_config: ScannerConfig,
@@ -394,6 +407,31 @@ def stage4_execute(
         try:
             # Route conditional entries to pending if feature enabled
             mb = confirm.machine_block
+            sig = confirm.setup_signal
+
+            # IMMEDIATE freshness (T-020.10 / #49): an IMMEDIATE-only v2 setup (sfp_range/
+            # deviation_reclaim) that sat through stage2→4 latency is a degraded entry — skip it on a
+            # TF-aware window tighter than the universal staleness guard. v1 A–G setups never match
+            # the v2 enum set; `mb is None` falls through to execute_trade's own no_machine_block
+            # reject (not relabelled). Surfaced like every stage-4 skip — never a silent reject.
+            ref = confirm.detected_at or confirm.timestamp
+            if (sig.setup_type in _IMMEDIATE_FRESHNESS_SETUPS
+                    and exec_config.immediate_freshness_bars > 0
+                    and mb is not None and mb.entry_trigger is None
+                    and ref is not None and (bar_s := _TF_SECONDS.get(sig.setup_tf)) is not None):
+                age = (datetime.now(timezone.utc) - ref).total_seconds()
+                if age > exec_config.immediate_freshness_bars * bar_s:
+                    er = ExecutionResult(
+                        scan_id=confirm.scan_id, coin=confirm.coin, direction=sig.direction.value,
+                        skip_reason="stale_immediate",
+                        error=f"IMMEDIATE {sig.setup_type.value} age {age / 60:.0f}m exceeds "
+                              f"{exec_config.immediate_freshness_bars}×{sig.setup_tf} bars",
+                    )
+                    results.append(er)
+                    print(f"  {confirm.coin} {sig.direction.value}: SKIPPED — stale_immediate ({er.error})")
+                    send_skip_alert(er, exec_config)
+                    continue
+
             if (exec_config.conditional_entry_enabled
                     and mb is not None
                     and mb.entry_trigger
@@ -429,7 +467,6 @@ def stage4_execute(
                     ))
                 continue
 
-            sig = confirm.setup_signal
             req = ExecutionRequest(
                 scan_id=confirm.scan_id,
                 coin=confirm.coin,

@@ -95,6 +95,15 @@ class TestLoadExecutionConfig:
         assert cfg.enabled is False
         assert cfg.mode == "testnet"
         assert cfg.private_key == ""
+        assert cfg.immediate_freshness_bars == 2  # the dataclass default flows through the loader
+
+    def test_immediate_freshness_bars_env_override(self):
+        # the 0 = off kill-switch (T-020.10 / #49) must be reachable from the deployed loader,
+        # not just the dataclass — env override wired like the other tuning knobs.
+        with patch.dict("os.environ", {"EXECUTION_IMMEDIATE_FRESHNESS_BARS": "0"}, clear=True):
+            with patch("scanner.execution.config.get_secret_or_env", return_value=""):
+                cfg = load_execution_config()
+        assert cfg.immediate_freshness_bars == 0
 
     def test_enabled_accepts_yes_and_1(self):
         for val in ("yes", "1", "YES", "True"):

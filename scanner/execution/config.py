@@ -74,6 +74,10 @@ class ExecutionConfig:
 
     # Signal staleness guard
     signal_staleness_max_seconds: int = 2700  # 45min; covers slow LLM worst case
+    # Tighter, setup-TF-aware freshness for IMMEDIATE-only v2 setups (sfp_range/deviation_reclaim),
+    # enforced in stage4_execute (T-020.10 / #49). Window = N × the setup-TF bar duration; 0 = off.
+    # env: EXECUTION_IMMEDIATE_FRESHNESS_BARS. Mirrors the detectors' own max_age=2 freshness notion.
+    immediate_freshness_bars: int = 2
 
     # Discord
     discord_ops_webhook_url: str = ""
@@ -129,6 +133,7 @@ def load_execution_config() -> ExecutionConfig:
         drift_enabled=os.getenv("DRIFT_ENABLED", "false").lower() in ("true", "1", "yes"),
         conditional_entry_enabled=os.getenv("CONDITIONAL_ENTRY_ENABLED", "false").lower() in ("true", "1", "yes"),
         conditional_entry_max_expiry=int(os.getenv("CONDITIONAL_ENTRY_MAX_EXPIRY", "24")),
+        immediate_freshness_bars=int(os.getenv("EXECUTION_IMMEDIATE_FRESHNESS_BARS", "2")),
         trailing_sl_enabled=os.getenv("TRAILING_SL_ENABLED", "false").lower() in ("true", "1", "yes"),
         discord_ops_webhook_url=os.getenv("DISCORD_OPS_WEBHOOK_URL", ""),
         discord_urgent_webhook_url=os.getenv("DISCORD_URGENT_WEBHOOK_URL", ""),

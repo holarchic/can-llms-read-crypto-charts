@@ -1,17 +1,20 @@
 """Tests for pipeline helpers (diversity selection, candle collection)."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from scanner.config import ScannerConfig
 from scanner.models import (
+    BoundarySignal,
     Direction,
     MachineBlock,
     MarketContext,
     ScanResult,
     SetupSignal,
     SetupType,
+    SetupTypeV2,
+    SpineContext,
     Structure,
 )
 from scanner.pipeline import (
@@ -619,3 +622,92 @@ class TestAnalyzeOnePerChartLevels:
         assert result == "RESULT"
         v2ci.assert_not_called()                          # v1 never touches the v2 chart-inputs seam
         assert "per_chart_levels" not in gcs.call_args.kwargs   # v1 passes no per-chart map
+
+
+def _v2_confirm(setup_type, setup_tf, detected_at, *, entry_trigger=None, trigger_price=None):
+    """A v2 CONFIRM (BoundarySignal setup_signal + MachineBlock) for the stage4 freshness gate.
+    IMMEDIATE = no entry_trigger; a trigger makes it conditional."""
+    ctx = SpineContext(structure=Structure.BULLISH, sr_levels=[], range_bounds=None,
+                       atr=1.0, current_price=100.0, fib_levels=None, regime="rotational")
+    sig = BoundarySignal(coin="BTC", setup_type=setup_type, direction=Direction.LONG, confidence=0.5,
+                         key_level=100.0, context=ctx, description="t", setup_tf=setup_tf,
+                         basis_price=100.0, entry=100.0, hard_stop=97.0)
+    raw = {"direction": "LONG", "entry_low": 99.0, "entry_high": 101.0, "stop_loss": 89.0,
+           "tp1": 110.0, "tp1_exit_pct": 50, "confidence": 7, "leverage": 5}
+    if entry_trigger:
+        raw.update(entry_trigger=entry_trigger, entry_trigger_price=trigger_price, invalidation_price=90.0)
+    return ScanResult(
+        scan_id="s-imm", coin="BTC", timestamp=datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc),
+        setup_signal=sig, decision="CONFIRM", confluence_score=None, analysis_text=None,
+        parsed_decision=None, chart_paths=[], cost_usd=0.0,
+        machine_block=MachineBlock.from_raw(raw), detected_at=detected_at,
+    )
+
+
+class TestStage4ImmediateFreshness:
+    """T-020.10 / #49: IMMEDIATE-only v2 setups (sfp_range/deviation_reclaim) skip on a setup-TF-aware
+    freshness window, surfaced (not silent), without touching v1 or the universal staleness guard."""
+
+    def _run(self, confirm, bars=2, conditional=False):
+        exec_config = MagicMock(enabled=True, mode="testnet", conditional_entry_enabled=conditional,
+                                immediate_freshness_bars=bars)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.execution.entry_monitor.save_conditional_entry", return_value=True), \
+             patch("scanner.execution.executor.execute_trade") as mock_exec, \
+             patch("scanner.execution.executor.send_skip_alert") as mock_alert:
+            mock_exec.return_value = MagicMock(executed=True, skip_reason="")
+            results = stage4_execute([confirm], ScannerConfig(), exec_config, verbose=False)
+        return results, mock_exec, mock_alert
+
+    def test_stale_immediate_skips_and_surfaces(self):
+        old = datetime.now(timezone.utc) - timedelta(seconds=2000)   # > 2×900s (15m bar)
+        results, mock_exec, mock_alert = self._run(_v2_confirm(SetupTypeV2.SFP_RANGE, "15m", old))
+        mock_exec.assert_not_called()              # never reaches the executor
+        mock_alert.assert_called_once()            # surfaced, not a silent reject (codex MED)
+        assert len(results) == 1 and results[0].skip_reason == "stale_immediate"
+
+    def test_fresh_immediate_executes(self):
+        recent = datetime.now(timezone.utc) - timedelta(seconds=100)
+        results, mock_exec, _ = self._run(_v2_confirm(SetupTypeV2.DEVIATION_RECLAIM, "15m", recent))
+        mock_exec.assert_called_once()             # fresh → reaches execute_trade
+
+    def test_tf_aware_window(self):
+        # SAME 2000s age: stale on 15m (window 2×900=1800s), fresh on 4h (window 2×14400s)
+        age = datetime.now(timezone.utc) - timedelta(seconds=2000)
+        r15, e15, _ = self._run(_v2_confirm(SetupTypeV2.SFP_RANGE, "15m", age))
+        _r4h, e4h, _ = self._run(_v2_confirm(SetupTypeV2.SFP_RANGE, "4h", age))
+        assert r15[0].skip_reason == "stale_immediate"
+        e15.assert_not_called()
+        e4h.assert_called_once()
+
+    def test_conditional_immediate_setup_not_freshness_skipped(self):
+        # an sfp WITH an entry_trigger is conditional, not IMMEDIATE → freshness doesn't apply;
+        # it routes to the conditional-entry path (covered by conditional expiry), not stale_immediate.
+        old = datetime.now(timezone.utc) - timedelta(seconds=5000)
+        confirm = _v2_confirm(SetupTypeV2.SFP_RANGE, "15m", old, entry_trigger="limit_at", trigger_price=95.0)
+        results, mock_exec, _ = self._run(confirm, conditional=True)
+        assert results[0].skip_reason == "conditional_pending"   # routed conditional, NOT stale_immediate
+        mock_exec.assert_not_called()
+
+    def test_v1_setup_untouched_by_freshness(self):
+        # a v1 SetupType.A confirm (a day old, no trigger) is NOT freshness-skipped — v1 never matches
+        # the v2 set, so it reaches execute_trade (the universal guard lives inside, here mocked away).
+        old = datetime.now(timezone.utc) - timedelta(days=1)
+        confirm = ScanResult(
+            scan_id="s-v1", coin="BTC", timestamp=old, setup_signal=_make_signal(coin="BTC"),
+            decision="CONFIRM", confluence_score=None, analysis_text=None, parsed_decision=None,
+            chart_paths=[], cost_usd=0.0, detected_at=old,
+            machine_block=MachineBlock.from_raw({"direction": "LONG", "entry_low": 99.0,
+                "entry_high": 101.0, "stop_loss": 89.0, "tp1": 110.0, "tp1_exit_pct": 50,
+                "confidence": 7, "leverage": 5}),
+        )
+        results, mock_exec, _ = self._run(confirm)
+        mock_exec.assert_called_once()
+        assert results[0].skip_reason != "stale_immediate"
+
+    def test_zero_bars_disables_freshness(self):
+        # codex plan-r2 LOW: bars=0 is a kill-switch (NOT "age > 0 skips everything").
+        old = datetime.now(timezone.utc) - timedelta(seconds=999999)
+        results, mock_exec, _ = self._run(_v2_confirm(SetupTypeV2.SFP_RANGE, "15m", old), bars=0)
+        mock_exec.assert_called_once()             # disabled → reaches executor
+        assert results[0].skip_reason != "stale_immediate"
