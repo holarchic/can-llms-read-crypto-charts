@@ -191,6 +191,10 @@ def resolve_signal(
     # v2: once TP1 fills, the remaining size's stop ratchets to BE (entry_fill) — ruleset
     # §6.4. v1 leaves it at the original stop (no rescue, #41), so `effective_stop` never moves.
     effective_stop = stop
+    # The label a post-TP1 stop-out carries, derived from the stop's STATE (not the policy
+    # flag): "TP1_SL" at the original stop, "TP1_BE" once ratcheted to breakeven. .12's trail
+    # sets its own label here when it moves the stop above BE — so the label never lies.
+    post_tp1_stop_label = "TP1_SL"
 
     def _terminal(reason, price, bars):
         return ShadowOutcome(
@@ -218,7 +222,7 @@ def resolve_signal(
             pnl_r += p
             leg_fees_r += f
             leg_slip_r += s
-            reason = ("TP1_BE" if be_after_tp1 else "TP1_SL") if tp1_done else "SL"
+            reason = post_tp1_stop_label if tp1_done else "SL"
             return _terminal(reason, effective_stop, j + 1)
         if tp1 and not tp1_done and ((is_long and hi >= tp1) or (not is_long and lo <= tp1)):
             p, f, s = _exit_leg(entry_fill, tp1, tp1_frac, is_long, slippage, taker_fee, risk)
@@ -230,6 +234,7 @@ def resolve_signal(
             exit_reason, exit_price = "TP1", tp1
             if be_after_tp1:  # v2: ratchet the remainder's stop to breakeven
                 effective_stop = entry_fill
+                post_tp1_stop_label = "TP1_BE"
             if remaining <= 1e-9:  # full size exits at TP1 (single-target / 100-0 split)
                 return _terminal("TP1", tp1, j + 1)
         if tp2 and remaining > 0 and ((is_long and hi >= tp2) or (not is_long and lo <= tp2)):
