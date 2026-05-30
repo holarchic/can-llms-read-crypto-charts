@@ -64,8 +64,9 @@ RETRYABLE = frozenset({OPEN, DATA_INCOMPLETE})
 
 # T-020.12 (#51): exit_policy=v2 post-TP1 runner trail, keyed to the SETUP TF. The resolver
 # walks a 1H frame, so setup-TF swings come from resampling the frame up to `setup_tf` (1d/4h);
-# `1h`/`15m`/unknown/None use the 1H frame as-is — the resolution floor, can't resample finer
-# than the fetched bars. Params mirror live `drift` (the resolver is config-free by design #41).
+# `1h`/`15m` use the 1H frame as-is (the resolution floor — can't resample finer than the fetched
+# bars); an unknown/None `setup_tf` gets NO trail (see `_trail_swings`). Params mirror live
+# `drift` (the resolver is config-free by design #41).
 _TRAIL_LOOKBACK = 3            # find_swing_points lookback (live trailing_sl_lookback)
 _TRAIL_MIN_DIST_PCT = 0.2      # keep the trailed stop ≥ this % from price (no instant trigger)
 # Resample rule per setup TF: 1d/4h resample the 1H frame UP; 1h/15m use the frame as-is (the
