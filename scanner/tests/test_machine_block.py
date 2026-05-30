@@ -321,7 +321,7 @@ def test_from_raw_v1_setup_type_canonical_uppercase():
     assert mb is not None and mb.setup_type == "A"
 
 
-# --- setup_quality (SPEC #35, v2 primary judgment; additive/optional) ------
+# --- setup_quality (inert back-compat field post-T-020.4 / SPEC #44; parse still works) ------
 
 @pytest.mark.parametrize("val", ["textbook", "variant"])
 def test_setup_quality_round_trips(val):

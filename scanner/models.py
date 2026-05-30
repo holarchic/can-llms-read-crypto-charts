@@ -231,8 +231,9 @@ class SetupSignalV2:
     trend detectors, or level-derived (the swept level / divergence body) for the
     range detectors. ``hard_stop`` is the price-level stop and ``soft_stop`` the
     reclaim-against rule (trend- or level-reclaim per its mode); whichever hits first
-    ends the trade. No ``setup_quality`` — that is the LLM's additive judgment
-    (Decision #32), set downstream, never by a detector."""
+    ends the trade. The textbook judgment is structural — ``setups_v2.setup_textbook``
+    reads this signal's fields (T-020.4 / Decision #44); the detector carries no
+    ``setup_quality`` field."""
 
     setup_type: SetupTypeV2
     direction: Direction
@@ -438,13 +439,13 @@ class MachineBlock:
     setup_type: str | None = None
     confluence_score: int | None = None
     confirming_event: str | None = None
-    # v2 (the framework) LLM primary judgment — "textbook" only on a CONFIRM (SPEC #35).
-    # Additive/optional: v1 never emits it. The post-LLM ``setup_validator`` demotes any v2 CONFIRM
-    # where this is not "textbook" (or where ``machine_block is None``) with ``REJECT_NON_TEXTBOOK``
-    # before the confluence-count floor fires (SPEC #33 step 1). Parser is lenient — ``from_raw``
-    # normalizes / drops an invalid value to None rather than rejecting the whole block (a
-    # downgrade-to-None still demotes at the validator); strict-reject stays for the capital-path
-    # fields above.
+    # INERT back-compat field (T-020.4 / SPEC #44). Was the v2 LLM "primary judgment" (SPEC #35),
+    # but the textbook gate is now the detector-computed ``setups_v2.setup_textbook`` structural
+    # predicate and the LLM is collapsed to a REJECT-only veto: the v2 prompt no longer emits
+    # ``setup_quality`` and the validator no longer reads it. Retained so v1 stays byte-identical
+    # (v1 never emitted it) and historical v2 ``scans`` still parse. Parser stays lenient —
+    # ``from_raw`` normalizes a "textbook"/"variant" value (else drops to None); new v2 CONFIRMs
+    # emit None ⇒ ``to_raw`` omits the key.
     setup_quality: str | None = None
     extra: dict = field(default_factory=dict)
 
