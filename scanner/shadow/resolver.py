@@ -29,11 +29,12 @@ Non-trade statuses (`TRIGGER_EXPIRED`/`NO_FILL`/`INVALIDATED`/`DATA_INCOMPLETE`)
 `OPEN` carry `realized_r is None` and are excluded from the expectancy sample.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
 from scanner.execution.sizing import reanchor_exit_prices
+from scanner.indicators import find_swing_points
 from scanner.models import MachineBlock, ShadowOutcome
 
 __all__ = [
@@ -57,6 +58,62 @@ DATA_INCOMPLETE = "DATA_INCOMPLETE"
 # window that reaches the signal (DATA_INCOMPLETE). The store reloads exactly these so the
 # tape stays re-runnable; the rest are terminal non-trades / trades.
 RETRYABLE = frozenset({OPEN, DATA_INCOMPLETE})
+
+# T-020.12 (#51): exit_policy=v2 post-TP1 runner trail, keyed to the SETUP TF. The resolver
+# walks a 1H frame, so setup-TF swings come from resampling the frame up to `setup_tf` (1d/4h);
+# `1h`/`15m`/unknown/None use the 1H frame as-is — the resolution floor, can't resample finer
+# than the fetched bars. Params mirror live `drift` (the resolver is config-free by design #41).
+_TRAIL_LOOKBACK = 3            # find_swing_points lookback (live trailing_sl_lookback)
+_TRAIL_MIN_DIST_PCT = 0.2      # keep the trailed stop ≥ this % from price (no instant trigger)
+# Resample rule per setup TF: 1d/4h resample the 1H frame UP; 1h/15m use the frame as-is (the
+# 1H resolution floor — can't resample finer than the fetched bars). A setup_tf NOT in this map
+# (None / unknown) gets NO trail — the .11 BE floor stands (conservative: never guess a TF).
+_TRAIL_RULE = {"1d": "1D", "4h": "4h", "1h": None, "15m": None}
+_TRAIL_TF_DELTA = {"1d": timedelta(days=1), "4h": timedelta(hours=4)}
+_FRAME_DELTA = timedelta(hours=1)                       # the resolver frame is 1H
+
+
+def _trail_swings(frame, setup_tf):
+    """Setup-TF swing points + the TF bar duration, for the post-TP1 trail.
+
+    `1d`/`4h` resample the 1H `frame` up; `1h`/`15m` use it as-is (the resolution floor); a
+    `setup_tf` not in `_TRAIL_RULE` (None/unknown) returns ([], …) so the trail never arms (BE
+    floor stands). Also ([], …) when there are too few bars for `find_swing_points`."""
+    if setup_tf not in _TRAIL_RULE:        # None / unknown TF → no trail
+        return [], _FRAME_DELTA
+    rule = _TRAIL_RULE[setup_tf]
+    if rule is None:                       # 1h / 15m → the 1H frame is the floor
+        tf_df, tf_delta = frame, _FRAME_DELTA
+    else:                                  # 1d / 4h → resample up
+        tf_df = frame.resample(rule).agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        ).dropna()
+        tf_delta = _TRAIL_TF_DELTA[setup_tf]
+    if len(tf_df) < 2 * _TRAIL_LOOKBACK + 1:
+        return [], tf_delta
+    return find_swing_points(tf_df, _TRAIL_LOOKBACK), tf_delta
+
+
+def _trail_stop(swings, tf_delta, current_ts, bar_open, is_long, effective_stop):
+    """The trailed stop at `current_ts` (the bar OPEN), or None if no qualifying swing.
+
+    A swing is eligible only once CONFIRMED — `swing.timestamp` is the (resampled) bar OPEN and
+    find_swing_points needs `lookback` bars after it, so it is visible at
+    `swing.timestamp + (lookback+1)·tf_delta` (≡ swing_close + lookback·tf_delta). Among confirmed
+    swings of the trailing type (low for LONG / high for SHORT) that TIGHTEN the stop and sit
+    ≥ `_TRAIL_MIN_DIST_PCT` from the bar's OPEN price (no instant-trigger), return the most recent —
+    mirroring live `find_trailing_sl` + its tighten-only guard."""
+    want = "low" if is_long else "high"
+    confirm_delay = (_TRAIL_LOOKBACK + 1) * tf_delta
+    if is_long:
+        ceiling = bar_open * (1 - _TRAIL_MIN_DIST_PCT / 100)
+        ok = [s for s in swings if s.type == want and s.timestamp + confirm_delay <= current_ts
+              and effective_stop < s.price < ceiling]
+    else:
+        floor = bar_open * (1 + _TRAIL_MIN_DIST_PCT / 100)
+        ok = [s for s in swings if s.type == want and s.timestamp + confirm_delay <= current_ts
+              and floor < s.price < effective_stop]
+    return ok[-1].price if ok else None
 
 
 def _slip(px: float, *, buy: bool, slippage: float) -> float:
@@ -126,6 +183,7 @@ def resolve_signal(
     frame: pd.DataFrame,
     *,
     exit_policy: str = EXIT_POLICY_VERSION,
+    setup_tf: str | None = None,  # v2 post-TP1 trail TF (#51); ignored under v1
     # Production sources the per-venue taker fee from EXCHANGE_META[exchange]["fee_rate"]
     # (the resolve CLI passes it); these defaults are a fallback for direct / test calls.
     taker_fee: float = 0.00035,
@@ -195,6 +253,9 @@ def resolve_signal(
     # flag): "TP1_SL" at the original stop, "TP1_BE" once ratcheted to breakeven. .12's trail
     # sets its own label here when it moves the stop above BE — so the label never lies.
     post_tp1_stop_label = "TP1_SL"
+    # v2 trail substrate (T-020.12): setup-TF swings + bar duration, precomputed once on the
+    # post-entry frame. Empty for v1 (be_after_tp1 False) — the trail never arms.
+    trail_swings, trail_tf_delta = _trail_swings(fwd, setup_tf) if be_after_tp1 else ([], _FRAME_DELTA)
 
     def _terminal(reason, price, bars):
         return ShadowOutcome(
@@ -214,9 +275,19 @@ def resolve_signal(
             return _terminal("TIME_EXPIRY" if not tp1_done else "TP1_TIME", close, j + 1)
         hi = float(mgmt.iloc[j]["High"])
         lo = float(mgmt.iloc[j]["Low"])
+        # v2 trail (T-020.12): post-TP1, ratchet the stop UP to confirmed setup-TF swings using
+        # ONLY info available at this bar's OPEN (swings confirmed before the open; min-distance
+        # vs the open price) — armed BEFORE the stop-first check below tests the bar's range
+        # against it. No same-bar look-ahead. Tighten-only; stays ≥ the BE floor.
+        if be_after_tp1 and tp1_done:
+            trailed = _trail_stop(trail_swings, trail_tf_delta, mgmt.index[j],
+                                  float(mgmt.iloc[j]["Open"]), is_long, effective_stop)
+            if trailed is not None:
+                effective_stop = trailed
+                post_tp1_stop_label = "TP1_TRAIL"
         # Pessimistic: stop first when a bar spans both stop and a TP. Post-TP1 under v2,
-        # `effective_stop` is BE (set the bar AFTER the TP1 fill — this check already ran
-        # against the pre-TP1 stop on the fill bar, so BE is never applied retroactively).
+        # `effective_stop` is BE or a setup-TF trail (set from the bar AFTER the TP1 fill — this
+        # check already ran against the pre-TP1 stop on the fill bar, so it is never retroactive).
         if (is_long and lo <= effective_stop) or (not is_long and hi >= effective_stop):
             p, f, s = _exit_leg(entry_fill, effective_stop, remaining, is_long, slippage, taker_fee, risk)
             pnl_r += p

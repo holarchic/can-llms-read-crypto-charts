@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
     exchange TEXT NOT NULL DEFAULT 'hyperliquid',
     anchor_ts TEXT NOT NULL,
     setup_type TEXT,
+    setup_tf TEXT,
     direction TEXT,
     prompt_version TEXT,
     confluence_count INTEGER,
@@ -140,7 +141,7 @@ ON signals (strategy_id)
 """
 
 
-_VALID_TABLES = {"signals", "scans", "strategies", "scan_universe"}
+_VALID_TABLES = {"signals", "scans", "strategies", "scan_universe", "shadow_signals"}
 _VALID_COL_TYPES = {"TEXT", "REAL", "INTEGER"}
 
 
@@ -196,6 +197,9 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_SCAN_UNIVERSE_TABLE)
     conn.execute(CREATE_SHADOW_SIGNALS_TABLE)  # T-020.1 shadow-mode capture (SPEC #41)
     conn.execute(CREATE_SHADOW_RESOLUTIONS_TABLE)  # T-020.1 shadow forward-resolution
+    # T-020.12 (SPEC #51): setup_tf for the exit_policy=v2 setup-TF runner trail — additive
+    # on existing DBs (CREATE IF NOT EXISTS no-ops on an existing shadow_signals table).
+    _ensure_column(conn, "shadow_signals", "setup_tf", "TEXT", "NULL")
     # Migrate: add strategy_id to existing tables
     _ensure_column(conn, "signals", "strategy_id", "TEXT", "'v0'")
     _ensure_column(conn, "scans", "strategy_id", "TEXT", "'v0'")

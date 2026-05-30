@@ -6,12 +6,15 @@ limit_at / invalidation / expiry / zone-reject), exit semantics (SL / TP1→TP2 
 / pessimistic intrabar / OPEN), and the data-window guard.
 """
 
+from datetime import timedelta
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
 from scanner.models import MachineBlock
 from scanner.shadow import resolver as R
-from scanner.shadow.resolver import resolve_signal
+from scanner.shadow.resolver import _trail_stop, _trail_swings, resolve_signal
 
 _BASE = {
     "entry_low": 100.0, "entry_high": 101.0, "stop_loss": 95.0,
@@ -277,3 +280,85 @@ def test_unknown_exit_policy_raises():
     f = _frame([(100, 101, 99, 100.5), (100.5, 101, 100, 100.5)])
     with pytest.raises(ValueError, match="unknown exit_policy"):
         resolve_signal(_mb(), _anchor(f), f, exit_policy="v3")
+
+
+# --- exit_policy=v2: post-TP1 setup-TF runner trail (T-020.12) --------------------
+
+def test_v2_setup_tf_trail_beats_be_on_remainder():
+    # LONG: TP1 fills, price runs up, a 1h swing low (wick 110, body min 112 over ±3) forms and
+    # confirms 4 bars later, then a big reversal. v2 with setup_tf="1h" ratchets the remainder
+    # stop up to 110 → exits TP1_TRAIL at 110 (in profit); setup_tf=None keeps the BE floor →
+    # exits TP1_BE at entry. Trail R strictly greater.
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100.5, 111, 100, 110.5),   # TP1 (high≥110); BE armed at entry
+        (110.5, 116, 113, 115),
+        (115, 118, 114, 117),
+        (117, 119, 115, 118),
+        (118, 119, 116, 119),
+        (114, 119, 110, 112),       # swing low: body 112 is the unique min over ±3; wick 110
+        (116, 118, 115, 117),
+        (117, 119, 116, 118),
+        (118, 119, 117, 119),
+        (119, 119, 100, 100),       # reversal: low 100 ≤ trail(110) and ≤ BE(entry)
+    ])
+    trail = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2", setup_tf="1h")
+    be = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2", setup_tf=None)
+    assert trail.exit_reason == "TP1_TRAIL" and be.exit_reason == "TP1_BE"
+    assert trail.exit_price == pytest.approx(110.0)   # remainder exits at the trailed swing
+    assert be.exit_price < 101.0                       # remainder exits at ~breakeven (entry)
+    assert trail.realized_r > be.realized_r            # the trail locked the runner above BE
+
+
+def test_v2_setup_tf_trail_short_remainder():
+    # SHORT mirror: swing HIGH below entry; the stop ratchets DOWN; a reversal up exits at it.
+    mb = _mb(direction="SHORT", stop_loss=105.0, tp1=90.0, tp2=80.0)
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (99.5, 100, 89, 89.5),      # TP1 (low≤90); BE armed at entry
+        (89.5, 90, 84, 85),
+        (85, 86, 83, 84),
+        (84, 85, 82, 83),
+        (83, 84, 81, 82),
+        (88, 90, 86, 90),           # swing high: body 90 is the unique max over ±3; wick 90
+        (86, 87, 85, 85),
+        (85, 86, 84, 84),
+        (84, 85, 83, 83),
+        (83, 100, 82, 100),         # reversal up: high 100 ≥ trail(90) and ≥ BE(entry)
+    ])
+    trail = resolve_signal(mb, _anchor(f), f, exit_policy="v2", setup_tf="1h")
+    be = resolve_signal(mb, _anchor(f), f, exit_policy="v2", setup_tf=None)
+    assert trail.exit_reason == "TP1_TRAIL" and be.exit_reason == "TP1_BE"
+    assert trail.exit_price == pytest.approx(90.0)     # swing high below entry → locks profit
+    assert trail.realized_r > be.realized_r            # SHORT: lower exit = more profit
+
+
+def _swing(ts, price, kind):
+    return SimpleNamespace(timestamp=ts, price=price, type=kind)
+
+
+def test_trail_stop_confirmation_timing():
+    ts = pd.Timestamp("2026-05-29T12:00:00Z")
+    d = timedelta(hours=1)            # confirm delay = (lookback+1)*d = 4h
+    sw = [_swing(ts, 110.0, "low")]
+    assert _trail_stop(sw, d, ts + timedelta(hours=4), 120.0, True, 100.0) == 110.0  # confirmed
+    assert _trail_stop(sw, d, ts + timedelta(hours=3), 120.0, True, 100.0) is None    # too early
+
+
+def test_trail_stop_tighten_only_and_min_distance():
+    ts = pd.Timestamp("2026-05-29T12:00:00Z")
+    cur = ts + timedelta(hours=10)
+    d = timedelta(hours=1)
+    # tighten-only: a swing below the current stop never loosens it
+    assert _trail_stop([_swing(ts, 90.0, "low")], d, cur, 120.0, True, 100.0) is None
+    # min-distance: a swing within 0.2% of the bar OPEN is rejected (no instant-trigger)
+    assert _trail_stop([_swing(ts, 119.9, "low")], d, cur, 120.0, True, 100.0) is None
+    # a qualifying swing is returned
+    assert _trail_stop([_swing(ts, 110.0, "low")], d, cur, 120.0, True, 100.0) == 110.0
+
+
+def test_trail_swings_unknown_tf_no_trail():
+    # a setup_tf not in _TRAIL_RULE (None/unknown) yields no swings → the trail never arms
+    f = _frame([(100, 101, 99, 100)] * 10)
+    assert _trail_swings(f, "weird")[0] == []
+    assert _trail_swings(f, None)[0] == []

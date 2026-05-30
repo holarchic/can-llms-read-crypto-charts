@@ -42,6 +42,7 @@ def _confirm(scan_id: str = "scan-1"):
     """A post-validator CONFIRM, duck-typed to the store's read surface."""
     sig = SimpleNamespace(
         confluence=frozenset({ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.RETEST}),
+        setup_tf="4h",
     )
     return SimpleNamespace(
         scan_id=scan_id, coin="BTC", machine_block=_machine_block(),
@@ -54,7 +55,7 @@ def test_capture_persists_post_validator_confirm(conn):
 
     row = conn.execute(
         "SELECT scan_id, coin, exchange, anchor_ts, setup_type, direction, "
-        "prompt_version, confluence_count FROM shadow_signals"
+        "prompt_version, confluence_count, setup_tf FROM shadow_signals"
     ).fetchone()
     assert row is not None
     assert row[0] == "scan-1"          # scan_id — the deterministic link to scans
@@ -65,6 +66,7 @@ def test_capture_persists_post_validator_confirm(conn):
     assert row[5] == "LONG"
     assert row[6] == "10.00"
     assert row[7] == 2                 # two confluence factors captured at scan time
+    assert row[8] == "4h"              # setup_tf captured for the v2 trail (T-020.12)
 
 
 def test_capture_records_full_geometry(conn):

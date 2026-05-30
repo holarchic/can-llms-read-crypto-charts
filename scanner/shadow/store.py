@@ -33,6 +33,7 @@ class LoadedShadowSignal(NamedTuple):
     coin: str
     exchange: str
     anchor_ts: datetime
+    setup_tf: str | None
     machine_block: MachineBlock
 
 
@@ -49,15 +50,16 @@ def save_shadow_signal(
     mb = result.machine_block
     cur = conn.execute(
         "INSERT OR IGNORE INTO shadow_signals "
-        "(scan_id, coin, exchange, anchor_ts, setup_type, direction, "
+        "(scan_id, coin, exchange, anchor_ts, setup_type, setup_tf, direction, "
         " prompt_version, confluence_count, machine_block, validator_verdict) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.scan_id,
             result.coin,
             exchange,
             anchor_ts.isoformat(),
             mb.setup_type,
+            result.setup_signal.setup_tf,
             mb.direction,
             result.prompt_version,
             len(result.setup_signal.confluence),
@@ -79,7 +81,7 @@ def load_unresolved_signals(
     placeholders = ", ".join("?" for _ in RETRYABLE)
     rows = conn.execute(
         "SELECT s.id AS id, s.coin AS coin, s.exchange AS exchange, "
-        "       s.anchor_ts AS anchor_ts, s.machine_block AS machine_block "
+        "       s.anchor_ts AS anchor_ts, s.setup_tf AS setup_tf, s.machine_block AS machine_block "
         "FROM shadow_signals s "
         "LEFT JOIN shadow_resolutions r "
         "  ON r.shadow_signal_id = s.id "
@@ -102,7 +104,8 @@ def load_unresolved_signals(
             )
         out.append(LoadedShadowSignal(
             id=row["id"], coin=row["coin"], exchange=row["exchange"],
-            anchor_ts=datetime.fromisoformat(row["anchor_ts"]), machine_block=mb,
+            anchor_ts=datetime.fromisoformat(row["anchor_ts"]),
+            setup_tf=row["setup_tf"], machine_block=mb,
         ))
     return out
 

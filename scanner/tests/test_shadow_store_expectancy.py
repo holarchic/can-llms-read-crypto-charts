@@ -39,6 +39,7 @@ def _capture(conn, scan_id: str) -> int:
     })
     sig = SimpleNamespace(
         confluence=frozenset({ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.RETEST}),
+        setup_tf="4h",
     )
     confirm = SimpleNamespace(
         scan_id=scan_id, coin="BTC", machine_block=mb,
@@ -59,6 +60,7 @@ def test_load_unresolved_rehydrates_signal(conn):
     assert rows[0].coin == "BTC" and rows[0].exchange == "hyperliquid"
     assert rows[0].anchor_ts == _ANCHOR
     assert rows[0].machine_block.direction == "LONG"
+    assert rows[0].setup_tf == "4h"     # round-trips capture→load for the v2 trail (T-020.12)
 
 
 def test_resolved_excluded_open_reincluded(conn):
