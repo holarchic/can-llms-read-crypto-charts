@@ -41,6 +41,7 @@ from .indicators import build_context
 from .ma_indicators import EMABand, LongerMASet, compute_rsi
 from .models import (
     MSB,
+    BoundarySignal,
     ConfluenceFactor,
     Direction,
     SetupSignalV2,
@@ -64,6 +65,7 @@ __all__ = [
     "detect_gap_fill",
     "detect_sfp_range",
     "detect_rsi_divergence_range",
+    "setup_textbook",
 ]
 
 
@@ -230,6 +232,34 @@ def _retest_factors(
     if abs(price - entry) <= retest_tol * atr:
         factors.add(ConfluenceFactor.RETEST)
     return factors
+
+
+def setup_textbook(signal: BoundarySignal) -> bool:
+    """Structural textbook predicate (T-020.4 / SPEC #44): False when a detector-knowable
+    compromise the detectors emit *through* is present, else True. The post-LLM
+    ``setup_validator`` reads this in place of the LLM ``machine_block.setup_quality`` self-label.
+
+    Both clauses are ``trend_continuation``-specific — they read the two structural facts
+    ``detect_trend_continuation`` itself computes/attaches:
+
+    - ``weakness_flag`` set ⇒ a first-weakness chase (ruleset §3.1 continuation precond #2).
+      Scoped to ``trend_continuation`` ONLY: on ``trend_reclaim`` / ``deviation_reclaim`` the
+      flag marks the pre-reclaim deterioration those setups exist to repair, so a reject there
+      would gut them.
+    - ``RETEST`` absent ⇒ the mid-air momentum chase (ruleset §3.1 continuation precond #3 +
+      confluence floor #5 name the retest a precondition, not optional confluence).
+
+    This is NOT a universal-textbook judgment: every other setup passes by construction — their
+    compromises (regime fit, the continuation cap) are T-020.9 / out of scope here, and the
+    non-computable compromises (a less-clean level, partial acceptance) stay in the LLM veto
+    bucket. Reads only structural fields — no LLM input. The validator early-returns on the v1
+    path, so ``setup_type`` here is always a ``SetupTypeV2``."""
+    if signal.setup_type is SetupTypeV2.TREND_CONTINUATION:
+        if signal.weakness_flag:
+            return False
+        if ConfluenceFactor.RETEST not in signal.confluence:
+            return False
+    return True
 
 
 def detect_trend_continuation(

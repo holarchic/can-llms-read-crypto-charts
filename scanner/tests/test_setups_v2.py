@@ -22,11 +22,14 @@ import pytest
 
 from scanner.ma_indicators import compute_ema_band, compute_longer_set
 from scanner.models import (
+    BoundarySignal,
     ConfluenceFactor,
     Direction,
     SetupTypeV2,
     SoftStopMode,
+    SpineContext,
     SRLevelV2,
+    Structure,
 )
 from scanner.regime import detect_regime
 from scanner.setups_v2 import (
@@ -35,6 +38,7 @@ from scanner.setups_v2 import (
     detect_trend_continuation,
     detect_trend_reclaim,
     setup_context_from_df,
+    setup_textbook,
 )
 from scanner.trend_state import derive_trend_state
 
@@ -229,3 +233,68 @@ def test_short_history_degrades_to_empty():
 def test_setup_context_rejects_empty_frame():
     with pytest.raises(ValueError):
         setup_context_from_df(_frame([]))
+
+
+# --- structural textbook predicate (T-020.4 / SPEC #44) -----------------------
+
+_TC = SetupTypeV2.TREND_CONTINUATION
+
+
+def _bsig(setup_type, *, confluence=frozenset(), weakness_flag=False):
+    """Minimal BoundarySignal carrying only the fields ``setup_textbook`` reads."""
+    ctx = SpineContext(
+        structure=Structure.BULLISH, sr_levels=[], range_bounds=None,
+        atr=1.0, current_price=1.0, fib_levels=None, regime="trending",
+    )
+    return BoundarySignal(
+        coin="TEST", setup_type=setup_type, direction=Direction.LONG, confidence=0.5,
+        key_level=1.0, context=ctx, description="t", setup_tf="4h",
+        confluence=confluence, weakness_flag=weakness_flag,
+    )
+
+
+def test_setup_textbook_continuation_textbook_passes():
+    assert setup_textbook(_bsig(_TC, confluence=frozenset({ConfluenceFactor.RETEST}))) is True
+
+
+def test_setup_textbook_continuation_without_retest_rejected():
+    # .6 — the mid-air momentum chase. A real, non-vacuous reject.
+    assert setup_textbook(_bsig(_TC, confluence=frozenset({ConfluenceFactor.TREND_ALIGNED}))) is False
+
+
+def test_setup_textbook_continuation_with_weakness_rejected():
+    # .5 — first-weakness disqualifies even WITH a retest.
+    bs = _bsig(_TC, confluence=frozenset({ConfluenceFactor.RETEST}), weakness_flag=True)
+    assert setup_textbook(bs) is False
+
+
+def test_setup_textbook_reclaim_with_weakness_passes():
+    # .5 is trend_continuation-only: reclaim weakness is the deterioration the setup repairs.
+    assert setup_textbook(_bsig(SetupTypeV2.TREND_RECLAIM, weakness_flag=True)) is True
+    assert setup_textbook(_bsig(SetupTypeV2.DEVIATION_RECLAIM, weakness_flag=True)) is True
+
+
+def test_setup_textbook_non_continuation_without_retest_passes():
+    # .6 is trend_continuation-only: range / counter-trend setups need no RETEST.
+    assert setup_textbook(_bsig(SetupTypeV2.SFP_RANGE)) is True
+    assert setup_textbook(_bsig(SetupTypeV2.GAP_FILL)) is True
+    assert setup_textbook(_bsig(SetupTypeV2.RSI_DIVERGENCE_RANGE)) is True
+
+
+def test_setup_textbook_rejects_real_continuation_without_retest():
+    """Anti-vacuity against REAL producer output: a real ``detect_trend_continuation``
+    emission the detector did not tag with RETEST is a breakout chase, and the predicate
+    rejects it — proving the gate reads facts the detector actually emits, not just
+    synthetic signals."""
+    closes = _continuation_closes()
+    opens = list(closes)
+    opens[302] = closes[302] - 7  # green impulse → emits
+    df = _frame(closes, opens=opens)
+    emission = detect_trend_continuation(setup_context_from_df(df), _substrate(df), [])[0]
+    assert ConfluenceFactor.RETEST not in emission.confluence  # breakout, not a retest
+    assert emission.weakness_flag is False
+    bs = _bsig(emission.setup_type, confluence=emission.confluence, weakness_flag=emission.weakness_flag)
+    assert setup_textbook(bs) is False
+    # ...and the same real emission WITH a retest tag passes (the textbook branch is reachable):
+    bs_retest = _bsig(_TC, confluence=emission.confluence | {ConfluenceFactor.RETEST})
+    assert setup_textbook(bs_retest) is True
