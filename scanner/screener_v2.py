@@ -27,6 +27,7 @@ import pandas as pd
 
 from .config import ScannerConfig
 from .data_plane_v2 import (
+    SETUP_TFS,
     MarketContextV2,
     build_market_context_v2,
     fetch_multi_tf,
@@ -37,6 +38,7 @@ from .models import (
     BoundarySignal,
     Direction,
     SetupSignalV2,
+    SetupTypeV2,
     SpineContext,
     SpineLevel,
     SRLevelV2,
@@ -73,6 +75,17 @@ _LOWER_TF: dict[str, str | None] = {"1d": "4h", "4h": "1h", "1h": "15m", "15m": 
 
 # TF precedence for dedup / order tiebreaks — a higher TF wins an equal-score tie.
 _TF_RANK: dict[str, int] = {"1d": 3, "4h": 2, "1h": 1, "15m": 0}
+
+# The with-trend DIRECTIONAL setups the top-down HTF gate applies to (T-020.8 / SPEC #46).
+# Defined here, not shared: T-020.4 inlined its `is TREND_CONTINUATION` check, so there is no
+# `_WITH_TREND` symbol to reuse. `gap_fill` (counter-trend by definition — #44/§3.3) + the
+# rotational range setups (`sfp_range`/`rsi_divergence_range` — range rotation is not a
+# trend-direction bet) are deliberately absent: gating them on HTF trend bias is a category error.
+_HTF_GATED: frozenset[SetupTypeV2] = frozenset({
+    SetupTypeV2.TREND_CONTINUATION,
+    SetupTypeV2.TREND_RECLAIM,
+    SetupTypeV2.DEVIATION_RECLAIM,
+})
 
 # Confluence count at which the deterministic screener rank saturates (pre-8b).
 _SCORE_SATURATION = 5
@@ -151,12 +164,45 @@ def _lower_tf_reclaim(setup_tf: str, ctx2: MarketContextV2) -> bool:
     return price > ema200 if direction is Direction.LONG else price < ema200
 
 
+def _htf_bias(setup_tf: str, ctx2: MarketContextV2) -> TrendDirection | None:
+    """The HTF trend bias for a setup on `setup_tf`: the `longer_trend_direction` (100/200/300
+    stack) of the NEAREST-HIGHER substrate present in `ctx2.substrates`, walking up `SETUP_TFS`
+    order. `None` when no higher substrate is present — the setup is already the highest
+    available TF, OR every higher setup TF failed the `MIN_SUBSTRATE_BARS` floor on a
+    short-history coin. The macro TFs (1w/1mo/3d) are candle-only, never substrates, so a `1d`
+    setup always returns `None` here (the #46 scoped limitation: 1d is ungated this chunk)."""
+    try:
+        idx = SETUP_TFS.index(setup_tf)
+    except ValueError:
+        return None
+    for higher_tf in reversed(SETUP_TFS[:idx]):  # nearest-higher first (skips over absent TFs)
+        sub = ctx2.substrates.get(higher_tf)
+        if sub is not None:
+            return sub.trend_state.longer_trend_direction
+    return None
+
+
+def _htf_eligible(setup_tf: str, direction: Direction, ctx2: MarketContextV2) -> bool:
+    """Top-down HTF gate (T-020.8 / SPEC #46): a with-trend directional setup is eligible iff
+    its direction agrees with the nearest-higher HTF bias. No higher anchor (`bias is None`)
+    or a FLAT bias = no opposition ⇒ eligible — the gate only DROPS a setup it can prove runs
+    against a non-FLAT higher trend."""
+    bias = _htf_bias(setup_tf, ctx2)
+    if bias is None or bias is TrendDirection.FLAT:
+        return True
+    want = TrendDirection.UP if direction is Direction.LONG else TrendDirection.DOWN
+    return want is bias
+
+
 def _run_detectors(ctx2: MarketContextV2) -> list[tuple[str, SetupSignalV2]]:
     """Run the six detectors over every deep setup TF; return (setup_tf, signal) pairs.
 
     A TF appears in `substrates`/`setup_contexts` only when it cleared the substrate
     floor (Chunk 7a), so absent TFs are skipped. `lower_tf_reclaim` is derived per TF
-    and passed only to `detect_trend_reclaim` (the sole detector that takes it)."""
+    and passed only to `detect_trend_reclaim` (the sole detector that takes it). A
+    with-trend directional setup (`_HTF_GATED`) is then dropped by the top-down HTF gate
+    if its direction opposes the nearest-higher TF bias (T-020.8 / SPEC #46) — a pure
+    selection filter, before dedup/selection and the LLM; detection itself is unchanged."""
     out: list[tuple[str, SetupSignalV2]] = []
     for tf, sub in ctx2.substrates.items():
         sc = ctx2.setup_contexts.get(tf)
@@ -171,7 +217,10 @@ def _run_detectors(ctx2: MarketContextV2) -> list[tuple[str, SetupSignalV2]]:
         found += detect_gap_fill(sc, sub, sr)
         found += detect_sfp_range(sc, sub, sr)
         found += detect_rsi_divergence_range(sc, sub, sr)
-        out.extend((tf, s) for s in found)
+        out.extend(
+            (tf, s) for s in found
+            if s.setup_type not in _HTF_GATED or _htf_eligible(tf, s.direction, ctx2)
+        )
     return out
 
 
