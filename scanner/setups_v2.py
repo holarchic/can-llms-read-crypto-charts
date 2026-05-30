@@ -529,12 +529,17 @@ def detect_gap_fill(
     substrate: TFSubstrate,
     sr_levels: list[SRLevelV2],
     *,
-    min_gap: float = 1.0,
+    min_gap: float = 2.0,
     rsi_len: int = 14,
     div_max_gap: int = 14,
     min_bars: int = 40,
 ) -> list[SetupSignalV2]:
-    """Counter-trend gap-fill toward the 100MA: geometry AND (divergence OR F2 stall)."""
+    """Counter-trend gap-fill toward the 100MA: geometry AND (divergence OR F2 stall).
+
+    ``min_gap`` is the minimum gap-to-100MA in ATR multiples — the ruleset's "meaningful gap"
+    floor (§3.1 ``gap_fill``: gap-to-target / ATR ≥ 2–3×; a tight gap is poor R:R, skip). Default
+    **2.0×** = the floor of that band (T-020.7 closed the audit-flagged 1.0× code divergence —
+    the detector was looser than its own prose)."""
     if len(context.df) < min_bars:
         return []
     price, atr = context.current_price, context.atr

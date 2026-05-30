@@ -172,6 +172,19 @@ def test_gap_fill_emits_on_divergence_branch_without_stall():
     assert s.hard_stop > s.entry
 
 
+def test_gap_fill_default_min_gap_closes_the_1x_divergence():
+    """T-020.7: gap_fill's default min_gap is the ruleset's 2.0x ATR floor (§3.1 gap_fill ≥2-3x),
+    not the old loose 1.0x. min_gap is the live gate, so any counter-trend bounce whose
+    gap-to-100MA is in [1.0, 2.0)x ATR — which emitted under the old default — is now rejected."""
+    import inspect
+    assert inspect.signature(detect_gap_fill).parameters["min_gap"].default == 2.0
+    df = _frame(_f2_down())
+    sub, ctx = _substrate(df), setup_context_from_df(df)
+    assert len(detect_gap_fill(ctx, sub, [], min_gap=1.0)) == 1   # the old loose floor emitted
+    assert len(detect_gap_fill(ctx, sub, [])) == 1                # default 2.0x — fixture gap >= 2x
+    assert detect_gap_fill(ctx, sub, [], min_gap=99.0) == []      # a floor above the gap suppresses
+
+
 # --- sfp_range ----------------------------------------------------------------
 
 def _sweep_frame(last3, sweep_high):
