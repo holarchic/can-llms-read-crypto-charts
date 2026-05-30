@@ -9,13 +9,16 @@ calibration LOGIC the cutover gate (Acceptance #9 a/b) reads:
   a guard that the per-coin emit rate has not blown past the V9.x baseline (the over-emission the
   V9.11 cohort exposed — decision #32).
 - **Validator floor sweep (#9b):** runs the *real* ``setup_validator.validate_confirms`` (the
-  single owner of the two-step gate — textbook-quality floor then confluence-count floor — never
-  re-implemented here) across candidate ``v2_min_confluence`` floors over a labeled set of seeded
-  over-eager vs legit confirms, and recommends the smallest floor that demotes every over-eager
-  confirm without demoting a legit one. The harness scopes its measurement to the count floor
-  by stamping every probe textbook (``_confirm_result``) so the textbook gate is bypassed and
-  the count floor stays the seam under test; ``floor_sweep`` fail-fast asserts the precondition
-  to make external misuse loud.
+  single owner of the two-step gate — structural textbook predicate then confluence-count floor —
+  never re-implemented here) across candidate ``v2_min_confluence`` floors over a labeled set of
+  seeded over-eager vs legit confirms, and recommends the smallest floor that demotes every
+  over-eager confirm without demoting a legit one. The harness scopes its measurement to the count
+  floor by SEEDING structurally-textbook probes (non-``trend_continuation`` types —
+  ``seed_labeled_confirms``; T-020.4) so the structural textbook gate passes and the count floor
+  stays the seam under test; ``floor_sweep`` fail-fast raises on a non-textbook probe or a missing
+  execution block to make external misuse loud. The real-emission ``floor_impact`` measures the
+  count-floor bite over the structural-textbook survivors only, reporting the structural-gate
+  exclusions separately (the two gates are not conflated).
 - **go/no-go record** combining both, surfacing the reasons a run is NOT a go.
 
 NOT in scope here (the data-dependent operational run): the detector-threshold sweep (Stoch RSI
@@ -41,11 +44,13 @@ from .models import (
     Structure,
 )
 from .setup_validator import REJECT_CONFLUENCE_FLOOR, validate_confirms
+from .setups_v2 import setup_textbook
 
 __all__ = [
     "EmitDistribution",
     "LabeledConfirm",
     "FloorReport",
+    "FloorImpact",
     "CalibrationRecord",
     "emit_distribution",
     "emit_rate",
@@ -149,19 +154,23 @@ def floor_sweep(
     harness never constructs config from ambient env (it stays env-independent / pure); ``replace``
     only overrides the two fields the gate reads.
 
-    Precondition: every probe carries `machine_block.setup_quality == "textbook"` — the sweep
-    measures the count-floor seam, so the upstream textbook-quality gate (SPEC #33 step 1) must
-    pass for every input. A non-textbook probe would demote on `REJECT_NON_TEXTBOOK` and be
+    Precondition: every probe is structurally textbook (`setup_textbook`) AND carries an
+    execution block — the sweep measures the count-floor seam, so the upstream gates (the
+    structural textbook predicate then the missing-MB fail-closed, SPEC #44 step 1) must pass for
+    every input. A non-textbook (or MB-less) probe would demote on `REJECT_NON_TEXTBOOK` and be
     scored as "not demoted" by the count-floor counter — silently mis-scoring the floor. Fail
     fast at the boundary rather than hide the misuse.
     """
     for lc in labeled:
-        mb = lc.result.machine_block
-        if mb is None or mb.setup_quality != "textbook":
+        if lc.result.machine_block is None:
             raise ValueError(
-                f"floor_sweep requires textbook-stamped probes; "
-                f"{lc.result.coin} has setup_quality="
-                f"{mb.setup_quality if mb is not None else None!r}"
+                f"floor_sweep requires probes with an execution block; "
+                f"{lc.result.coin} has machine_block=None"
+            )
+        if not setup_textbook(lc.result.setup_signal):
+            raise ValueError(
+                f"floor_sweep requires structurally-textbook probes (the count-floor seam); "
+                f"{lc.result.coin} ({lc.result.setup_signal.setup_type.value}) is non-textbook"
             )
     reports: list[FloorReport] = []
     for floor in floors:
@@ -253,18 +262,15 @@ _SEED_TS = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 def _confirm_result(signal: BoundarySignal) -> ScanResult:
     """Wrap a `BoundarySignal` as a minimal CONFIRM `ScanResult`. The validator reads
-    ``decision`` + ``setup_signal.confluence`` + ``machine_block.setup_quality``; every probe
-    carries a freshly-constructed textbook ``MachineBlock`` so the new textbook gate (SPEC #33)
-    is bypassed and the count-floor sweep — the seam this harness is designed to measure —
-    stays exercised. Without the textbook stamp, every probe would demote on
-    ``REJECT_NON_TEXTBOOK`` first and ``recommend_floor()`` would silently return None / wrong.
-    The MachineBlock is constructed fresh per probe (not a module-level singleton) — the
-    dataclass is frozen but its ``extra`` dict is not, so per-probe construction prevents
-    any future mutation from leaking across probes. Fixed timestamp keeps it pure."""
+    ``decision`` + ``setup_signal`` (the structural textbook predicate) + ``setup_signal.confluence``
+    (the count floor); ``machine_block`` only needs to be non-None (an executable CONFIRM —
+    structural textbook is decided from the signal, not the LLM ``setup_quality`` self-label, which
+    T-020.4 dropped). The MachineBlock is constructed fresh per probe (not a module-level singleton)
+    — the dataclass is frozen but its ``extra`` dict is not, so per-probe construction prevents any
+    future mutation from leaking across probes. Fixed timestamp keeps it pure."""
     mb = MachineBlock(
         entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
         direction="LONG", confidence=5.0, leverage=1.0,
-        setup_quality="textbook",
     )
     return ScanResult(
         scan_id=f"cal-{signal.coin}-{len(signal.confluence)}",
@@ -299,9 +305,12 @@ def _synthetic_signal(setup_type: SetupTypeV2, n_confluence: int, coin: str) -> 
 def seed_labeled_confirms() -> list[LabeledConfirm]:
     """The canonical seeded set the floor is validated against (Acceptance #9b): over-eager confirms
     (confluence 0-1 — the floor SHOULD demote) and legit confirms (confluence 2-4 — the floor should
-    keep), spread across setup types. Deterministic / pure; the smallest separating floor over this
-    set is 2 (= the shipped `v2_min_confluence` default)."""
-    types = list(SetupTypeV2)
+    keep), spread across setup types. The types are the **non-`trend_continuation`** setups so every
+    probe is structurally textbook at any confluence count (T-020.4: the predicate gates only
+    `trend_continuation` via RETEST/weakness; the count floor is type-blind, so the spread is
+    cosmetic) — this isolates the count-floor seam from the structural gate. Deterministic / pure;
+    the smallest separating floor over this set is 2 (= the shipped `v2_min_confluence` default)."""
+    types = [t for t in SetupTypeV2 if t is not SetupTypeV2.TREND_CONTINUATION]
     seeds: list[LabeledConfirm] = []
     for i, n in enumerate((0, 1)):
         st = types[i % len(types)]
@@ -312,17 +321,37 @@ def seed_labeled_confirms() -> list[LabeledConfirm]:
     return seeds
 
 
+@dataclass(frozen=True)
+class FloorImpact:
+    """`floor_impact` result under the two-gate ordering (T-020.4). `reports` is the count-floor
+    bite measured ONLY over the structural-textbook survivors; `structural_excluded` is how many
+    real emissions the structural textbook gate removed upstream — reported separately so the
+    count-floor metric is never silently conflated with the structural gate's bite."""
+
+    reports: list[FloorReport]
+    structural_textbook: int
+    structural_excluded: int
+
+
 def floor_impact(
     signals: list[BoundarySignal],
     floors: Sequence[int],
     base_config: ScannerConfig,
-) -> list[FloorReport]:
-    """How aggressively each candidate floor bites REAL emissions: each emitted signal is wrapped as
-    a CONFIRM and run through the live validator. Every real signal is labeled legit, so each
-    `FloorReport.legit_demoted` is the count of real emissions that floor would demote (its bite).
-    Pure — reuses the single-owner `floor_sweep`."""
-    labeled = [LabeledConfirm(_confirm_result(s), over_eager=False) for s in signals]
-    return floor_sweep(labeled, list(floors), base_config)
+) -> FloorImpact:
+    """How aggressively each candidate floor bites REAL emissions — measured over the
+    **structural-textbook survivors** only (T-020.4). The structural textbook gate is the upstream
+    filter: a real emission that is structurally non-textbook (e.g. a `trend_continuation` with no
+    retest) demotes on `REJECT_NON_TEXTBOOK`, not the count floor, so it is excluded + counted
+    separately rather than run through the sweep. Each survivor is wrapped as a CONFIRM labeled
+    legit, so each `FloorReport.legit_demoted` is the count of survivors that floor would demote
+    (the count-floor bite). Pure — reuses the single-owner `floor_sweep` over the survivors."""
+    survivors = [s for s in signals if setup_textbook(s)]
+    labeled = [LabeledConfirm(_confirm_result(s), over_eager=False) for s in survivors]
+    return FloorImpact(
+        reports=floor_sweep(labeled, list(floors), base_config),
+        structural_textbook=len(survivors),
+        structural_excluded=len(signals) - len(survivors),
+    )
 
 
 def run_calibration(

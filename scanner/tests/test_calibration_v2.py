@@ -2,6 +2,9 @@
 
 Real `BoundarySignal`/`SpineContext`/`ScanResult` fixtures (no mocks) so the floor sweep drives the
 live `setup_validator.validate_confirms` — the harness must validate the real gate, not a copy of it.
+Probes seed structurally-textbook signals (non-trend_continuation types) post-T-020.4 (SPEC #44) so
+the count-floor sweep stays the seam under test; `floor_impact` measures the count-floor bite over
+the structural-textbook survivors only.
 """
 
 from datetime import datetime, timezone
@@ -34,6 +37,7 @@ from scanner.models import (
     Structure,
 )
 from scanner.setup_validator import REJECT_CONFLUENCE_FLOOR, REJECT_NON_TEXTBOOK, validate_confirms
+from scanner.setups_v2 import setup_textbook
 
 _FACTORS = list(ConfluenceFactor)  # 10 members → confluence counts 0..10
 _CFG = ScannerConfig()  # base config passed explicitly (the harness never reads env itself)
@@ -54,7 +58,10 @@ def _spine(price=100.0) -> SpineContext:
     )
 
 
-def _bsig(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=2, coin="BTC") -> BoundarySignal:
+def _bsig(setup_type=SetupTypeV2.SFP_RANGE, n_confluence=2, coin="BTC") -> BoundarySignal:
+    # Default SFP_RANGE is structurally textbook at any confluence count (the predicate gates only
+    # trend_continuation), so the count-floor tests isolate their seam. Pass TREND_CONTINUATION to
+    # drive the structural gate.
     return BoundarySignal(
         coin=coin,
         setup_type=setup_type,
@@ -69,19 +76,18 @@ def _bsig(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=2, coin="BTC")
     )
 
 
-def _mb(setup_quality: str | None = "textbook") -> MachineBlock:
-    """Minimal textbook `MachineBlock` mirroring the calibration probe — every harness
-    probe carries one so the new textbook-quality gate (SPEC #33 step 1) is bypassed
-    and the count-floor sweep stays the seam under test."""
+def _mb() -> MachineBlock:
+    """Minimal `MachineBlock` mirroring the calibration probe — every harness probe carries one so
+    it is an executable CONFIRM (non-None MB). `setup_quality` is inert post-T-020.4 (the structural
+    predicate is the gate); left at its None default, as the v2 prompt now emits."""
     return MachineBlock(
         entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
         direction="LONG", confidence=5.0, leverage=1.0,
-        setup_quality=setup_quality,
     )
 
 
-def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.TREND_CONTINUATION,
-            coin="BTC", setup_quality="textbook") -> ScanResult:
+def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.SFP_RANGE,
+            coin="BTC") -> ScanResult:
     return ScanResult(
         scan_id=f"s-{coin}-{n_confluence}",
         coin=coin,
@@ -94,7 +100,7 @@ def _result(decision="CONFIRM", n_confluence=2, setup_type=SetupTypeV2.TREND_CON
         chart_paths=[],
         cost_usd=0.0,
         prompt_version="10.00",
-        machine_block=_mb(setup_quality),
+        machine_block=_mb(),
     )
 
 
@@ -242,13 +248,28 @@ def test_seed_labeled_confirms_separates_at_floor_2():
 
 
 def test_floor_impact_counts_real_emission_demotions():
-    # real emissions at confluence counts 1, 2, 3 — floor 2 should demote only the count-1 one
+    # real emissions at confluence counts 1, 2, 3 (all SFP_RANGE → structurally textbook) — floor 2
+    # should demote only the count-1 one. floor_impact returns a FloorImpact (T-020.4).
     signals = [_bsig(n_confluence=1), _bsig(n_confluence=2), _bsig(n_confluence=3)]
-    impact = {fr.floor: fr for fr in floor_impact(signals, [1, 2, 3], base_config=_CFG)}
+    result = floor_impact(signals, [1, 2, 3], base_config=_CFG)
+    assert result.structural_textbook == 3 and result.structural_excluded == 0  # none excluded
+    impact = {fr.floor: fr for fr in result.reports}
     assert impact[1].legit_demoted == 0            # nothing below 1
-    assert impact[2].legit_demoted == 1            # only the count-1 emission
+    assert impact[2].legit_demoted == 1            # only the count-1 survivor
     assert impact[3].legit_demoted == 2            # counts 1 and 2
-    assert impact[2].legit_total == 3              # all real emissions counted
+    assert impact[2].legit_total == 3              # all survivors counted
+
+
+def test_floor_impact_excludes_structurally_non_textbook():
+    # a real trend_continuation without RETEST is structurally non-textbook → excluded from the
+    # count-floor sweep (it would demote on REJECT_NON_TEXTBOOK, not the count floor), counted
+    # separately. The SFP_RANGE emission is a survivor.
+    tc = _bsig(SetupTypeV2.TREND_CONTINUATION, n_confluence=2)  # {AT_SR, TREND_ALIGNED}, no RETEST
+    sfp = _bsig(SetupTypeV2.SFP_RANGE, n_confluence=2)
+    result = floor_impact([tc, sfp], [2], base_config=_CFG)
+    assert result.structural_textbook == 1
+    assert result.structural_excluded == 1
+    assert result.reports[0].legit_total == 1  # only the survivor is swept
 
 
 def test_run_calibration_go_over_real_signals():
@@ -265,27 +286,28 @@ def test_run_calibration_nogo_on_over_emission():
     assert any("over-emission" in r for r in rec.reasons)
 
 
-# --- textbook-gate contract (Sub-chunk E, SPEC #33 step 1) ----------------------
+# --- structural textbook-gate contract (T-020.4 / SPEC #44 step 1) --------------
 
-def test_seeded_probes_carry_textbook_machine_block():
-    # Sub-chunk E contract: every calibration probe MUST carry setup_quality="textbook"
-    # so the new textbook-quality gate is bypassed and the count-floor sweep stays the
-    # seam under test. If `_confirm_result()` drops the stamp, every probe demotes on
-    # REJECT_NON_TEXTBOOK first and the recommended floor goes None / wrong silently.
+def test_seeded_probes_are_structurally_textbook():
+    # T-020.4 contract: every calibration probe must be STRUCTURALLY textbook (so floor_sweep's
+    # precondition holds) AND carry an execution block. The seeds use non-trend_continuation
+    # types to stay textbook at any confluence count — isolating the count-floor seam. If the
+    # seeds regressed to trend_continuation, every low-confluence probe would demote on
+    # REJECT_NON_TEXTBOOK and the recommended floor would go None / wrong silently.
     for lc in seed_labeled_confirms():
-        mb = lc.result.machine_block
-        assert mb is not None, f"probe {lc.result.coin} missing machine_block"
-        assert mb.setup_quality == "textbook", f"probe {lc.result.coin}: {mb.setup_quality!r}"
+        assert lc.result.machine_block is not None, f"probe {lc.result.coin} missing machine_block"
+        assert setup_textbook(lc.result.setup_signal), f"probe {lc.result.coin} not textbook"
+        assert lc.result.setup_signal.setup_type is not SetupTypeV2.TREND_CONTINUATION
 
 
 def test_recommend_floor_still_returns_2_under_two_step_gate():
-    # the canonical seed (over-eager confluence 0-1, legit 2-4) must still resolve to
-    # floor=2 once the textbook gate fires first — pins the seeded contract against
-    # accidental probe-MB drift that would route every probe to REJECT_NON_TEXTBOOK.
+    # the canonical seed (over-eager confluence 0-1, legit 2-4) must still resolve to floor=2 once
+    # the structural textbook gate fires first — pins the seeded contract against accidental probe
+    # drift that would route every probe to REJECT_NON_TEXTBOOK.
     reports = floor_sweep(seed_labeled_confirms(), [1, 2, 3, 4], base_config=_CFG)
     assert recommend_floor(reports) == 2
     # the live run that the harness scores: each over-eager probe must demote on the
-    # count floor (not the textbook one); the legit probes survive
+    # count floor (not the structural one); the legit probes survive
     for r in reports:
         if r.floor == 2:
             assert r.over_eager_demoted == r.over_eager_total
@@ -293,11 +315,13 @@ def test_recommend_floor_still_returns_2_under_two_step_gate():
 
 
 def test_floor_sweep_rejects_non_textbook_probes():
-    # arch-pass MED: floor_sweep's textbook precondition is now explicit — a non-textbook
-    # probe would be scored as "not demoted by the count floor" while actually demoting
-    # on REJECT_NON_TEXTBOOK, silently mis-scoring. The boundary check raises instead.
-    bad = LabeledConfirm(_result(n_confluence=3, setup_quality="variant"), over_eager=False)
-    with pytest.raises(ValueError, match="textbook-stamped"):
+    # floor_sweep's structural-textbook precondition is explicit (T-020.4) — a non-textbook probe
+    # (a trend_continuation with no RETEST) would be scored "not demoted by the count floor" while
+    # actually demoting on REJECT_NON_TEXTBOOK, silently mis-scoring. The boundary raises instead.
+    bad = LabeledConfirm(
+        _result(n_confluence=2, setup_type=SetupTypeV2.TREND_CONTINUATION), over_eager=False,
+    )
+    with pytest.raises(ValueError, match="structurally-textbook"):
         floor_sweep([bad], [2], base_config=_CFG)
 
 
@@ -305,18 +329,16 @@ def test_floor_sweep_rejects_missing_machine_block():
     probe = _result(n_confluence=3)
     probe.machine_block = None  # simulate the upstream parse-failure path
     bad = LabeledConfirm(probe, over_eager=False)
-    with pytest.raises(ValueError, match="textbook-stamped"):
+    with pytest.raises(ValueError, match="execution block"):
         floor_sweep([bad], [2], base_config=_CFG)
 
 
-def test_textbook_probe_routes_to_count_floor_not_textbook_floor():
-    # anti-vacuity: drive validate_confirms over a textbook probe with count<floor and
-    # assert the verdict is REJECT_CONFLUENCE_FLOOR (the seam the harness measures), NOT
-    # REJECT_NON_TEXTBOOK. If the probe-MB stamp were silently dropped, this would flip.
-    # `_CFG` defaults v1 (no-op); the harness exercises validate_confirms via floor_sweep,
-    # which `replace`s to v2 — mirror that here.
+def test_structurally_textbook_probe_routes_to_count_floor():
+    # anti-vacuity: a structurally-textbook probe (SFP_RANGE, the _result default) with count<floor
+    # demotes on REJECT_CONFLUENCE_FLOOR (the seam the harness measures), NOT REJECT_NON_TEXTBOOK.
+    # `_CFG` defaults v1 (no-op); floor_sweep `replace`s to v2 — mirror that here.
     cfg_v2 = ScannerConfig(setup_version="v2", v2_min_confluence=2)
-    probe = _result(n_confluence=1)  # textbook + count below floor 2
+    probe = _result(n_confluence=1)  # structurally textbook + count below floor 2
     validate_confirms([probe], cfg_v2)
     assert probe.validator_verdict == REJECT_CONFLUENCE_FLOOR
     assert probe.validator_verdict != REJECT_NON_TEXTBOOK  # explicit anti-flip pin

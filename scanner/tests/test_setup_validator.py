@@ -1,10 +1,12 @@
-"""Tests for scanner/setup_validator.py — the post-LLM structural gate (Chunk 8a, SPEC #33).
+"""Tests for scanner/setup_validator.py — the post-LLM structural gate (Chunk 8a + T-020.4,
+SPEC #33/#44).
 
 Real `BoundarySignal`/`SpineContext`/`ScanResult` fixtures (no mocks) so the deep path
-runs: the confluence-count floor, the v1 no-op, the demotion mechanics, that the
-validator trusts its typed input (no downstream re-validation of producer-enforced
-preconditions — arch-pass R1/R2), the config-boundary validation, and the
-summary-surface partitioning.
+runs: the detector-computed structural textbook predicate (T-020.4 — the trend_continuation
+retest/weakness clauses, the inert LLM `setup_quality` self-label), the confluence-count floor,
+the v1 no-op, the demotion mechanics, that the validator trusts its typed input (no downstream
+re-validation of producer-enforced preconditions — arch-pass R1/R2), the config-boundary
+validation, and the summary-surface partitioning.
 """
 
 from datetime import datetime, timezone
@@ -37,14 +39,13 @@ _DEFAULT_MB = object()  # sentinel — distinguishes "not supplied" from explici
 # --- builders ------------------------------------------------------------------
 
 
-def _mb(setup_quality: str | None = "textbook") -> MachineBlock:
-    """Minimal `MachineBlock` for validator tests. Capital-path fields are inert
-    (the validator only reads `setup_quality`); kept valid so `from_raw` would
-    accept the equivalent dict — same shape the calibration probe uses."""
+def _mb() -> MachineBlock:
+    """Minimal `MachineBlock` — the validator only needs it non-None (an executable CONFIRM).
+    `setup_quality` is inert post-T-020.4 (the structural predicate is the gate); left at its
+    None default, which is what the v2 prompt now emits."""
     return MachineBlock(
         entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
         direction="LONG", confidence=5.0, leverage=1.0,
-        setup_quality=setup_quality,
     )
 
 
@@ -61,14 +62,20 @@ def _spine(regime="trending", atr=2.0, price=100.0) -> SpineContext:
 
 
 def _bsig(
-    setup_type=SetupTypeV2.TREND_CONTINUATION,
+    setup_type=SetupTypeV2.SFP_RANGE,
     n_confluence=2,
     confidence=0.5,
-    regime="trending",
+    regime="rotational",
     atr=2.0,
     price=100.0,
     coin="BTC",
+    weakness_flag=False,
 ) -> BoundarySignal:
+    # Default setup_type is structurally unconstrained (SFP_RANGE), so the count-floor / regime /
+    # batch / summary tests exercise their seam without tripping the trend_continuation-only
+    # structural predicate. The structural-gate tests pass setup_type=TREND_CONTINUATION
+    # explicitly and control RETEST (via n_confluence — _FACTORS[2] is RETEST, so n>=3 includes
+    # it) + weakness_flag.
     return BoundarySignal(
         coin=coin,
         setup_type=setup_type,
@@ -80,16 +87,16 @@ def _bsig(
         setup_tf="4h",
         basis_price=price,
         confluence=frozenset(_FACTORS[:n_confluence]),
+        weakness_flag=weakness_flag,
     )
 
 
 def _result(decision="CONFIRM", coin="BTC", machine_block=_DEFAULT_MB, **bsig_kwargs) -> ScanResult:
-    # default to a textbook `machine_block` so the new textbook-quality gate (Sub-chunk E)
-    # is bypassed and existing count-floor / regime / batch / summary tests still exercise
-    # their target seams. Pass `machine_block=None` or `machine_block=_mb("variant")` to
-    # drive the textbook gate explicitly.
+    # default to a non-None machine_block so the structural textbook gate + count floor (not the
+    # unexecutable-CONFIRM fail-closed branch) are the seam under test. Pass machine_block=None
+    # to drive the fail-closed branch.
     if machine_block is _DEFAULT_MB:
-        machine_block = _mb("textbook")
+        machine_block = _mb()
     return ScanResult(
         scan_id=f"s-{coin}",
         coin=coin,
@@ -114,44 +121,59 @@ def _run(result, cfg=None):
     return out[0]
 
 
-# --- 0. textbook-quality gate (Sub-chunk E, SPEC #33 step 1) -------------------
+# --- 0. structural textbook gate (T-020.4 / SPEC #44 step 1) -------------------
+# _FACTORS order: AT_SR, TREND_ALIGNED, RETEST, ... so n_confluence >= 3 includes RETEST.
+# A trend_continuation is textbook iff it carries RETEST and no weakness_flag; every other
+# setup is textbook by construction (its compromises are T-020.9 / out of scope).
 
 
-def test_textbook_confirm_passes_gate():
-    # textbook MB (default) + count above floor → CONFIRM survives both gates
-    r = _run(_result(n_confluence=2))
+def test_textbook_continuation_passes_gate():
+    # trend_continuation WITH retest (n=3) + no weakness + count >= floor → survives both gates
+    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=3))
     assert r.is_confirm
     assert r.validator_verdict is None
 
 
-def test_variant_confirm_demoted_non_textbook():
-    r = _run(_result(machine_block=_mb("variant"), n_confluence=4))
+def test_continuation_without_retest_demoted_non_textbook():
+    # .6 — trend_continuation lacking RETEST (n=2 = {AT_SR, TREND_ALIGNED}) is the mid-air chase
+    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=2))
     assert not r.is_confirm
     assert r.decision == "REJECT"
     assert r.validator_verdict == REJECT_NON_TEXTBOOK
+
+
+def test_continuation_with_weakness_demoted_non_textbook():
+    # .5 — first-weakness disqualifies even with RETEST present
+    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=3, weakness_flag=True))
+    assert not r.is_confirm
+    assert r.validator_verdict == REJECT_NON_TEXTBOOK
+
+
+def test_setup_quality_self_label_is_ignored():
+    # the inversion: a structurally-textbook CONFIRM survives regardless of the LLM's old
+    # setup_quality opinion — structure owns the gate now, the self-label is inert.
+    mb = MachineBlock(
+        entry_low=1.0, entry_high=1.0, stop_loss=0.9, tp1=1.1, tp1_exit_pct=100.0,
+        direction="LONG", confidence=5.0, leverage=1.0, setup_quality="variant",
+    )
+    r = _run(_result(setup_type=SetupTypeV2.SFP_RANGE, n_confluence=2, machine_block=mb))
+    assert r.is_confirm
+    assert r.validator_verdict is None
 
 
 def test_missing_machine_block_demoted_non_textbook():
-    # fail-closed: no quality signal ⇒ reject (encodes "the v2 contract is that CONFIRMs
-    # must carry a setup_quality"; a missing MB is itself a defect signal)
-    r = _run(_result(machine_block=None, n_confluence=4))
+    # fail-closed: a CONFIRM with no execution block is unexecutable (even if structurally textbook)
+    r = _run(_result(setup_type=SetupTypeV2.SFP_RANGE, machine_block=None, n_confluence=4))
     assert not r.is_confirm
     assert r.decision == "REJECT"
     assert r.validator_verdict == REJECT_NON_TEXTBOOK
 
 
-def test_unknown_setup_quality_demoted_non_textbook():
-    # only the literal "textbook" passes — any other value (incl. a typo / future tier)
-    # fails closed at the validator regardless of what `from_raw` coerced upstream
-    r = _run(_result(machine_block=_mb("excellent"), n_confluence=4))
-    assert r.validator_verdict == REJECT_NON_TEXTBOOK
-
-
-def test_variant_with_low_count_demotes_as_non_textbook_not_floor():
-    # the `continue` invariant: textbook gate fires FIRST. If a regression drops the
-    # `continue` after the textbook demotion, the count floor would overwrite the verdict
-    # to REJECT_CONFLUENCE_FLOOR and break summary attribution. Pins the precedence.
-    r = _run(_result(machine_block=_mb("variant"), n_confluence=1))
+def test_non_textbook_with_low_count_demotes_as_non_textbook_not_floor():
+    # precedence: the structural gate fires FIRST. A trend_continuation that is BOTH structurally
+    # non-textbook (no retest) AND below the count floor (n=1) demotes as REJECT_NON_TEXTBOOK,
+    # not REJECT_CONFLUENCE_FLOOR. Pins the `continue` after the structural demotion.
+    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=1))
     assert r.decision == "REJECT"
     assert r.validator_verdict == REJECT_NON_TEXTBOOK
     assert r.validator_verdict != REJECT_CONFLUENCE_FLOOR
@@ -197,7 +219,9 @@ def test_floor_respects_configured_threshold():
 def test_any_setup_passes_any_regime(setup_type, regime):
     # Per arch-pass R1: the validator does NOT re-assert per-setup regime policy (the
     # detector hard-gates it at construction; a within-scan recheck is a tautology).
-    r = _run(_result(setup_type=setup_type, n_confluence=2, regime=regime))
+    # n_confluence=3 includes RETEST so the trend_continuation case is structurally textbook
+    # — this test isolates regime, not the structural gate.
+    r = _run(_result(setup_type=setup_type, n_confluence=3, regime=regime))
     assert r.is_confirm
     assert r.validator_verdict is None
 
@@ -225,11 +249,11 @@ def test_v1_path_is_noop_even_for_weak_confirm():
     assert r.validator_verdict is None
 
 
-def test_v1_path_is_noop_even_for_variant_quality():
-    # v1 never reaches the textbook gate either — early return at `setup_version != 'v2'`
-    # is byte-identical regardless of `setup_quality` (v1 emits None; this guards against
-    # accidentally extending the textbook gate to v1)
-    r = _run(_result(machine_block=_mb("variant"), n_confluence=4), _cfg(setup_version="v1"))
+def test_v1_path_is_noop_even_for_structurally_non_textbook():
+    # v1 never reaches the structural gate — early return at `setup_version != 'v2'`. A
+    # trend_continuation with no RETEST (would demote on v2) survives on v1 untouched; guards
+    # against accidentally extending the structural gate to v1.
+    r = _run(_result(setup_type=SetupTypeV2.TREND_CONTINUATION, n_confluence=2), _cfg(setup_version="v1"))
     assert r.is_confirm
     assert r.validator_verdict is None
 

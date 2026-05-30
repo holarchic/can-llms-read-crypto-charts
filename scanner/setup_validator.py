@@ -11,13 +11,18 @@ distinguishable from an LLM REJECT (and partitions the scan summary).
 
 **Two-step gate (fail-closed series):**
 
-1. ``REJECT_NON_TEXTBOOK`` — ``r.machine_block is None or r.machine_block.setup_quality
-   != "textbook"`` demotes the CONFIRM (decision #35's textbook-only contract enforced
-   structurally). Fires first because it is more discriminating: the live 2026-05-27
-   evidence showed 14/16 CONFIRMs were variants with rationalized compromises the LLM
-   accepted as "one allowable compromise"; all had ≥2 confluence factors so the count
-   floor would catch zero of them. ``continue`` after the demotion preserves the
-   most-specific verdict (no overwrite by the backstop).
+1. ``REJECT_NON_TEXTBOOK`` — fail-closed on a missing ``machine_block`` (a CONFIRM with no
+   execution block is unexecutable), THEN ``not setups_v2.setup_textbook(r.setup_signal)`` —
+   the **detector-computed structural textbook predicate** (T-020.4 / decision #44). This
+   replaces the old LLM ``setup_quality`` self-label: the v2 prompt forced ``textbook`` on
+   every CONFIRM, so a gate reading that self-label was vacuous (the 2026-05-29 audit
+   finding). The predicate reads the detector's own structural facts and demotes the variants
+   the detectors emit through (a ``trend_continuation`` with first-weakness or no retest); the
+   LLM is collapsed to a REJECT-only veto (it no longer grants textbook). Fires first because
+   it is more discriminating: the live 2026-05-27 evidence showed 14/16 CONFIRMs were variants
+   the LLM self-labelled around; all had ≥2 confluence factors so the count floor would catch
+   zero of them. ``continue`` after the demotion preserves the most-specific verdict (no
+   overwrite by the backstop).
 
 2. ``REJECT_CONFLUENCE_FLOOR`` (backstop) — ``len(signal.confluence) <
    config.v2_min_confluence`` demotes the survivors. The detectors emit at
@@ -38,12 +43,13 @@ downstream re-check here would be redundant re-validation of a trusted typed inp
 catch broadly: a malformed signal is a producer defect that must fail loudly, not a
 business rejection (rule #35). Pure compute: no DB, no LLM. v1 byte-identical (early
 return on ``setup_version != 'v2'``). The count floor is calibrated in Chunk 8b
-against seeded over-eager confirms (Acceptance #9 b); the calibration harness stamps
-its synthetic probes textbook so the count-floor sweep stays the seam under test.
+against seeded over-eager confirms (Acceptance #9 b); the calibration harness seeds
+structurally-textbook probes so the count-floor sweep stays the seam under test.
 """
 
 from .config import ScannerConfig
 from .models import ScanResult
+from .setups_v2 import setup_textbook
 
 __all__ = ["validate_confirms", "REJECT_CONFLUENCE_FLOOR", "REJECT_NON_TEXTBOOK"]
 
@@ -68,7 +74,12 @@ def validate_confirms(
     for r in results:
         if not r.is_confirm:
             continue
-        if r.machine_block is None or r.machine_block.setup_quality != "textbook":
+        if r.machine_block is None:
+            # A CONFIRM with no execution block is unexecutable — fail closed.
+            r.decision = "REJECT"
+            r.validator_verdict = REJECT_NON_TEXTBOOK
+            continue
+        if not setup_textbook(r.setup_signal):
             r.decision = "REJECT"
             r.validator_verdict = REJECT_NON_TEXTBOOK
             continue
