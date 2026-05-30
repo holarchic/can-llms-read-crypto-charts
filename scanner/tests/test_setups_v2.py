@@ -20,7 +20,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-from scanner.ma_indicators import compute_ema_band, compute_longer_set
+from scanner.ma_indicators import LongerMASet, compute_ema_band, compute_longer_set
 from scanner.models import (
     BoundarySignal,
     ConfluenceFactor,
@@ -30,10 +30,13 @@ from scanner.models import (
     SpineContext,
     SRLevelV2,
     Structure,
+    SwingPoint,
 )
 from scanner.regime import detect_regime
 from scanner.setups_v2 import (
+    _MAX_CONTINUATIONS,
     TFSubstrate,
+    _continuation_count,
     detect_deviation_reclaim,
     detect_trend_continuation,
     detect_trend_reclaim,
@@ -240,7 +243,7 @@ def test_setup_context_rejects_empty_frame():
 _TC = SetupTypeV2.TREND_CONTINUATION
 
 
-def _bsig(setup_type, *, confluence=frozenset(), weakness_flag=False):
+def _bsig(setup_type, *, confluence=frozenset(), weakness_flag=False, continuation_count=None):
     """Minimal BoundarySignal carrying only the fields ``setup_textbook`` reads."""
     ctx = SpineContext(
         structure=Structure.BULLISH, sr_levels=[], range_bounds=None,
@@ -249,7 +252,7 @@ def _bsig(setup_type, *, confluence=frozenset(), weakness_flag=False):
     return BoundarySignal(
         coin="TEST", setup_type=setup_type, direction=Direction.LONG, confidence=0.5,
         key_level=1.0, context=ctx, description="t", setup_tf="4h",
-        confluence=confluence, weakness_flag=weakness_flag,
+        confluence=confluence, weakness_flag=weakness_flag, continuation_count=continuation_count,
     )
 
 
@@ -298,3 +301,103 @@ def test_setup_textbook_rejects_real_continuation_without_retest():
     # ...and the same real emission WITH a retest tag passes (the textbook branch is reachable):
     bs_retest = _bsig(_TC, confluence=emission.confluence | {ConfluenceFactor.RETEST})
     assert setup_textbook(bs_retest) is True
+
+
+# --- continuation cap (T-020.9b / SPEC #48) -----------------------------------
+
+def test_setup_textbook_continuation_cap_rejects_fourth():
+    """.9b — the 4th+ continuation of an established trend is not textbook (count > 3), even with a
+    retest and no weakness. Anti-vacuity: the SAME signal at count 3 passes."""
+    tb = frozenset({ConfluenceFactor.RETEST})
+    assert setup_textbook(_bsig(_TC, confluence=tb, continuation_count=_MAX_CONTINUATIONS)) is True       # 3rd — textbook
+    assert setup_textbook(_bsig(_TC, confluence=tb, continuation_count=_MAX_CONTINUATIONS + 1)) is False  # 4th — capped
+
+
+def test_setup_textbook_continuation_cap_none_passes():
+    # None (the default; the other 5 setups + v1) is never capped.
+    assert setup_textbook(_bsig(_TC, confluence=frozenset({ConfluenceFactor.RETEST}),
+                                continuation_count=None)) is True
+
+
+def test_setup_textbook_cap_is_continuation_only():
+    # the cap is trend_continuation-scoped: a high count on another setup never rejects.
+    assert setup_textbook(_bsig(SetupTypeV2.SFP_RANGE, continuation_count=9)) is True
+
+
+def _longer(stack):
+    """A LongerMASet whose per-bar ``stack_direction`` follows ``stack`` (one char/bar):
+    'u' → 3>2>1 (UP), 'd' → 1<2<3 (DOWN), 'f' → 2==2==2 (FLAT), 'n' → NaN (pre-warmup)."""
+    nan = float("nan")
+    trip = {"u": (3.0, 2.0, 1.0), "d": (1.0, 2.0, 3.0), "f": (2.0, 2.0, 2.0), "n": (nan, nan, nan)}
+    idx = pd.RangeIndex(len(stack))
+    cols = list(zip(*[trip[c] for c in stack]))
+    return LongerMASet(pd.Series(cols[0], index=idx), pd.Series(cols[1], index=idx), pd.Series(cols[2], index=idx))
+
+
+def _sw(index, price, kind="high"):
+    return SwingPoint(index=index, timestamp=datetime(2026, 1, 1), price=price, type=kind, body_price=price)
+
+
+def test_continuation_count_episode_start_and_monotonic_pushes():
+    # 5 FLAT then 10 UP → episode starts at index 5. Highs at 3 (pre-episode, excluded),
+    # 6/9/12 monotonic-up = 3 pushes; the non-new-high at 11 does not count.
+    longer = _longer("f" * 5 + "u" * 10)
+    swings = [_sw(3, 100), _sw(6, 101), _sw(9, 103), _sw(11, 102), _sw(12, 105)]
+    assert _continuation_count(longer, swings, Direction.LONG) == 3
+
+
+def test_continuation_count_flat_bar_resets_episode():
+    # a single FLAT bar at index 8 resets the run → episode = bars 9..14; only highs at
+    # 10/13 count (the earlier high at 6 is pre-reset).
+    longer = _longer("u" * 8 + "f" + "u" * 6)
+    swings = [_sw(6, 101), _sw(10, 102), _sw(13, 104)]
+    assert _continuation_count(longer, swings, Direction.LONG) == 2
+
+
+def test_continuation_count_no_flip_counts_whole_defined_window():
+    # whole defined window UP (no flip) → episode = bar 0; all 4 monotonic highs count.
+    longer = _longer("u" * 12)
+    swings = [_sw(1, 100), _sw(4, 101), _sw(7, 102), _sw(10, 103)]
+    assert _continuation_count(longer, swings, Direction.LONG) == 4
+
+
+def test_continuation_count_right_edge_lag_confirmed_only():
+    # confirmed-swings-only: a 4th push not yet in `swings` reads as 3; once find_swing_points
+    # confirms it (it appears in the list), it reads 4 — the deliberate right-edge lag.
+    longer = _longer("u" * 20)
+    confirmed3 = [_sw(2, 100), _sw(6, 101), _sw(10, 102)]
+    assert _continuation_count(longer, confirmed3, Direction.LONG) == 3
+    assert _continuation_count(longer, confirmed3 + [_sw(14, 103)], Direction.LONG) == 4
+
+
+def test_continuation_count_short_uses_lows():
+    longer = _longer("d" * 12)
+    swings = [_sw(2, 100, "low"), _sw(6, 98, "low"), _sw(10, 95, "low"), _sw(5, 200, "high")]
+    assert _continuation_count(longer, swings, Direction.SHORT) == 3  # the high is ignored
+
+
+def test_continuation_count_excludes_pre_warmup_pushes():
+    # the recent-window limitation: NaN warmup bars (pre-SMA300) resolve to FLAT via
+    # stack_direction, so the episode cannot start before the stack is defined — a push in the
+    # warmup region (here a higher high at index 4) is excluded from the count.
+    longer = _longer("n" * 6 + "u" * 8)   # bars 0-5 undefined, 6-13 UP → episode starts at 6
+    swings = [_sw(2, 100), _sw(4, 150),   # pre-warmup highs (index < 6) — excluded
+              _sw(7, 101), _sw(10, 102), _sw(12, 104)]   # in-episode monotonic → 3
+    assert _continuation_count(longer, swings, Direction.LONG) == 3
+
+
+def test_continuation_count_zero_when_not_in_direction_at_edge():
+    # last bar FLAT → not an established `direction` run at the edge → 0 (defensive; the
+    # detector's alignment+TRENDING gates ensure the real edge is in `direction`).
+    longer = _longer("u" * 10 + "f")
+    assert _continuation_count(longer, [_sw(2, 100), _sw(5, 101)], Direction.LONG) == 0
+
+
+def test_detect_trend_continuation_attaches_count():
+    # the real detector populates continuation_count (an int, not None) on its emission.
+    closes = _continuation_closes()
+    opens = list(closes)
+    opens[302] = closes[302] - 7  # green impulse → emits
+    df = _frame(closes, opens=opens)
+    sig = detect_trend_continuation(setup_context_from_df(df), _substrate(df), [])[0]
+    assert isinstance(sig.continuation_count, int) and sig.continuation_count >= 0

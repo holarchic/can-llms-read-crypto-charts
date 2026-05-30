@@ -266,6 +266,7 @@ def _to_boundary(
         soft_stop=sig.soft_stop,
         confluence=sig.confluence,
         weakness_flag=sig.weakness_flag,
+        continuation_count=sig.continuation_count,
     )
 
 

@@ -243,6 +243,9 @@ class SetupSignalV2:
     soft_stop: SoftStop
     confluence: frozenset[ConfluenceFactor]
     weakness_flag: bool
+    # Continuation pushes in the current trend episode (T-020.9b / #44 cap); the structural
+    # textbook predicate rejects > _MAX_CONTINUATIONS. None for the non-continuation setups.
+    continuation_count: int | None = None
 
     @property
     def confluence_count(self) -> int:
@@ -357,6 +360,7 @@ class BoundarySignal:
     soft_stop: SoftStop | None = None
     confluence: frozenset[ConfluenceFactor] = frozenset()
     weakness_flag: bool = False
+    continuation_count: int | None = None  # v2 trend_continuation cap fact (T-020.9b); None otherwise
 
     @classmethod
     def from_setup_signal(cls, sig: SetupSignal, setup_tf: str) -> "BoundarySignal":

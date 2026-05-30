@@ -53,7 +53,7 @@ from .models import (
     SwingPoint,
 )
 from .regime import Regime, RegimeState
-from .trend_state import BandPosition, TrendDirection, TrendState
+from .trend_state import BandPosition, TrendDirection, TrendState, stack_direction
 
 __all__ = [
     "SetupContext",
@@ -234,12 +234,48 @@ def _retest_factors(
     return factors
 
 
+# Ruleset §3.1: at most 3 continuation entries per established trend; a 4th is not textbook.
+_MAX_CONTINUATIONS = 3
+
+
+def _continuation_count(longer: LongerMASet, swings: list[SwingPoint], direction: Direction) -> int:
+    """With-trend pushes the CURRENT longer-stack trend episode has already produced (T-020.9b /
+    SPEC #48). Episode = the last contiguous run of the longer 100/200/300 stack in ``direction``
+    (per bar via ``stack_direction`` — the same read ``longer_trend_direction`` uses); a push = a
+    confirmed swing extreme (high for LONG / low for SHORT) at or after the episode start that
+    exceeds every prior in-episode extreme.
+
+    A *recent-window* proxy, not all-time: the longer stack is undefined until the SMA300 warmup, so
+    on a ~399-bar frame only the post-warmup window (~99 bars) is scanned — older pushes on a long
+    trend are invisible (an undercount). Confirmed swings only (``find_swing_points`` confirms a
+    swing only once it is behind the right edge), so a 4th push *forming* in the last few bars reads
+    as 3 until it confirms (a right-edge lag). Both are the lenient direction — under-tightening,
+    never over-rejecting a valid 3rd. Pure; reads no LLM/DB."""
+    want = TrendDirection.UP if direction is Direction.LONG else TrendDirection.DOWN
+    s100, e200, s300 = (longer.sma_100.to_numpy(), longer.ema_200.to_numpy(), longer.sma_300.to_numpy())
+    n = len(s100)
+    if n == 0 or stack_direction(s100[-1], e200[-1], s300[-1]) is not want:
+        return 0  # not in `direction` at the right edge (defensive — detector gates ensure it is)
+    start = n - 1  # walk back to the first bar of the contiguous in-`direction` run (a FLAT bar resets)
+    while start > 0 and stack_direction(s100[start - 1], e200[start - 1], s300[start - 1]) is want:
+        start -= 1
+    want_high = direction is Direction.LONG
+    count, extreme = 0, None
+    for s in swings:
+        if s.type != ("high" if want_high else "low") or s.index < start:
+            continue
+        if extreme is None or (s.body_price > extreme if want_high else s.body_price < extreme):
+            count += 1
+            extreme = s.body_price
+    return count
+
+
 def setup_textbook(signal: BoundarySignal) -> bool:
     """Structural textbook predicate (T-020.4 / SPEC #44): False when a detector-knowable
     compromise the detectors emit *through* is present, else True. The post-LLM
     ``setup_validator`` reads this in place of the LLM ``machine_block.setup_quality`` self-label.
 
-    Both clauses are ``trend_continuation``-specific — they read the two structural facts
+    All three clauses are ``trend_continuation``-specific — they read the structural facts
     ``detect_trend_continuation`` itself computes/attaches:
 
     - ``weakness_flag`` set ⇒ a first-weakness chase (ruleset §3.1 continuation precond #2).
@@ -248,16 +284,21 @@ def setup_textbook(signal: BoundarySignal) -> bool:
       would gut them.
     - ``RETEST`` absent ⇒ the mid-air momentum chase (ruleset §3.1 continuation precond #3 +
       confluence floor #5 name the retest a precondition, not optional confluence).
+    - ``continuation_count > _MAX_CONTINUATIONS`` ⇒ the 4th+ continuation of an established trend
+      (ruleset §3.1: "a 4th is not a textbook continuation" — T-020.9b / #48). ``None`` (the other
+      five setups, and v1) passes — the cap is continuation-only.
 
     This is NOT a universal-textbook judgment: every other setup passes by construction — their
-    compromises (regime fit, the continuation cap) are T-020.9 / out of scope here, and the
-    non-computable compromises (a less-clean level, partial acceptance) stay in the LLM veto
-    bucket. Reads only structural fields — no LLM input. The validator early-returns on the v1
-    path, so ``setup_type`` here is always a ``SetupTypeV2``."""
+    remaining compromises (the regime fit is a detector gate, #47; a less-clean level / partial
+    acceptance are non-computable) stay in the detector or the LLM veto bucket. Reads only
+    structural fields — no LLM input. The validator early-returns on the v1 path, so ``setup_type``
+    here is always a ``SetupTypeV2``."""
     if signal.setup_type is SetupTypeV2.TREND_CONTINUATION:
         if signal.weakness_flag:
             return False
         if ConfluenceFactor.RETEST not in signal.confluence:
+            return False
+        if signal.continuation_count is not None and signal.continuation_count > _MAX_CONTINUATIONS:
             return False
     return True
 
@@ -302,6 +343,7 @@ def detect_trend_continuation(
         soft_stop=SoftStop(SoftStopMode.TREND_RECLAIM_AGAINST, ema36),
         confluence=frozenset(factors),
         weakness_flag=_weakness_flag(context.swings, direction),
+        continuation_count=_continuation_count(substrate.longer, context.swings, direction),
     )]
 
 

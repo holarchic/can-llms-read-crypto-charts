@@ -158,6 +158,7 @@ def test_lower_tf_reclaim_long_uptrend_true():
 def test_to_boundary_maps_v2_fields():
     ctx2 = build_market_context_v2("BTC", _realistic_candles())
     sig = _v2sig(basis=250.0, n_confluence=3)
+    sig.continuation_count = 2    # non-None so the threading assertion below is non-vacuous
     b = _to_boundary("BTC", "4h", sig, ctx2, leverage=20)
 
     assert b.coin == "BTC" and b.setup_tf == "4h" and b.max_leverage == 20
@@ -167,6 +168,7 @@ def test_to_boundary_maps_v2_fields():
     # v2-only execution/confluence fields carry through
     assert b.basis_price == 250.0 and b.entry == sig.entry and b.hard_stop == sig.hard_stop
     assert b.soft_stop is sig.soft_stop and b.confluence == sig.confluence
+    assert b.continuation_count == sig.continuation_count    # the .9b cap fact threads through
     # context is the neutral SpineContext (nested S/R neutralized to SpineLevel)
     assert isinstance(b.context, SpineContext)
     assert all(isinstance(lvl, SpineLevel) for lvl in b.context.sr_levels)
