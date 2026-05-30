@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "llm-trader"
 version = "1.0.0"
@@ -17,7 +21,7 @@ dependencies = [
 include = ["scanner*"]
 
 [project.optional-dependencies]
-dev = ["ruff", "pytest", "pytest-xdist"]
+dev = ["ruff", "pytest", "pytest-xdist", "pytest-testmon", "mypy", "pre-commit"]
 
 [tool.ruff]
 target-version = "py312"
@@ -34,9 +38,20 @@ ignore = ["E741"]
 [tool.pytest.ini_options]
 # Parallel by default — process-per-core (pytest-xdist). Requires the `dev`
 # extra to be installed; run `pytest -n0` to force serial.
+#
+# Inner loop (changed-only, seconds not minutes): `pytest --testmon` runs only
+# tests whose covered code changed; `pytest --lf` re-runs last failures. These
+# are deliberately NOT in addopts — a full/CI run must never silently skip tests.
 addopts = "-n auto"
 testpaths = [
     "scanner/tests",
     "scanner/strategy/tests",
     "scanner/execution/tests",
 ]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+# Lenient starter — NOT a hard gate yet. The tree is only partially annotated;
+# tighten incrementally (disallow_untyped_defs, warn_return_any, ...). Run
+# `mypy scanner` on demand; wire into pre-commit only once it runs clean.

@@ -23,6 +23,10 @@ Thumbs.db
 
 # pytest
 .pytest_cache/
+.testmondata
+
+# mypy
+.mypy_cache/
 
 # Source transcripts (large, regeneratable)
 reference/transcripts/

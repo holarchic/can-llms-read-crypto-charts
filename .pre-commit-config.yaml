@@ -1,0 +1,28 @@
+# Fast pre-commit gate: lint + format + hygiene. Hooks run in pre-commit's own
+# isolated environments, independent of the project venv.
+#
+# Activate once per clone:  pre-commit install
+# Run manually on the tree:  pre-commit run --all-files
+#
+# ruff is pinned to the project's ruff (0.15.15) so the hook and the dev-venv
+# ruff format/lint identically — no drift between commit-time and editor.
+#
+# mypy is intentionally NOT wired here yet — the tree is only partially typed
+# (see [tool.mypy] in pyproject.toml). Run `mypy scanner` on demand; promote it
+# to a hook once it runs clean, so a type error can't block every commit.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.15
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
