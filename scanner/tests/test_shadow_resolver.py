@@ -7,6 +7,7 @@ limit_at / invalidation / expiry / zone-reject), exit semantics (SL / TP1→TP2 
 """
 
 import pandas as pd
+import pytest
 
 from scanner.models import MachineBlock
 from scanner.shadow import resolver as R
@@ -204,3 +205,75 @@ def test_limit_at_is_flagged_low_fidelity():
     out = resolve_signal(mb, _anchor(f), f)
     assert out.low_fidelity is True
     assert out.entry_fill is not None
+
+
+# --- exit_policy=v2: BE-at-TP1 rescue (T-020.11) ---------------------------------
+
+def test_v2_be_at_tp1_beats_v1_on_remainder_stop():
+    # TP1 fills, then the remainder reverses to the original stop. v1 loses the
+    # remainder at the stop (TP1_SL); v2 ratchets it to BE so it exits at entry
+    # (TP1_BE) — strictly higher R on the same frame.
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100.5, 101, 100, 100.5),  # fill
+        (105, 111, 104, 108),      # TP1 (high>=110), no stop touch
+        (100, 101, 94, 96),        # remainder: v1 stops at 95; v2 stops at BE (entry)
+    ])
+    v1 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v1")
+    v2 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2")
+    assert v1.exit_reason == "TP1_SL" and v2.exit_reason == "TP1_BE"
+    assert v2.realized_r > v1.realized_r          # the BE move changed the outcome
+    assert v2.exit_price > v1.exit_price          # BE (entry) above the original stop
+
+
+def test_v2_be_at_tp1_short_remainder_stop():
+    # SHORT mirror: stop comparator is `hi >= effective_stop`, BE geometry is
+    # entry_fill < original stop (BE tightens DOWN). TP1 fills (low<=tp1), then price
+    # reverses UP: v1 stops at the higher original stop, v2 at the lower BE.
+    mb = _mb(direction="SHORT", stop_loss=105.0, tp1=90.0, tp2=80.0)
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100, 101, 100, 100.5),    # nothing (hi 101<105, lo 100>90)
+        (95, 96, 88, 89),          # TP1 (low<=90), no stop (hi 96<105)
+        (98, 106, 97, 100),        # reverse up: v1 stops at 105; v2 stops at BE (entry)
+    ])
+    v1 = resolve_signal(mb, _anchor(f), f, exit_policy="v1")
+    v2 = resolve_signal(mb, _anchor(f), f, exit_policy="v2")
+    assert v1.exit_reason == "TP1_SL" and v2.exit_reason == "TP1_BE"
+    assert v2.realized_r > v1.realized_r
+    assert v2.exit_price < v1.exit_price          # SHORT BE (entry) below the original stop
+
+
+def test_v2_full_winner_unchanged():
+    # TP1 then TP2: BE is armed at the TP1 fill but never hit (price runs to TP2),
+    # so v2 == v1 — the rescue only bites when the remainder reverses.
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100.5, 101, 100, 100.5),
+        (105, 111, 104, 108),      # TP1
+        (108, 121, 107, 119),      # TP2 (no pullback to BE in between)
+    ])
+    v1 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v1")
+    v2 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2")
+    assert v1.exit_reason == "TP1_TP2" and v2.exit_reason == "TP1_TP2"
+    assert v2.realized_r == pytest.approx(v1.realized_r)
+
+
+def test_v2_no_rescue_before_tp1_matches_v1():
+    # Reversal to stop BEFORE TP1: v2 has no pre-TP1 ratchet (BE-at-TP1 only), so it
+    # rides to the original stop identically to v1.
+    f = _frame([
+        (100, 101, 99, 100.5),
+        (100.5, 101, 100, 100.5),  # fill
+        (100, 101, 94, 96),        # low<=stop before any TP1 touch
+    ])
+    v1 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v1")
+    v2 = resolve_signal(_mb(), _anchor(f), f, exit_policy="v2")
+    assert v1.exit_reason == "SL" and v2.exit_reason == "SL"
+    assert v2.realized_r == pytest.approx(v1.realized_r)
+
+
+def test_unknown_exit_policy_raises():
+    f = _frame([(100, 101, 99, 100.5), (100.5, 101, 100, 100.5)])
+    with pytest.raises(ValueError, match="unknown exit_policy"):
+        resolve_signal(_mb(), _anchor(f), f, exit_policy="v3")

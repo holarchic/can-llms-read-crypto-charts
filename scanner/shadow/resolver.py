@@ -16,8 +16,12 @@ gate):
   trigger within `expiry_candles` bars → `TRIGGER_EXPIRED`.
 - **Exit, `exit_policy=v1`:** SL / TP1 partial / TP2 / time-invalidation (`max_hold_bars`).
   **Pessimistic intrabar rule:** a bar whose range spans both the stop and a TP counts
-  as SL-first. Drift-to-BE rescue + the post-TP1 trail are `v2` — v1 takes NO BE rescue,
-  so every non-TP loser is a full −1R.
+  as SL-first. v1 takes NO BE rescue, so every non-TP loser is a full −1R.
+- **Exit, `exit_policy=v2` (T-020.11):** as v1, plus a threshold-free BE rescue — once the
+  TP1 leg fills, the remaining size's stop ratchets to `entry_fill` (breakeven, ruleset
+  §6.4), so a post-TP1 reversal exits at BE (`TP1_BE`, ≈ −costs) instead of the original
+  stop (`TP1_SL`, ≈ −1R). BE applies from the bar AFTER the TP1 fill (intrabar SL-first
+  preserved). The post-TP1 setup-TF trail + runner-size floor are the sibling T2 chunks.
 - Exits reanchor to the actual fill (`reanchor_exit_prices`) so realized R uses the
   intended stop distance; slippage is adverse on every leg; fees are taker per leg.
 
@@ -34,12 +38,13 @@ from scanner.models import MachineBlock, ShadowOutcome
 
 __all__ = [
     "resolve_signal",
-    "ENTRY_POLICY_VERSION", "EXIT_POLICY_VERSION", "RETRYABLE",
+    "ENTRY_POLICY_VERSION", "EXIT_POLICY_VERSION", "EXIT_POLICY_VERSIONS", "RETRYABLE",
     "RESOLVED", "OPEN", "TRIGGER_EXPIRED", "NO_FILL", "INVALIDATED", "DATA_INCOMPLETE",
 ]
 
 ENTRY_POLICY_VERSION = "v1"
-EXIT_POLICY_VERSION = "v1"
+EXIT_POLICY_VERSION = "v1"           # default exit policy
+EXIT_POLICY_VERSIONS = frozenset({"v1", "v2"})  # the resolvable exit policies (T-020.11)
 
 RESOLVED = "RESOLVED"
 OPEN = "OPEN"
@@ -120,6 +125,7 @@ def resolve_signal(
     anchor_ts: datetime,
     frame: pd.DataFrame,
     *,
+    exit_policy: str = EXIT_POLICY_VERSION,
     # Production sources the per-venue taker fee from EXCHANGE_META[exchange]["fee_rate"]
     # (the resolve CLI passes it); these defaults are a fallback for direct / test calls.
     taker_fee: float = 0.00035,
@@ -130,6 +136,11 @@ def resolve_signal(
 ) -> ShadowOutcome:
     """Walk one captured signal forward. `frame` is the venue's OHLCV (1H bars assumed —
     `expiry_candles` is in 1H units), index = candle-OPEN datetime (ccxt), cols Open/High/Low/Close."""
+    if exit_policy not in EXIT_POLICY_VERSIONS:
+        raise ValueError(
+            f"unknown exit_policy {exit_policy!r} (expected one of {sorted(EXIT_POLICY_VERSIONS)})"
+        )
+    be_after_tp1 = exit_policy == "v2"  # ratchet the remainder's stop to BE once TP1 fills
     # `fetch_candles` indexes by candle-OPEN time, so the bar CONTAINING the signal is the
     # last one whose open <= anchor_ts. Resolve from that bar (not the next), or an IMMEDIATE
     # fill lands a full bar late and the OPEN/DATA_INCOMPLETE boundary shifts. If no bar opens
@@ -177,6 +188,9 @@ def resolve_signal(
     tp1_done = False
     exit_reason = None
     exit_price = None
+    # v2: once TP1 fills, the remaining size's stop ratchets to BE (entry_fill) — ruleset
+    # §6.4. v1 leaves it at the original stop (no rescue, #41), so `effective_stop` never moves.
+    effective_stop = stop
 
     def _terminal(reason, price, bars):
         return ShadowOutcome(
@@ -196,13 +210,16 @@ def resolve_signal(
             return _terminal("TIME_EXPIRY" if not tp1_done else "TP1_TIME", close, j + 1)
         hi = float(mgmt.iloc[j]["High"])
         lo = float(mgmt.iloc[j]["Low"])
-        # Pessimistic: stop first when a bar spans both stop and a TP.
-        if (is_long and lo <= stop) or (not is_long and hi >= stop):
-            p, f, s = _exit_leg(entry_fill, stop, remaining, is_long, slippage, taker_fee, risk)
+        # Pessimistic: stop first when a bar spans both stop and a TP. Post-TP1 under v2,
+        # `effective_stop` is BE (set the bar AFTER the TP1 fill — this check already ran
+        # against the pre-TP1 stop on the fill bar, so BE is never applied retroactively).
+        if (is_long and lo <= effective_stop) or (not is_long and hi >= effective_stop):
+            p, f, s = _exit_leg(entry_fill, effective_stop, remaining, is_long, slippage, taker_fee, risk)
             pnl_r += p
             leg_fees_r += f
             leg_slip_r += s
-            return _terminal("TP1_SL" if tp1_done else "SL", stop, j + 1)
+            reason = ("TP1_BE" if be_after_tp1 else "TP1_SL") if tp1_done else "SL"
+            return _terminal(reason, effective_stop, j + 1)
         if tp1 and not tp1_done and ((is_long and hi >= tp1) or (not is_long and lo <= tp1)):
             p, f, s = _exit_leg(entry_fill, tp1, tp1_frac, is_long, slippage, taker_fee, risk)
             pnl_r += p
@@ -211,6 +228,8 @@ def resolve_signal(
             remaining -= tp1_frac
             tp1_done = True
             exit_reason, exit_price = "TP1", tp1
+            if be_after_tp1:  # v2: ratchet the remainder's stop to breakeven
+                effective_stop = entry_fill
             if remaining <= 1e-9:  # full size exits at TP1 (single-target / 100-0 split)
                 return _terminal("TP1", tp1, j + 1)
         if tp2 and remaining > 0 and ((is_long and hi >= tp2) or (not is_long and lo <= tp2)):
