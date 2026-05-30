@@ -25,9 +25,9 @@ def _load():
 def _run(mod, argv, capsys):
     report = SimpleNamespace(n=7, win_rate=0.5, avg_r=0.25, profit_factor=1.5,
                              ci_lo=-0.1, ci_hi=0.6, gate_pass=False)
-    by_status = {"RESOLVED": 7, "OPEN": 2}
+    result = SimpleNamespace(report=report, by_status={"RESOLVED": 7, "OPEN": 2})
     mod.get_connection = MagicMock(return_value=MagicMock())
-    mod.run_resolution = MagicMock(return_value=(report, by_status))
+    mod.run_resolution = MagicMock(return_value=result)
     old = sys.argv
     sys.argv = argv
     try:

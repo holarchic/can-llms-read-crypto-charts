@@ -28,28 +28,28 @@ def _run(exit_policy):
          patch.object(runner, "resolved_r_values", return_value=[1.0, -0.5]) as rvals, \
          patch.object(runner, "get_exchange_meta", return_value={"fee_rate": 0.0003}), \
          patch.object(runner, "expectancy_report", return_value=SimpleNamespace(n=2)):
-        report, by_status = runner.run_resolution(
+        result = runner.run_resolution(
             MagicMock(), exit_policy=exit_policy, bars=400, fetch=fetch, now=now, log=lambda *a: None)
-    return load, resolve, save, rvals, report, by_status
+    return load, resolve, save, rvals, result
 
 
 def test_run_resolution_threads_policy_to_all_four_keyed_calls():
-    load, resolve, save, rvals, report, by_status = _run("v2")
+    load, resolve, save, rvals, result = _run("v2")
     assert load.call_args.args[1] == "v2"               # load_unresolved_signals(conn, exit, entry)
     assert resolve.call_args.kwargs["exit_policy"] == "v2"
     assert save.call_args.args[3] == "v2"               # save_resolution(conn, id, outcome, exit, entry, now)
     assert rvals.call_args.args[1] == "v2"              # resolved_r_values(conn, exit, entry)
-    assert by_status == {"RESOLVED": 1}
-    assert report.n == 2
+    assert result.by_status == {"RESOLVED": 1}          # named record, not a positional tuple
+    assert result.report.n == 2
 
 
 def test_run_resolution_threads_setup_tf_into_resolver():
-    _, resolve, _, _, _, _ = _run("v2")
+    _, resolve, _, _, _ = _run("v2")
     assert resolve.call_args.kwargs["setup_tf"] == "4h"
 
 
 def test_run_resolution_v1_keys_every_call_v1():
-    load, resolve, save, rvals, _, _ = _run("v1")
+    load, resolve, save, rvals, _ = _run("v1")
     assert load.call_args.args[1] == "v1"
     assert resolve.call_args.kwargs["exit_policy"] == "v1"
     assert save.call_args.args[3] == "v1"

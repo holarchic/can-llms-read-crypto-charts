@@ -7,19 +7,29 @@ keys EVERY store call (load / save / report) and the resolver, so a v1 vs v2 tap
 cross-keyed into a false Gate-#10 sample. Returns `(report, by_status)`; the caller renders.
 """
 
+from typing import NamedTuple
+
 import ccxt
 
 from scanner.config import get_exchange_meta
-from scanner.expectancy import expectancy_report
+from scanner.expectancy import ExpectancyReport, expectancy_report
 from scanner.shadow.resolver import ENTRY_POLICY_VERSION, resolve_signal
 from scanner.shadow.store import load_unresolved_signals, resolved_r_values, save_resolution
 
-__all__ = ["run_resolution"]
+__all__ = ["ResolutionRun", "run_resolution"]
 
 
-def run_resolution(conn, *, exit_policy, bars, fetch, now, log=print):
-    """Resolve every unresolved shadow signal forward under `exit_policy`; return `(report,
-    by_status)`.
+class ResolutionRun(NamedTuple):
+    """The outcome of one resolve pass — named so callers read `.report`/`.by_status` rather
+    than a positional tuple (and `.13` can add fields without breaking call sites)."""
+
+    report: ExpectancyReport
+    by_status: dict[str, int]
+
+
+def run_resolution(conn, *, exit_policy, bars, fetch, now, log=print) -> ResolutionRun:
+    """Resolve every unresolved shadow signal forward under `exit_policy`; return a
+    `ResolutionRun(report, by_status)`.
 
     `fetch(coin, tf, bars, exchange_id=…)` supplies the OHLCV frame, `now` stamps each
     resolution, `log` receives per-coin progress lines (both injected so the flow is pure of
@@ -46,4 +56,4 @@ def run_resolution(conn, *, exit_policy, bars, fetch, now, log=print):
         by_status[outcome.status] = by_status.get(outcome.status, 0) + 1
 
     report = expectancy_report(resolved_r_values(conn, exit_policy, ENTRY_POLICY_VERSION))
-    return report, by_status
+    return ResolutionRun(report=report, by_status=by_status)

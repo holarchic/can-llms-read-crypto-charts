@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from scanner.data_plane_v2 import SETUP_TFS
 from scanner.execution.sizing import reanchor_exit_prices
 from scanner.indicators import find_swing_points
 from scanner.models import MachineBlock, ShadowOutcome
@@ -71,6 +72,12 @@ _TRAIL_MIN_DIST_PCT = 0.2      # keep the trailed stop ≥ this % from price (no
 _TRAIL_RULE = {"1d": "1D", "4h": "4h", "1h": None, "15m": None}
 _TRAIL_TF_DELTA = {"1d": timedelta(days=1), "4h": timedelta(hours=4)}
 _FRAME_DELTA = timedelta(hours=1)                       # the resolver frame is 1H
+# The trail-rule key set IS the canonical setup-TF set (owner: data_plane_v2.SETUP_TFS);
+# parity-guarded at import so it can't drift (cf. pipeline `_TF_SECONDS`). A real `setup_tf` is
+# always one of these — the store fails loud on any other non-null value, so the "not in" branch
+# of `_trail_swings` is a defense-in-depth no-trail for None.
+if set(_TRAIL_RULE) != set(SETUP_TFS):
+    raise RuntimeError(f"_TRAIL_RULE keys {sorted(_TRAIL_RULE)} != SETUP_TFS {sorted(SETUP_TFS)}")
 
 
 def _trail_swings(frame, setup_tf):
@@ -88,6 +95,12 @@ def _trail_swings(frame, setup_tf):
         tf_df = frame.resample(rule).agg(
             {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
         ).dropna()
+        # Drop a partial LEADING bucket: if `frame` starts mid-HTF-bar, the first resampled
+        # bucket is missing its earlier 1H bars and would mis-form swings vs a true HTF series
+        # (left-edge truncation — the confirmation gate only guards the right edge; a trailing
+        # partial bucket is harmless since a swing there never confirms within the frame).
+        if len(tf_df) and tf_df.index[0] < frame.index[0]:
+            tf_df = tf_df.iloc[1:]
         tf_delta = _TRAIL_TF_DELTA[setup_tf]
     if len(tf_df) < 2 * _TRAIL_LOOKBACK + 1:
         return [], tf_delta

@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import NamedTuple
 
 from scanner.config import EXCHANGE_META
+from scanner.data_plane_v2 import SETUP_TFS
 from scanner.models import MachineBlock, ScanResult, ShadowOutcome
 
 from .resolver import RESOLVED, RETRYABLE
@@ -101,6 +102,11 @@ def load_unresolved_signals(
             raise ValueError(
                 f"shadow_signals id={row['id']}: unknown exchange '{row['exchange']}' "
                 "(corrupt capture) — refusing to resolve it"
+            )
+        if row["setup_tf"] is not None and row["setup_tf"] not in SETUP_TFS:
+            raise ValueError(
+                f"shadow_signals id={row['id']}: setup_tf '{row['setup_tf']}' not in SETUP_TFS "
+                f"{sorted(SETUP_TFS)} (corrupt capture) — refusing to resolve it"
             )
         out.append(LoadedShadowSignal(
             id=row["id"], coin=row["coin"], exchange=row["exchange"],

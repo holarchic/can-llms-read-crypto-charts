@@ -362,3 +362,21 @@ def test_trail_swings_unknown_tf_no_trail():
     f = _frame([(100, 101, 99, 100)] * 10)
     assert _trail_swings(f, "weird")[0] == []
     assert _trail_swings(f, None)[0] == []
+
+
+def test_trail_swings_drops_partial_leading_bucket():
+    # A 4h frame starting mid-bucket must DROP the partial leading bucket — otherwise its (wrong,
+    # truncated) OHLC contaminates the swing-detection window and creates a phantom swing a true
+    # boundary-aligned HTF series lacks. vals are 4h-bucket bodies; bucket 5 (105) is the one real
+    # swing low both series share; the partial bucket (value 100) would forge a phantom high at
+    # bucket 2 (115) without the drop.
+    vals = [101, 102, 115, 110, 109, 105, 109, 110, 111, 112, 113]
+    bars = [(v, v, v, v) for v in vals for _ in range(4)]          # 4 flat 1h bars per 4h bucket
+    a_idx = pd.date_range("2026-05-29T16:00:00Z", periods=len(bars), freq="1h")     # boundary start
+    aligned = pd.DataFrame(bars, index=a_idx, columns=["Open", "High", "Low", "Close"])
+    pre = [(100, 100, 100, 100)] * 3                               # 3 bars of a partial lead bucket
+    m_idx = pd.date_range("2026-05-29T13:00:00Z", periods=len(pre) + len(bars), freq="1h")
+    mid = pd.DataFrame(pre + bars, index=m_idx, columns=["Open", "High", "Low", "Close"])
+    a = [(s.timestamp, s.price) for s in _trail_swings(aligned, "4h")[0]]
+    m = [(s.timestamp, s.price) for s in _trail_swings(mid, "4h")[0]]
+    assert a and a == m   # non-empty (anti-vacuity) + the partial bucket forged no phantom swing

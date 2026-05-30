@@ -63,6 +63,22 @@ def test_load_unresolved_rehydrates_signal(conn):
     assert rows[0].setup_tf == "4h"     # round-trips capture→load for the v2 trail (T-020.12)
 
 
+def test_load_rejects_unknown_setup_tf(conn):
+    # a non-null setup_tf outside SETUP_TFS is a corrupt capture — fail loud at the DB boundary
+    sid = _capture(conn, "s1")
+    conn.execute("UPDATE shadow_signals SET setup_tf = 'bogus' WHERE id = ?", (sid,))
+    with pytest.raises(ValueError, match="setup_tf"):
+        load_unresolved_signals(conn, XP, EP)
+
+
+def test_load_allows_null_setup_tf(conn):
+    # NULL setup_tf (legacy / missing) is allowed — the resolver simply takes no trail for it
+    sid = _capture(conn, "s1")
+    conn.execute("UPDATE shadow_signals SET setup_tf = NULL WHERE id = ?", (sid,))
+    rows = load_unresolved_signals(conn, XP, EP)
+    assert len(rows) == 1 and rows[0].setup_tf is None
+
+
 def test_resolved_excluded_open_reincluded(conn):
     sid1 = _capture(conn, "s1")
     save_resolution(conn, sid1, ShadowOutcome(status="RESOLVED", realized_r=1.2), XP, EP, _ANCHOR)
