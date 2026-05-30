@@ -526,13 +526,12 @@ class MachineBlock:
                 return None
             data["confirming_event"] = ev
         if "setup_quality" in data:
-            # Lenient at the parser; strict at the validator (SPEC #33/#35). A typo or
-            # unrecognised value must not downgrade an otherwise-valid CONFIRM to
-            # ``machine_block=None`` here — drop the value (neither modeled nor extra) and let
-            # the post-LLM ``setup_validator`` demote on ``REJECT_NON_TEXTBOOK`` instead. "variant"
-            # still normalizes lowercase (the LLM may emit it as a regression / hallucination;
-            # the validator demotes it deterministically). The raw analysis_text is persisted for
-            # forensics. Strict-reject stays for the capital-path fields above.
+            # INERT back-compat parse (T-020.4 / SPEC #44): the v2 prompt no longer emits
+            # ``setup_quality`` and the validator no longer reads it — the textbook gate is now the
+            # structural ``setups_v2.setup_textbook`` predicate. Kept lenient so a historical v2
+            # block still round-trips: normalize a "textbook"/"variant" value lowercase, else drop
+            # it (neither modeled nor extra) rather than rejecting the whole CONFIRM. Strict-reject
+            # stays for the capital-path fields above.
             sq = data["setup_quality"]
             if isinstance(sq, str) and sq.strip().lower() in ("textbook", "variant"):
                 data["setup_quality"] = sq.strip().lower()

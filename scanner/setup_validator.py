@@ -75,7 +75,10 @@ def validate_confirms(
         if not r.is_confirm:
             continue
         if r.machine_block is None:
-            # A CONFIRM with no execution block is unexecutable — fail closed.
+            # A CONFIRM with no execution block is unexecutable — fail closed. Reuses
+            # REJECT_NON_TEXTBOOK deliberately (this case is near-unreachable for a parsed CONFIRM,
+            # and downstream partitions on validator_verdict presence, not cause — no cause-level
+            # analytics consume it).
             r.decision = "REJECT"
             r.validator_verdict = REJECT_NON_TEXTBOOK
             continue
