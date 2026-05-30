@@ -31,7 +31,7 @@ from scanner.scan_store import save_result
 
 def test_prompt_versions():
     assert select_prompt("v1").prompt_version == "9.11"
-    assert select_prompt("v2").prompt_version == "10.00"
+    assert select_prompt("v2").prompt_version == "10.01"  # T-020.4 bump (veto collapse, SPEC #44)
 
 
 def test_v1_system_text_is_systemprompt_plus_suffix():
@@ -72,8 +72,9 @@ def test_v2_three_surface_vocabulary_coherent():
     # deviation_reclaim is a SETUP, not a trigger: the entry_trigger enum line excludes it
     trigger_line = next(ln for ln in text.splitlines() if ln.strip().startswith("- entry_trigger:"))
     assert "deviation_reclaim" not in trigger_line
-    # the setup_quality rubric is present
-    assert "setup_quality" in text and "SETUP-QUALITY RUBRIC" in text
+    # T-020.4: the setup_quality self-label is gone from the v2 prompt; the veto framing replaces it
+    assert "setup_quality" not in text
+    assert "veto" in text.lower()
 
 
 def test_v2_keeps_numeric_confidence_required():
@@ -99,14 +100,15 @@ def test_v1_free_of_v2_vocabulary():
 
 
 def test_v2_example_machine_block_parses_and_validates():
-    """The MACHINE_BLOCK example embedded in the v2 scanner suffix must be a valid block
-    (so the LLM has a correct template) — including the new setup_quality + v2 setup_type."""
+    """The MACHINE_BLOCK example embedded in the v2 scanner suffix must be a valid block (so the
+    LLM has a correct template) — v2 setup_type, and NO setup_quality (T-020.4 dropped it from the
+    prompt; the model field is inert)."""
     text = select_prompt("v2").system_text
     m = re.search(r"<!--\s*MACHINE_BLOCK\s*\n(.+?)\nMACHINE_BLOCK\s*-->", text, re.DOTALL)
     assert m is not None
     mb = MachineBlock.from_raw(json.loads(m.group(1).strip()))
     assert mb is not None
-    assert mb.setup_quality == "textbook"
+    assert mb.setup_quality is None  # dropped from the v2 example (T-020.4)
     assert mb.setup_type == "trend_continuation"
 
 

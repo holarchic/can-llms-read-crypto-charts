@@ -3,7 +3,8 @@
 Single owner of the `SETUP_VERSION`-gated LLM artifacts — the persisted `prompt_version`
 and the assembled system prompt (the per-version system prompt + ruleset + scanner-mode
 suffix) — so a cutover flips one seam, not scattered `if setup_version` checks. v1 is
-frozen at 9.11; v2 = 10.00.
+frozen at 9.11; v2 = 10.01 (T-020.4 collapsed the LLM to a REJECT-only veto + dropped the
+`setup_quality` self-label; the structural predicate is the gate — SPEC #44).
 
 All three taxonomy-bearing surfaces are version-branched here: the system prompt
 (`SYSTEM_PROMPT` / `SYSTEM_PROMPT_V2`), the scanner-mode suffix (`SCANNER_MODE_SUFFIX` /

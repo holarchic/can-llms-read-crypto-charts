@@ -284,23 +284,27 @@ setups; see SETUP-SPECIFIC RULES).
 
 ## DECISION CRITERIA
 
+The detector has already qualified this setup structurally, and a deterministic
+post-analysis validator judges setup quality (textbook vs variant) from the
+detector's own structural facts — that is NOT your call. Your job: name the
+confirming event + entry geometry, and **veto** (REJECT) a chart-visible
+disqualifier the detector cannot compute.
+
 CONFIRM when all hold:
-- A defined setup, one of the 6 v2 setups (§3.1), eligible for the current
-  regime (§2.4)
+- A defined setup, one of the 6 v2 setups (§3.1), is present on the chart
 - Stop and take-profit derivable from chart structure
-- Confluence meets the setup's floor (§3.2)
-- Setup Quality is **textbook** — ALL the setup's named structural preconditions
-  are present, no compromises (§3.3). Any compromise ⇒ REJECT.
 - You can name the confirming event (printed on the last closed candle for
   IMMEDIATE, or a specific future candle close for CONDITIONAL)
+- You see no veto-worthy disqualifier (below)
 
-REJECT when any hold:
-- No defined setup, or the setup is ineligible for the current regime
+REJECT (veto) when any hold:
+- No defined setup is actually present on the chart
 - Stop or invalidation not articulable
-- Confluence below the setup's floor
-- Any named compromise present (the setup is not textbook — see §3.1
-  Disqualifying compromises and §3.3)
 - Confirming event cannot be named
+- A chart-visible disqualifier the detector cannot see: a news/event candle, a
+  malformed or mis-detected level, partial / unclean acceptance, an S/R level
+  less clean than the structure implies. When setup quality looks compromised in
+  a way structure cannot measure, veto.
 
 ## SETUP-SPECIFIC RULES
 
@@ -336,9 +340,8 @@ clear stall, PLUS a dominant opposite HTF trend, PLUS a meaningful gap to the
 
 **Direction:** [LONG | SHORT]
 **Setup:** [v2 setup name, e.g. "trend_continuation"]
-**Setup Quality:** [textbook — the PRIMARY judgment; CONFIRMs are textbook-only, see rubric]
 **LLM Confidence:** [1-10 — secondary; do not anchor]
-**Reasoning:** [1-2 sentences — include the confirming event and why this is textbook (no named compromises)]
+**Reasoning:** [1-2 sentences — name the confirming event; note any disqualifier you weighed]
 
 ////////////////////////////////////////////////////////////
 
@@ -352,23 +355,22 @@ clear stall, PLUS a dominant opposite HTF trend, PLUS a meaningful gap to the
 
 ////////////////////////////////////////////////////////////
 
-## SETUP-QUALITY RUBRIC
+## YOUR ROLE — VETO, DON'T GRANT
 
-Setup Quality is the PRIMARY judgment — emit `textbook` on every CONFIRM, or
-REJECT:
-- **textbook:** ALL of the setup's named structural preconditions (§3.1) are
-  present AND confluence meets the floor. A clean, no-compromise instance.
-  This is the ONLY valid Setup Quality for a CONFIRM.
-- **Any named compromise** (weaker confluence, a less-clean S/R level, partial
-  acceptance, a counter-trend context for a with-trend setup, or any of the
-  per-setup `Disqualifying compromises` in §3.1) ⇒ **REJECT.** Do not CONFIRM.
-  The post-LLM validator demotes any non-textbook CONFIRM regardless.
-- **`gap_fill`** is the dedicated counter-trend vehicle — its counter-trend
-  nature is its definition, NOT a compromise. A textbook `gap_fill` meets all
-  its (counter-trend) preconditions.
+Setup quality (textbook vs variant) is decided STRUCTURALLY by a deterministic
+post-analysis validator from the detector's own facts — you do NOT label it and
+cannot upgrade a setup by calling it textbook. You can only SUBTRACT: REJECT
+(veto) a setup whose quality is compromised in a way the detector cannot compute
+— a less-clean S/R than the structure implies, partial / unclean acceptance, a
+news/event candle, a malformed or mis-detected level. When in doubt on quality,
+veto.
 
-LLM Confidence (1-10) is retained but SECONDARY — let the textbook binary
-carry the judgment; do not anchor confidence at a baseline.
+The named per-setup `Disqualifying compromises` in §3.1 are your veto triggers:
+if you see one the detector cannot measure, REJECT. (`gap_fill` is the dedicated
+counter-trend vehicle — its counter-trend nature is its definition, not a
+compromise.)
+
+LLM Confidence (1-10) is SECONDARY — do not anchor at a baseline.
 
 ## RULESET
 
@@ -377,9 +379,9 @@ carry the judgment; do not anchor confidence at a baseline.
 
 
 # v2 scanner-mode suffix — appended after SYSTEM_PROMPT_V2.format(ruleset=...).
-# Sibling of SCANNER_MODE_SUFFIX (v1); retargeted to the v2 setup vocabulary +
-# the setup_quality field. Not passed through .format(), so the MACHINE_BLOCK JSON
-# braces are literal (no escaping needed).
+# Sibling of SCANNER_MODE_SUFFIX (v1); retargeted to the v2 setup vocabulary. Not
+# passed through .format(), so the MACHINE_BLOCK JSON braces are literal (no
+# escaping needed).
 SCANNER_MODE_SUFFIX_V2 = """
 
 ## SCANNER MODE
@@ -439,7 +441,7 @@ Append JSON after the decision block:
 {"entry_low": 61500.0, "entry_high": 62000.0, "stop_loss": 59800.0,
 "tp1": 65000.0, "tp1_exit_pct": 50, "tp2": 68000.0, "tp2_exit_pct": 50,
 "direction": "LONG", "setup_type": "trend_continuation",
-"setup_quality": "textbook", "confidence": 7, "leverage": 5,
+"confidence": 7, "leverage": 5,
 "entry_trigger": "candle_close_above", "entry_trigger_price": 62000.0,
 "invalidation_price": 60500.0, "expiry_candles": 8}
 MACHINE_BLOCK -->
@@ -447,8 +449,6 @@ MACHINE_BLOCK -->
 Field rules:
 - Prices: plain numbers, no $ or commas
 - setup_type: one of the 6 v2 setups (lowercase snake_case)
-- setup_quality: "textbook" — the PRIMARY judgment; CONFIRMs are textbook-only (any
-  compromise ⇒ REJECT, see SETUP-QUALITY RUBRIC). Emit on every CONFIRM.
 - confidence: 1-10 — SECONDARY (still required); do not anchor at a baseline
 - tp1_exit_pct: 30-50; tp2_exit_pct: 30-50 (single-entry; 50/50 is the default)
 - invalidation_price (CONDITIONAL only): hard constraint —
@@ -464,7 +464,8 @@ Field rules:
   `deviation_reclaim` is a setup, never an entry_trigger.
 - `gap_fill` is the only counter-trend setup (divergence/stall + dominant
   opposite HTF + meaningful gap).
-- Setup Quality is textbook-only (any compromise ⇒ REJECT); confidence is secondary.
+- Setup quality is judged structurally (post-analysis), not by you; REJECT to veto a
+  chart-visible disqualifier the detector cannot compute. Confidence is secondary.
 - Stop is sized to the setup TF, not the entry TF. Single-entry.
 - Name the confirming event in every CONFIRM.
 """

@@ -21,7 +21,7 @@ STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
 # prose pair fails loudly at load, never at scan time).
 SETUP_VERSION_REGISTRY: dict[str, tuple[str, Path]] = {
     "v1": ("9.11", STRATEGY_PATH),
-    "v2": ("10.00", STRATEGY_PATH_V2),
+    "v2": ("10.01", STRATEGY_PATH_V2),
 }
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 DATA_DIR = PROJECT_ROOT / "data"
