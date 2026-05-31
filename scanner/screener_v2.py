@@ -327,6 +327,7 @@ def screen_v2(
     conn: sqlite3.Connection,
     verbose: bool = True,
     as_of: datetime | None = None,
+    fetcher=None,
 ) -> tuple[list[BoundarySignal], Stage1ArtifactsV2]:
     """Produce + select the v2 screener signals, deterministically ordered by score.
 
@@ -337,6 +338,8 @@ def screen_v2(
 
     ``as_of`` (T-020.15 / SPEC #53) clamps every candle fetch to a historical scan time and
     skips the wall-clock historical dedup (see `_select_one_per_coin`). ``None`` ⇒ live.
+    ``fetcher`` (T-020.17 / SPEC #54) is the replay datasource's candle fetcher (``None`` ⇒
+    ``fetch_multi_tf`` resolves live ``fetch_candles`` at call time); passed straight through.
     """
     disabled = {t for t in (disabled_types or set())}
 
@@ -353,7 +356,7 @@ def screen_v2(
         # miss a type and abort the whole scan (a worse failure than skipping one coin).
         # Silent masking is the real risk, so a TOTAL wipeout is surfaced loudly below.
         try:
-            candles = fetch_multi_tf(coin, config, as_of=as_of)
+            candles = fetch_multi_tf(coin, config, fetcher=fetcher, as_of=as_of)
             ctx2 = build_market_context_v2(coin, candles)
             leverage = leverage_map.get(coin)
             coin_candidates = [

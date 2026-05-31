@@ -739,3 +739,132 @@ class TestStage4ImmediateFreshness:
         results, mock_exec, _ = self._run(_v2_confirm(SetupTypeV2.SFP_RANGE, "15m", old), bars=0)
         mock_exec.assert_called_once()             # disabled → reaches executor
         assert results[0].skip_reason != "stale_immediate"
+
+
+# --- T-020.17: replay datasource threading (SPEC #54) ---
+# The regression class these pin: a replay path that SILENTLY LEAKS a live-HL fetch. Under a
+# `source`, NO live fetch (`fetch_pairs_with_volume`/`get_max_leverage`/`fetch_candles`) may run —
+# all are patched to RAISE. Outcome-only checks are vacuous because `_btc_daily_structure` AND
+# `_analyze_one` SWALLOW fetch exceptions (`except … return None`); so each leak path is pinned by
+# asserting the injected SPY explicitly RECEIVED the call (a leak ⇒ the spy is missing it).
+
+from scanner.shadow.replay_source import ReplaySource  # noqa: E402
+from scanner.tests.test_screener_v2 import _realistic_candles  # noqa: E402  (proven signal fixture)
+
+_T_REPLAY = datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc)
+# fetch_multi_tf calls the fetcher with ccxt intervals; map each back to the realistic-frame key.
+_CCXT_TO_KEY = {"1M": "1mo", "1w": "1w", "1d": "1d", "4h": "4h", "1h": "1h", "15m": "15m"}
+
+
+def _spy_source(coins=("BTC",)):
+    """A ReplaySource whose `fetch` is a SPY (records every (coin, interval, count, as_of)) returning
+    the proven realistic per-TF frames so the REAL `fetch_multi_tf` assembles a signal-producing
+    context, and whose `universe` returns `coins`. Any live fetch is a leak the caller patches to raise."""
+    calls: list = []
+    frames = _realistic_candles()
+
+    def fetch(coin, interval, count, config=None, exchange_id=None, as_of=None):
+        calls.append((coin, interval, count, as_of))
+        return frames[_CCXT_TO_KEY[interval]]
+
+    src = ReplaySource(
+        name="spy",
+        fetch=fetch,
+        universe=lambda as_of, config=None: [{"coin": c, "max_leverage": None} for c in coins],
+        now=lambda: _T_REPLAY,
+    )
+    return src, calls
+
+
+def _no_live_fetch():
+    """Patch every live-HL fetch binding to RAISE — `scanner.pipeline.*` (the `from .data import`
+    bindings the pipeline actually calls) AND `scanner.data_plane_v2.fetch_candles` (the call-time
+    `or fetch_candles` fallback in `fetch_multi_tf`)."""
+    leak = AssertionError("LIVE-HL fetch leaked under a replay source")
+    return [
+        patch("scanner.pipeline.fetch_pairs_with_volume", side_effect=leak),
+        patch("scanner.pipeline.get_max_leverage", side_effect=leak),
+        patch("scanner.pipeline.fetch_candles", side_effect=leak),
+        patch("scanner.data_plane_v2.fetch_candles", side_effect=leak),
+    ]
+
+
+class TestReplaySourceThreading:
+    def test_btc_daily_structure_uses_source_not_live(self):
+        """`_btc_daily_structure` SWALLOWS fetch errors → an outcome check can't see a leak. Pin it:
+        with live `fetch_candles` patched to raise, it must use the source spy (spy receives BTC/1d)
+        and return a real (non-None) structure derived from the stub frame."""
+        from scanner.pipeline import _btc_daily_structure
+        src, calls = _spy_source()
+        with patch("scanner.pipeline.fetch_candles",
+                   side_effect=AssertionError("LIVE leak in _btc_daily_structure")):
+            structure = _btc_daily_structure(ScannerConfig(), verbose=False, as_of=_T_REPLAY, fetcher=src.fetch)
+        assert ("BTC", "1d") in [(c, i) for (c, i, _n, _a) in calls]   # spy got the BTC daily call
+        assert structure is not None                                    # stub-derived, not swallowed-None
+        assert all(a == _T_REPLAY for (_c, _i, _n, a) in calls)         # as_of threaded
+
+    def test_stage1_screen_source_no_live_leak(self):
+        """Stage-1 under a source: universe + every candle fetch come from the source, none live."""
+        src, calls = _spy_source(coins=("BTC",))
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.save_scan_universe"), \
+             patch("scanner.pipeline.save_signals"), \
+             self._all(_no_live_fetch()):
+            stage1_screen(
+                ScannerConfig(setup_version="v2"), verbose=False, as_of=_T_REPLAY, source=src,
+            )
+        # Non-vacuity is by CALL PROVENANCE, not a signal count: every candle the producer + BTC
+        # context fetched came from the spy (a leaked fetch would raise OR be swallowed, leaving the
+        # call ABSENT from the spy — so this set being present proves no leak). Signal PRODUCTION
+        # through the real fetch_multi_tf assembly is fixture-sensitive and owned by test_screener_v2.
+        seen = {(c, i) for (c, i, _n, _a) in calls}
+        assert {("BTC", "1d"), ("BTC", "4h"), ("BTC", "1h"), ("BTC", "15m"), ("BTC", "1w"), ("BTC", "1M")} <= seen
+        assert all(c == "BTC" for (c, _i, _n, _a) in calls)             # never a non-universe coin
+        assert all(a == _T_REPLAY for (_c, _i, _n, a) in calls)         # as_of clamped throughout
+
+    def test_stage1_single_coin_source_skips_live_max_leverage(self):
+        """Single-coin replay must NOT call the live `get_max_leverage` (patched to raise) and must
+        fetch via the source spy — pinned by the spy receiving BTC's setup-TF calls without a raise."""
+        src, calls = _spy_source(coins=("BTC",))
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.save_scan_universe"), \
+             patch("scanner.pipeline.save_signals"), \
+             self._all(_no_live_fetch()):
+            stage1_screen(
+                ScannerConfig(setup_version="v2"), coin_filter="BTC", verbose=False,
+                as_of=_T_REPLAY, source=src,
+            )
+        # Reaching here means get_max_leverage (patched to raise) was never called; the spy supplied
+        # the candles — so single-coin replay made zero live calls.
+        assert {("BTC", "1d"), ("BTC", "15m")} <= {(c, i) for (c, i, _n, _a) in calls}
+
+    def test_stage2_recovery_uses_source_not_live(self):
+        """The stage-2 recovery refetch (bundle miss) must use the source fetcher, not live. Pinned
+        explicitly because `_analyze_one` SWALLOWS fetch errors → assert the spy got the refetch AND
+        the result is non-None (the analyze step mocked)."""
+        from scanner.models import BoundarySignal
+        from scanner.pipeline import _analyze_one
+        src, calls = _spy_source(coins=("BTC",))
+        sig = BoundarySignal.from_setup_signal(_make_signal(coin="BTC"), "4h")
+        cfg = MagicMock()
+        cfg.setup_version = "v2"
+        patchers = _no_live_fetch() + [
+            patch("scanner.pipeline.generate_charts_for_signal", return_value=[]),
+            patch("scanner.pipeline.analyze_for_scanner", return_value="RESULT"),
+        ]
+        with self._all(patchers):
+            # prefetched_candles=None ⇒ bundle MISS ⇒ _v2_chart_inputs refetches via the source fetcher
+            result = _analyze_one(sig, cfg, prefetched_candles=None, as_of=_T_REPLAY, source=src)
+        assert result == "RESULT"                                       # ran through recovery, no leak
+        assert {("BTC", "1d"), ("BTC", "15m")} <= {(c, i) for (c, i, _n, _a) in calls}  # spy got the refetch
+
+    @staticmethod
+    def _all(patchers):
+        """Enter a list of patch() context managers as one `with` (ExitStack)."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for p in patchers:
+            stack.enter_context(p)
+        return stack

@@ -140,7 +140,7 @@ def fetch_multi_tf(
     coin: str,
     config: ScannerConfig | None = None,
     *,
-    fetcher=fetch_candles,
+    fetcher=None,
     counts: dict[str, int] = V2_CANDLE_COUNTS,
     as_of: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
@@ -149,14 +149,21 @@ def fetch_multi_tf(
     Native keys are fetched at the ``counts`` depth and have their forming last bar
     dropped before anything else; derived keys are resampled off the already-closed
     source. ``fetcher``/``counts`` are injectable so the plane is unit-testable
-    against synthetic candle dicts without a live exchange.
+    against synthetic candle dicts without a live exchange, and so a replay datasource
+    (T-020.17, ``ReplaySource.fetch``) can be threaded in.
+
+    ``fetcher`` defaults to ``None`` and is resolved to ``fetch_candles`` at CALL TIME
+    (``fetcher or fetch_candles``), NOT frozen as a parameter default — so a test that patches
+    ``data_plane_v2.fetch_candles`` actually intercepts a forgotten fetcher thread (a def-time
+    default binds the object once and dodges the patch). Effective default is unchanged.
 
     ``as_of`` (T-020.15) clamps every native fetch to a historical scan time by binding it
     onto the fetcher — so the per-TF call signature is unchanged and injected test doubles
     (which never set ``as_of``) keep working. ``_drop_forming_bar`` then removes the
     forming-at-T bar, reproducing the closed-bar set of a live scan at T.
     """
-    eff_fetcher = fetcher if as_of is None else partial(fetcher, as_of=as_of)
+    base = fetcher or fetch_candles
+    eff_fetcher = base if as_of is None else partial(base, as_of=as_of)
     out: dict[str, pd.DataFrame] = {}
     for key in CANONICAL_TFS:
         if key in _RESAMPLE_RULE:

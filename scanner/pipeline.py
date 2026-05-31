@@ -20,7 +20,14 @@ from .scan_store import mark_alerted, save_result, save_scan_universe, save_sign
 from .screener import detect_all_setups
 from .screener_v2 import ChartInputs, Stage1ArtifactsV2, chart_inputs, screen_v2
 from .setup_validator import validate_confirms
+from .shadow.replay_source import ReplaySource
 from .strategy.store import get_strategy
+
+
+def _eff_fetch(source: ReplaySource | None):
+    """The replay datasource's candle fetcher, or ``None`` ⇒ live (resolved downstream:
+    `fetch_multi_tf`'s call-time `or fetch_candles`, or the `or fetch_candles` in `_btc_daily_structure`)."""
+    return source.fetch if source is not None else None
 
 
 def _select_with_diversity(
@@ -109,11 +116,19 @@ def _screen_v1(
     return all_signals, candle_map
 
 
-def _btc_daily_structure(config: ScannerConfig, verbose: bool) -> str | None:
+def _btc_daily_structure(
+    config: ScannerConfig, verbose: bool, as_of: datetime | None = None, fetcher=None,
+) -> str | None:
     """BTC Daily swing structure for market context (Daily = filter TF for 4H execution).
-    Version-independent context metadata persisted alongside every signal."""
+    Version-independent context metadata persisted alongside every signal.
+
+    `as_of` + `fetcher` (T-020.17 / SPEC #54) route this through the active replay source under
+    replay — else (live) it is byte-identical. `fetcher or fetch_candles` resolves at call time
+    against this module's `fetch_candles` binding, so the no-live-leak test can patch it (this
+    helper SWALLOWS fetch errors, so a leak here is otherwise invisible to an outcome check)."""
+    eff_fetch = fetcher or fetch_candles
     try:
-        btc_daily_df = fetch_candles("BTC", "1d", config.candle_counts["1d"], config)
+        btc_daily_df = eff_fetch("BTC", "1d", config.candle_counts["1d"], config, as_of=as_of)
         if btc_daily_df is not None and len(btc_daily_df) >= 50:
             btc_context = build_context(btc_daily_df, config.swing_lookback, config.sr_cluster_pct)
             if verbose:
@@ -132,6 +147,7 @@ def stage1_screen(
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
     as_of: datetime | None = None,
+    source: ReplaySource | None = None,
 ) -> tuple[list[BoundarySignal], Stage1ArtifactsV2 | dict]:
     """Stage 1: resolve pairs → version-dispatch the screener → select + persist.
 
@@ -139,7 +155,11 @@ def stage1_screen(
     (`screen_v2`, deterministic score order, already one-per-coin). Pairs resolution,
     BTC-structure context, and persistence are shared; the returned bundle is the
     producer's stage-2 handoff: v2 wraps a typed `Stage1ArtifactsV2`; v1 keeps its
-    untyped 4H candle_map dict (the v1-side retires at the cutover)."""
+    untyped 4H candle_map dict (the v1-side retires at the cutover).
+
+    `source` (T-020.17 / SPEC #54) is the replay datasource: its `universe` resolves the as-of
+    pairs and its `fetch` is threaded into the v2 producer + BTC context. `None` ⇒ live (the
+    volume-ranked `fetch_pairs_with_volume` universe + live `fetch_candles`). Replay is v2-only."""
     conn = get_connection()
 
     # Load strategy for disabled_types
@@ -151,11 +171,20 @@ def stage1_screen(
     # Fetch pairs
     if coin_filter:
         coin_upper = coin_filter.upper()
-        max_lev = get_max_leverage(coin_upper, config.exchange)
-        symbol = meta["symbol_template"].format(coin=coin_upper)
-        pairs = [{"coin": coin_upper, "symbol": symbol, "max_leverage": max_lev}]
+        if source is not None:
+            # Offline replay: no live max_leverage lookup (the #53 metadata neglect stands).
+            pairs = [{"coin": coin_upper, "max_leverage": None}]
+        else:
+            max_lev = get_max_leverage(coin_upper, config.exchange)
+            symbol = meta["symbol_template"].format(coin=coin_upper)
+            pairs = [{"coin": coin_upper, "symbol": symbol, "max_leverage": max_lev}]
         if verbose:
-            print(f"Single coin mode: {coin_upper} on {meta['label']} (max leverage: {max_lev or '?'}x)")
+            lev = pairs[0].get("max_leverage")
+            print(f"Single coin mode: {coin_upper} on {meta['label']} (max leverage: {lev or '?'}x)")
+    elif source is not None:
+        pairs = source.universe(as_of, config)
+        if verbose:
+            print(f"Found {len(pairs)} {source.name} pairs (as-of universe @ {as_of})")
     else:
         pairs = fetch_pairs_with_volume(config)
         if verbose:
@@ -172,11 +201,12 @@ def stage1_screen(
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
 
     if config.setup_version == "v2":
-        all_signals, bundle = screen_v2(coins, leverage_map, disabled_types, config, conn, verbose, as_of=as_of)
+        all_signals, bundle = screen_v2(coins, leverage_map, disabled_types, config, conn, verbose,
+                                        as_of=as_of, fetcher=_eff_fetch(source))
     else:
         all_signals, bundle = _screen_v1(coins, leverage_map, disabled_types, config, conn, verbose)
 
-    btc_structure = _btc_daily_structure(config, verbose)
+    btc_structure = _btc_daily_structure(config, verbose, as_of=as_of, fetcher=_eff_fetch(source))
 
     if config.setup_version == "v2":
         # screen_v2 already ordered by score (one-per-coin); no shuffle/diversity.
@@ -205,7 +235,7 @@ def stage1_screen(
 
 def _v2_chart_inputs(
     signal: BoundarySignal, prefetched: Stage1ArtifactsV2 | None, config: ScannerConfig,
-    as_of: datetime | None = None,
+    as_of: datetime | None = None, fetcher=None,
 ) -> ChartInputs:
     """Resolve the coin's stage-1 bundle entry + macro substrate and hand them to the
     producer-owned `screener_v2.chart_inputs` (which owns frame/HTF-EMA selection AND the
@@ -218,7 +248,7 @@ def _v2_chart_inputs(
     if candles is not None:
         macro_levels = prefetched.macro_levels_by_coin[signal.coin]
     else:
-        candles = fetch_multi_tf(signal.coin, config, as_of=as_of)
+        candles = fetch_multi_tf(signal.coin, config, fetcher=fetcher, as_of=as_of)
         macro_levels = build_market_context_v2(signal.coin, candles).sr_levels
     return chart_inputs(candles, macro_levels=macro_levels)
 
@@ -228,14 +258,17 @@ def _analyze_one(
     config: ScannerConfig,
     prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
     as_of: datetime | None = None,
+    source: ReplaySource | None = None,
 ) -> ScanResult | None:
     """Fetch multi-TF candles, generate charts, run LLM analysis for one signal.
 
     `as_of` (T-020.15 / SPEC #53) clamps the recovery-path candle refetch to a historical
-    scan time; the happy path reuses the already-clamped stage-1 bundle. v1 ignores it."""
+    scan time; the happy path reuses the already-clamped stage-1 bundle. v1 ignores it.
+    `source` (T-020.17 / SPEC #54) supplies the recovery-path fetcher (the happy path reuses the
+    stage-1 bundle, so this only fires on a bundle miss — but must NOT leak a live fetch)."""
     try:
         if config.setup_version == "v2":
-            chart_data = _v2_chart_inputs(signal, prefetched_candles, config, as_of)
+            chart_data = _v2_chart_inputs(signal, prefetched_candles, config, as_of, fetcher=_eff_fetch(source))
             chart_paths = generate_charts_for_signal(
                 signal, chart_data.candle_sets, enrich=True,
                 htf_emas=chart_data.htf_emas, per_chart_levels=chart_data.per_chart_levels,
@@ -281,10 +314,12 @@ def stage2_analyze(
     strategy_id: str = "v0",
     prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
     as_of: datetime | None = None,
+    source: ReplaySource | None = None,
 ) -> list[ScanResult]:
     """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently.
 
-    `as_of` (T-020.15 / SPEC #53) threads the historical scan time into each `_analyze_one`."""
+    `as_of` (T-020.15 / SPEC #53) threads the historical scan time into each `_analyze_one`;
+    `source` (T-020.17 / SPEC #54) threads the replay fetcher for the recovery refetch."""
     conn = get_connection()
     max_workers = config.analysis_max_workers
 
@@ -310,7 +345,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config, prefetched_candles, as_of): signal
+            executor.submit(_analyze_one, signal, config, prefetched_candles, as_of, source): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -724,6 +759,7 @@ def run_scan(
     exec_config=None,
     dry_execute: bool = False,
     as_of: datetime | None = None,
+    source: ReplaySource | None = None,
 ) -> dict:
     """Full scan pipeline — thin dispatcher.
 
@@ -731,6 +767,10 @@ def run_scan(
     summary. Each step is one call; the accreted stage/policy/presentation
     bodies live in the `_`-helpers above (T-016 Phase 4b, SPEC #28). Returns
     the summary dict.
+
+    `source` (T-020.17 / SPEC #54) is the replay datasource threaded to stage1 (universe +
+    fetcher) and stage2 (recovery fetcher); `None` ⇒ live. Used under historical replay alongside
+    `as_of`.
     """
     cfg = config or ScannerConfig()
     if cfg.shadow_mode:
@@ -753,7 +793,7 @@ def run_scan(
     # Stage 1
     signals, candle_map = stage1_screen(
         cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id,
-        testnet_coins=testnet_coins, as_of=as_of,
+        testnet_coins=testnet_coins, as_of=as_of, source=source,
     )
 
     if dry_run:
@@ -771,7 +811,7 @@ def run_scan(
 
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
-                                 prefetched_candles=candle_map, as_of=as_of)
+                                 prefetched_candles=candle_map, as_of=as_of, source=source)
 
     # Post-LLM structural gate (v2 only) — demote over-eager CONFIRMs so they neither
     # alert (stage 3) nor execute (stage 4). No-op on v1 (SPEC #33). The demotion count

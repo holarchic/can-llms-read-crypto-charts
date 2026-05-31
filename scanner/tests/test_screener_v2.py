@@ -258,7 +258,7 @@ def test_select_one_per_coin_skips_dedup_under_as_of(conn, monkeypatch):
 
 def _patch_pipeline(monkeypatch, run_map):
     """Patch fetch (→ realistic candles) and _run_detectors (→ run_map[coin])."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None, fetcher=None: _realistic_candles())
     monkeypatch.setattr(screener_v2, "_run_detectors", lambda ctx2: run_map.get(ctx2.coin, []))
 
 
@@ -317,7 +317,7 @@ def test_screen_v2_disabled_type_never_lifts(conn, monkeypatch):
 def test_screen_v2_bad_coin_isolated(conn, monkeypatch):
     """A detector/lift failure on one coin is logged + skipped, never aborts the scan or
     half-emits — the per-coin production is one guarded, atomically-committed unit."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None, fetcher=None: _realistic_candles())
 
     def boom_or_sig(ctx2):
         if ctx2.coin == "BAD":
@@ -352,7 +352,7 @@ def test_screen_v2_total_wipeout_alerts(conn, monkeypatch):
     sent = []
     monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
 
-    def boom(coin, config, as_of=None):
+    def boom(coin, config, as_of=None, fetcher=None):
         raise RuntimeError("everything is broken")
 
     monkeypatch.setattr(screener_v2, "fetch_multi_tf", boom)
@@ -368,7 +368,7 @@ def test_screen_v2_partial_failure_no_alert(conn, monkeypatch):
     import scanner.alerts as alerts
     sent = []
     monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None, fetcher=None: _realistic_candles())
 
     def boom_or_sig(ctx2):
         if ctx2.coin == "BAD":
@@ -386,7 +386,7 @@ def test_screen_v2_partial_failure_no_alert(conn, monkeypatch):
 def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
     """The REAL detector path (fetch → build_market_context_v2 → 6 detectors → select)
     runs end-to-end on a realistic fixture without raising; emits 0+ well-formed signals."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None, fetcher=None: _realistic_candles())
     survivors, bundle = screen_v2(["BTC"], {"BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False)
     assert isinstance(survivors, list)
     for b in survivors:
@@ -491,7 +491,7 @@ def test_v2_chart_inputs_bundle_miss_recomputes_macro(monkeypatch):
     exactly once via build_market_context_v2 — recovery-only path."""
     import scanner.pipeline as pipemod
     candles = _realistic_candles()
-    monkeypatch.setattr(pipemod, "fetch_multi_tf", lambda coin, config, as_of=None: candles)
+    monkeypatch.setattr(pipemod, "fetch_multi_tf", lambda coin, config, as_of=None, fetcher=None: candles)
     real_bmc = pipemod.build_market_context_v2
     calls = []
 
