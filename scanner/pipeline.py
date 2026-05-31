@@ -25,9 +25,11 @@ from .strategy.store import get_strategy
 
 
 def _eff_fetch(source: ReplaySource | None):
-    """The replay datasource's candle fetcher, or ``None`` ⇒ live (resolved downstream:
-    `fetch_multi_tf`'s call-time `or fetch_candles`, or the `or fetch_candles` in `_btc_daily_structure`)."""
-    return source.fetch if source is not None else None
+    """The effective candle fetcher for this scan: the replay datasource's `fetch` under a source,
+    else live `fetch_candles`. This is the SINGLE owner of the pipeline's "no source ⇒ live" default
+    — resolved here (read at call time, so the no-live-leak test's patch of `pipeline.fetch_candles`
+    lands) and threaded down as a concrete callable; leaves never re-derive it."""
+    return source.fetch if source is not None else fetch_candles
 
 
 def _select_with_diversity(
@@ -117,18 +119,17 @@ def _screen_v1(
 
 
 def _btc_daily_structure(
-    config: ScannerConfig, verbose: bool, as_of: datetime | None = None, fetcher=None,
+    config: ScannerConfig, verbose: bool, *, as_of: datetime | None = None, fetcher,
 ) -> str | None:
     """BTC Daily swing structure for market context (Daily = filter TF for 4H execution).
     Version-independent context metadata persisted alongside every signal.
 
-    `as_of` + `fetcher` (T-020.17 / SPEC #54) route this through the active replay source under
-    replay — else (live) it is byte-identical. `fetcher or fetch_candles` resolves at call time
-    against this module's `fetch_candles` binding, so the no-live-leak test can patch it (this
-    helper SWALLOWS fetch errors, so a leak here is otherwise invisible to an outcome check)."""
-    eff_fetch = fetcher or fetch_candles
+    `fetcher` is the caller's effective candle fetcher (`_eff_fetch` — live `fetch_candles` or the
+    replay source's); required, never re-derived here (the live default has one owner). Under replay
+    this avoids a live as-of-now BTC fetch (a .15 metadata-lookahead gap). The helper SWALLOWS fetch
+    errors, so the no-live-leak test asserts the fetcher RECEIVED the BTC/1d call, not an outcome."""
     try:
-        btc_daily_df = eff_fetch("BTC", "1d", config.candle_counts["1d"], config, as_of=as_of)
+        btc_daily_df = fetcher("BTC", "1d", config.candle_counts["1d"], config, as_of=as_of)
         if btc_daily_df is not None and len(btc_daily_df) >= 50:
             btc_context = build_context(btc_daily_df, config.swing_lookback, config.sr_cluster_pct)
             if verbose:
@@ -160,6 +161,14 @@ def stage1_screen(
     `source` (T-020.17 / SPEC #54) is the replay datasource: its `universe` resolves the as-of
     pairs and its `fetch` is threaded into the v2 producer + BTC context. `None` ⇒ live (the
     volume-ranked `fetch_pairs_with_volume` universe + live `fetch_candles`). Replay is v2-only."""
+    # Replay is v2-only: the v1 producer (`_screen_v1`) fetches candles from live HL via
+    # `fetch_candles_batch`, so a `source` + v1 config would mix a replay universe/BTC-context with
+    # LIVE v1 candles — a silently incoherent scan. Reject it at the boundary (fail-closed).
+    if source is not None and config.setup_version != "v2":
+        raise ValueError(
+            f"replay source {source.name!r} requires setup_version='v2' (got {config.setup_version!r}) — "
+            "the v1 producer fetches live candles and would mix datasources"
+        )
     conn = get_connection()
 
     # Load strategy for disabled_types

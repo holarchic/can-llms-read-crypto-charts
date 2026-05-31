@@ -860,6 +860,15 @@ class TestReplaySourceThreading:
         assert result == "RESULT"                                       # ran through recovery, no leak
         assert {("BTC", "1d"), ("BTC", "15m")} <= {(c, i) for (c, i, _n, _a) in calls}  # spy got the refetch
 
+    def test_source_rejected_on_v1_path(self):
+        """Replay is v2-only: a source + v1 config would mix a replay universe with LIVE v1 candles
+        (`_screen_v1` → `fetch_candles_batch`). Reject at the stage1 boundary (fail-closed)."""
+        import pytest
+        src, _calls = _spy_source()
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()):
+            with pytest.raises(ValueError, match="requires setup_version='v2'"):
+                stage1_screen(ScannerConfig(setup_version="v1"), verbose=False, as_of=_T_REPLAY, source=src)
+
     @staticmethod
     def _all(patchers):
         """Enter a list of patch() context managers as one `with` (ExitStack)."""
