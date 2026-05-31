@@ -131,6 +131,7 @@ def stage1_screen(
     verbose: bool = True,
     strategy_id: str = "v0",
     testnet_coins: set[str] | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[list[BoundarySignal], Stage1ArtifactsV2 | dict]:
     """Stage 1: resolve pairs → version-dispatch the screener → select + persist.
 
@@ -171,7 +172,7 @@ def stage1_screen(
     leverage_map = {p["coin"]: p.get("max_leverage") for p in pairs}
 
     if config.setup_version == "v2":
-        all_signals, bundle = screen_v2(coins, leverage_map, disabled_types, config, conn, verbose)
+        all_signals, bundle = screen_v2(coins, leverage_map, disabled_types, config, conn, verbose, as_of=as_of)
     else:
         all_signals, bundle = _screen_v1(coins, leverage_map, disabled_types, config, conn, verbose)
 
@@ -204,6 +205,7 @@ def stage1_screen(
 
 def _v2_chart_inputs(
     signal: BoundarySignal, prefetched: Stage1ArtifactsV2 | None, config: ScannerConfig,
+    as_of: datetime | None = None,
 ) -> ChartInputs:
     """Resolve the coin's stage-1 bundle entry + macro substrate and hand them to the
     producer-owned `screener_v2.chart_inputs` (which owns frame/HTF-EMA selection AND the
@@ -216,7 +218,7 @@ def _v2_chart_inputs(
     if candles is not None:
         macro_levels = prefetched.macro_levels_by_coin[signal.coin]
     else:
-        candles = fetch_multi_tf(signal.coin, config)
+        candles = fetch_multi_tf(signal.coin, config, as_of=as_of)
         macro_levels = build_market_context_v2(signal.coin, candles).sr_levels
     return chart_inputs(candles, macro_levels=macro_levels)
 
@@ -225,11 +227,15 @@ def _analyze_one(
     signal: BoundarySignal,
     config: ScannerConfig,
     prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
+    as_of: datetime | None = None,
 ) -> ScanResult | None:
-    """Fetch multi-TF candles, generate charts, run LLM analysis for one signal."""
+    """Fetch multi-TF candles, generate charts, run LLM analysis for one signal.
+
+    `as_of` (T-020.15 / SPEC #53) clamps the recovery-path candle refetch to a historical
+    scan time; the happy path reuses the already-clamped stage-1 bundle. v1 ignores it."""
     try:
         if config.setup_version == "v2":
-            chart_data = _v2_chart_inputs(signal, prefetched_candles, config)
+            chart_data = _v2_chart_inputs(signal, prefetched_candles, config, as_of)
             chart_paths = generate_charts_for_signal(
                 signal, chart_data.candle_sets, enrich=True,
                 htf_emas=chart_data.htf_emas, per_chart_levels=chart_data.per_chart_levels,
@@ -274,8 +280,11 @@ def stage2_analyze(
     verbose: bool = True,
     strategy_id: str = "v0",
     prefetched_candles: Stage1ArtifactsV2 | dict | None = None,
+    as_of: datetime | None = None,
 ) -> list[ScanResult]:
-    """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently."""
+    """Stage 2: Parallel LLM analysis — fetch charts + analyze concurrently.
+
+    `as_of` (T-020.15 / SPEC #53) threads the historical scan time into each `_analyze_one`."""
     conn = get_connection()
     max_workers = config.analysis_max_workers
 
@@ -301,7 +310,7 @@ def stage2_analyze(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyze_one, signal, config, prefetched_candles): signal
+            executor.submit(_analyze_one, signal, config, prefetched_candles, as_of): signal
             for signal in to_analyze
         }
         for future in as_completed(futures):
@@ -714,6 +723,7 @@ def run_scan(
     strategy_id: str = "v0",
     exec_config=None,
     dry_execute: bool = False,
+    as_of: datetime | None = None,
 ) -> dict:
     """Full scan pipeline — thin dispatcher.
 
@@ -729,6 +739,9 @@ def run_scan(
         # the shadow cohort is every post-validator CONFIRM, independent of how it's called.
         exec_config = None
     start = datetime.now(timezone.utc)
+    # The scan's logical anchor: the historical replay time under `as_of` (T-020.15 / SPEC #53),
+    # else wall-clock `start`. Threaded to stage1/stage2 (candle clamp) + stage4_shadow (capture).
+    anchor = as_of if as_of is not None else start
 
     exchange_label = get_exchange_meta(cfg.exchange)["label"]
     if verbose:
@@ -740,7 +753,7 @@ def run_scan(
     # Stage 1
     signals, candle_map = stage1_screen(
         cfg, coin_filter=coin, verbose=verbose, strategy_id=strategy_id,
-        testnet_coins=testnet_coins,
+        testnet_coins=testnet_coins, as_of=as_of,
     )
 
     if dry_run:
@@ -758,7 +771,7 @@ def run_scan(
 
     # Stage 2
     results = stage2_analyze(signals, cfg, verbose=verbose, strategy_id=strategy_id,
-                                 prefetched_candles=candle_map)
+                                 prefetched_candles=candle_map, as_of=as_of)
 
     # Post-LLM structural gate (v2 only) — demote over-eager CONFIRMs so they neither
     # alert (stage 3) nor execute (stage 4). No-op on v1 (SPEC #33). The demotion count
@@ -777,10 +790,11 @@ def run_scan(
     shadow_captured = 0
     if cfg.shadow_mode:
         # Shadow mode: capture the post-validator cohort, place NO orders (T-020.1).
-        # `start` is the scan-run anchor — the moment live would have acted.
+        # `anchor` is the scan's logical time — the historical replay time under `as_of`
+        # (T-020.15), else wall-clock `start` — the moment live would have acted.
         if confirms:
             print(f"\nStage 4 (SHADOW): capturing {len(confirms)} CONFIRMs — no orders")
-            shadow_captured = stage4_shadow(confirms, cfg, start, verbose=verbose)
+            shadow_captured = stage4_shadow(confirms, cfg, anchor, verbose=verbose)
     elif dry_execute and confirms:
         _dry_execute_preview(confirms, verbose)
     elif exec_config and exec_config.enabled and confirms:

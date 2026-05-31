@@ -160,6 +160,22 @@ def test_fetch_multi_tf_records_normalizes_and_isolates_v1():
     assert V2_CANDLE_COUNTS != cfg.candle_counts
 
 
+def test_fetch_multi_tf_threads_as_of_onto_fetcher():
+    """`as_of` (T-020.15) is bound onto the fetcher so every native fetch is clamped, while the
+    per-TF call signature stays unchanged (the as_of=None test double above is untouched)."""
+    seen = []
+
+    def mock_fetcher(coin, interval, count, config=None, as_of=None):
+        seen.append(as_of)
+        idx = pd.date_range("2020-01-01", periods=count, freq=_FREQ[interval])
+        c = pd.Series([100.0 + i for i in range(count)], index=idx)
+        return pd.DataFrame({"Open": c, "High": c + 1, "Low": c - 1, "Close": c, "Volume": 1000.0}, index=idx)
+
+    T = pd.Timestamp("2026-05-20 12:00", tz="UTC")
+    fetch_multi_tf("BTC", config=ScannerConfig(), fetcher=mock_fetcher, as_of=T)
+    assert seen and all(s == T for s in seen)  # every native fetch received the bound as_of
+
+
 # --- 3. build_tf_substrate -----------------------------------------------------
 
 

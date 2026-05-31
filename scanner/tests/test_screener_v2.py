@@ -8,6 +8,8 @@ bundle, and the v2 enriched-chart inputs. Synthetic, fixed-date fixtures; the ne
 fetch is monkeypatched, but `build_market_context_v2` runs for real.
 """
 
+from datetime import datetime, timezone
+
 import pandas as pd
 import pytest
 
@@ -228,12 +230,35 @@ def test_select_one_per_coin_skips_historical_dup_keeps_next(conn, monkeypatch):
     assert len(out) == 1 and out[0].setup_type is SetupTypeV2.GAP_FILL
 
 
+def test_select_one_per_coin_skips_dedup_under_as_of(conn, monkeypatch):
+    """Under `as_of` (replay, T-020.15 / SPEC #53) the wall-clock historical dedup is SKIPPED:
+    a candidate that would be a historical duplicate is still kept (anchors are independent), and
+    `is_duplicate` is never consulted. Control: the same candidate is suppressed when `as_of=None`."""
+    top = _bsig(coin="BTC", confidence=0.9, key_level=100.0, setup_type=SetupTypeV2.TREND_CONTINUATION)
+    calls = []
+
+    def always_dup(*a, **k):
+        calls.append(a)
+        return True
+
+    monkeypatch.setattr(screener_v2, "is_duplicate", always_dup)
+    cfg = ScannerConfig(setup_version="v2")
+    T = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+
+    out = _select_one_per_coin([top], cfg, conn, verbose=False, as_of=T)
+    assert len(out) == 1 and out[0].setup_type is SetupTypeV2.TREND_CONTINUATION
+    assert calls == []  # is_duplicate not consulted under as_of
+
+    # control: as_of=None ⇒ the gate fires ⇒ the dup is suppressed
+    assert _select_one_per_coin([top], cfg, conn, verbose=False) == []
+
+
 # --- 6. screen_v2 end-to-end (real fetch/build, patched leaf detectors) --------
 
 
 def _patch_pipeline(monkeypatch, run_map):
     """Patch fetch (→ realistic candles) and _run_detectors (→ run_map[coin])."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
     monkeypatch.setattr(screener_v2, "_run_detectors", lambda ctx2: run_map.get(ctx2.coin, []))
 
 
@@ -292,7 +317,7 @@ def test_screen_v2_disabled_type_never_lifts(conn, monkeypatch):
 def test_screen_v2_bad_coin_isolated(conn, monkeypatch):
     """A detector/lift failure on one coin is logged + skipped, never aborts the scan or
     half-emits — the per-coin production is one guarded, atomically-committed unit."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
 
     def boom_or_sig(ctx2):
         if ctx2.coin == "BAD":
@@ -327,7 +352,7 @@ def test_screen_v2_total_wipeout_alerts(conn, monkeypatch):
     sent = []
     monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
 
-    def boom(coin, config):
+    def boom(coin, config, as_of=None):
         raise RuntimeError("everything is broken")
 
     monkeypatch.setattr(screener_v2, "fetch_multi_tf", boom)
@@ -343,7 +368,7 @@ def test_screen_v2_partial_failure_no_alert(conn, monkeypatch):
     import scanner.alerts as alerts
     sent = []
     monkeypatch.setattr(alerts, "send_errors_alert", lambda msg, cfg: sent.append(msg))
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
 
     def boom_or_sig(ctx2):
         if ctx2.coin == "BAD":
@@ -361,7 +386,7 @@ def test_screen_v2_partial_failure_no_alert(conn, monkeypatch):
 def test_screen_v2_real_detectors_no_crash(conn, monkeypatch):
     """The REAL detector path (fetch → build_market_context_v2 → 6 detectors → select)
     runs end-to-end on a realistic fixture without raising; emits 0+ well-formed signals."""
-    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config: _realistic_candles())
+    monkeypatch.setattr(screener_v2, "fetch_multi_tf", lambda coin, config, as_of=None: _realistic_candles())
     survivors, bundle = screen_v2(["BTC"], {"BTC": 10}, None, ScannerConfig(setup_version="v2"), conn, verbose=False)
     assert isinstance(survivors, list)
     for b in survivors:
@@ -466,7 +491,7 @@ def test_v2_chart_inputs_bundle_miss_recomputes_macro(monkeypatch):
     exactly once via build_market_context_v2 — recovery-only path."""
     import scanner.pipeline as pipemod
     candles = _realistic_candles()
-    monkeypatch.setattr(pipemod, "fetch_multi_tf", lambda coin, config: candles)
+    monkeypatch.setattr(pipemod, "fetch_multi_tf", lambda coin, config, as_of=None: candles)
     real_bmc = pipemod.build_market_context_v2
     calls = []
 

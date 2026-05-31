@@ -21,6 +21,8 @@ their raw frames + fractal pivots, so their shallow depths are correct — they
 never need a 300-bar stack.
 """
 
+from datetime import datetime
+from functools import partial
 from typing import NamedTuple
 
 import pandas as pd
@@ -140,6 +142,7 @@ def fetch_multi_tf(
     *,
     fetcher=fetch_candles,
     counts: dict[str, int] = V2_CANDLE_COUNTS,
+    as_of: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch + assemble the 7 canonical closed-bar frames for ``coin``.
 
@@ -147,12 +150,18 @@ def fetch_multi_tf(
     dropped before anything else; derived keys are resampled off the already-closed
     source. ``fetcher``/``counts`` are injectable so the plane is unit-testable
     against synthetic candle dicts without a live exchange.
+
+    ``as_of`` (T-020.15) clamps every native fetch to a historical scan time by binding it
+    onto the fetcher — so the per-TF call signature is unchanged and injected test doubles
+    (which never set ``as_of``) keep working. ``_drop_forming_bar`` then removes the
+    forming-at-T bar, reproducing the closed-bar set of a live scan at T.
     """
+    eff_fetcher = fetcher if as_of is None else partial(fetcher, as_of=as_of)
     out: dict[str, pd.DataFrame] = {}
     for key in CANONICAL_TFS:
         if key in _RESAMPLE_RULE:
             continue
-        df = fetcher(coin, _CCXT_INTERVAL[key], counts[key], config)
+        df = eff_fetcher(coin, _CCXT_INTERVAL[key], counts[key], config)
         out[key] = _drop_forming_bar(df)
     for key, (src_key, rule, period_bars) in _RESAMPLE_RULE.items():
         out[key] = resample_ohlcv(out[src_key], rule, counts[key], period_bars)

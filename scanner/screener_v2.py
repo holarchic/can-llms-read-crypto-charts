@@ -21,6 +21,7 @@ in confluence (the detectors own their own thresholds; see `setups_v2`).
 
 import math
 import sqlite3
+from datetime import datetime
 from typing import NamedTuple
 
 import pandas as pd
@@ -285,10 +286,16 @@ def _dedup_cross_tf(candidates: list[BoundarySignal]) -> list[BoundarySignal]:
 
 def _select_one_per_coin(
     candidates: list[BoundarySignal], config: ScannerConfig, conn: sqlite3.Connection, verbose: bool,
+    as_of: datetime | None = None,
 ) -> list[BoundarySignal]:
     """One signal per coin: the highest-score candidate that is not a historical
     duplicate (the existing `is_duplicate` gate), skipping a duplicated top candidate
-    and keeping the next eligible one — preserving v1's per-coin dedup behaviour."""
+    and keeping the next eligible one — preserving v1's per-coin dedup behaviour.
+
+    Under `as_of` (replay, T-020.15 / SPEC #53) the historical `is_duplicate` gate is SKIPPED:
+    it reads `scans` on wall-clock `datetime('now', -dedup_hours)`, which would suppress later
+    replay anchors by run-order. Replay runs in an isolated DB with anchors `--spacing >= dedup`
+    apart, so each anchor is an independent tradeable instance (the top per-coin candidate is kept)."""
     by_coin: dict[str, list[BoundarySignal]] = {}
     for c in candidates:
         by_coin.setdefault(c.coin, []).append(c)
@@ -299,8 +306,8 @@ def _select_one_per_coin(
                                b.setup_type.value, b.direction.value, _round_sig(b.key_level)))
         try:
             for c in cs:
-                if is_duplicate(coin, c.setup_type.value, c.direction.value,
-                                config.dedup_hours, conn, exchange=config.exchange):
+                if as_of is None and is_duplicate(coin, c.setup_type.value, c.direction.value,
+                                                  config.dedup_hours, conn, exchange=config.exchange):
                     if verbose:
                         print(f"  {coin} {c.setup_type.value} — skipped (duplicate)")
                     continue
@@ -319,6 +326,7 @@ def screen_v2(
     config: ScannerConfig,
     conn: sqlite3.Connection,
     verbose: bool = True,
+    as_of: datetime | None = None,
 ) -> tuple[list[BoundarySignal], Stage1ArtifactsV2]:
     """Produce + select the v2 screener signals, deterministically ordered by score.
 
@@ -326,6 +334,9 @@ def screen_v2(
     bundle mapping each surviving coin to its closed-bar candle dict (for the stage-2
     enriched charts). The caller (`stage1_screen`) caps `sent_to_llm` and persists the
     full list — mirroring v1's `save_signals(all, ..., len(capped))`.
+
+    ``as_of`` (T-020.15 / SPEC #53) clamps every candle fetch to a historical scan time and
+    skips the wall-clock historical dedup (see `_select_one_per_coin`). ``None`` ⇒ live.
     """
     disabled = {t for t in (disabled_types or set())}
 
@@ -342,7 +353,7 @@ def screen_v2(
         # miss a type and abort the whole scan (a worse failure than skipping one coin).
         # Silent masking is the real risk, so a TOTAL wipeout is surfaced loudly below.
         try:
-            candles = fetch_multi_tf(coin, config)
+            candles = fetch_multi_tf(coin, config, as_of=as_of)
             ctx2 = build_market_context_v2(coin, candles)
             leverage = leverage_map.get(coin)
             coin_candidates = [
@@ -368,7 +379,7 @@ def screen_v2(
 
     # (2) cross-TF dedup → (3) one historically-fresh signal per coin. 15m-origin
     # setups flow through — the 15m chart is in the LLM bundle as of Chunk 8 (8.2).
-    survivors = _select_one_per_coin(_dedup_cross_tf(candidates), config, conn, verbose)
+    survivors = _select_one_per_coin(_dedup_cross_tf(candidates), config, conn, verbose, as_of=as_of)
     # (4) global deterministic order — score desc, higher TF, then stable name/dir/level
     # keys so the cap is reproducible regardless of upstream insertion order.
     survivors.sort(key=lambda b: (-b.confidence, -_TF_RANK[b.setup_tf],
