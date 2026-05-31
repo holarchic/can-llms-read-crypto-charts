@@ -176,6 +176,19 @@ def test_resolve_source_dispatch(db):
         resolve_source("bogus")
 
 
+def test_replay_source_provenance_roundtrip(tmp_path):
+    """record_replay_source stamps the tape's source; loaded_replay_source reads it back; a
+    pre-provenance tape (no replay_meta table) reads None so resolve skips verification."""
+    from scanner.shadow.replay_source import loaded_replay_source, record_replay_source
+    path = tmp_path / "tape.db"
+    _make_db(path, {"BTC": _ramp(100.0, 10)})            # a tape-shaped DB, no replay_meta yet
+    assert loaded_replay_source(path) is None             # pre-provenance ⇒ None (skip verify)
+    record_replay_source(path, "binance-db")
+    assert loaded_replay_source(path) == "binance-db"
+    record_replay_source(path, "live-hl")                 # single-source-per-run: last write wins
+    assert loaded_replay_source(path) == "live-hl"
+
+
 def test_binance_source_missing_db_fails_fast(tmp_path):
     with pytest.raises(FileNotFoundError, match="not found"):
         binance_source(tmp_path / "does-not-exist.db")

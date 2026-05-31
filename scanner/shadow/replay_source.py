@@ -223,6 +223,36 @@ def binance_source(db_path, min_notional: float = DEFAULT_MIN_NOTIONAL_USD) -> R
     )
 
 
+def record_replay_source(db_path, name: str) -> None:
+    """Stamp the replay tape's datasource into a CLI-owned `replay_meta` row in the ISOLATED
+    replay.db (single-source-per-run), so resolve can VERIFY the source matches rather than trusting
+    a restated flag. Not part of the scanner schema — this DB is wiped per run (`--reset`)."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS replay_meta (source TEXT)")
+        conn.execute("DELETE FROM replay_meta")
+        conn.execute("INSERT INTO replay_meta (source) VALUES (?)", (name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def loaded_replay_source(db_path) -> str | None:
+    """The `--source` a replay tape was captured with, or `None` when unverifiable — a missing
+    replay.db (resolve before capture) or a pre-provenance tape (no `replay_meta` table). Resolve
+    compares this to its `--source` and errors only on a real mismatch."""
+    if not Path(db_path).exists():
+        return None   # no tape yet ⇒ nothing to verify (resolve will find n=0)
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT source FROM replay_meta LIMIT 1").fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None   # no replay_meta table ⇒ a tape captured before this guard existed
+    finally:
+        conn.close()
+
+
 def resolve_source(name: str, db_path=None, min_notional: float = DEFAULT_MIN_NOTIONAL_USD) -> ReplaySource:
     """Map a ``--source`` flag to a ``ReplaySource`` (the CLI seam). ``binance-db`` defaults
     ``db_path`` to the sibling archive."""
