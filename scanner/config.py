@@ -26,7 +26,10 @@ SETUP_VERSION_REGISTRY: dict[str, tuple[str, Path]] = {
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
-DB_PATH = DATA_DIR / "scanner.db"
+# `LLM_TRADER_DB` overrides the DB path so the T-020.15 replay harness can run against an
+# isolated `data/replay.db` (set in-process by the replay/resolve CLIs before scanner import) —
+# unset ⇒ the live `scanner.db`, so the bot/deploy/tests are byte-identical (SPEC #53).
+DB_PATH = Path(os.getenv("LLM_TRADER_DB", str(DATA_DIR / "scanner.db")))
 
 # Exchange profiles — one entry per supported exchange
 EXCHANGE_META: dict[str, dict] = {

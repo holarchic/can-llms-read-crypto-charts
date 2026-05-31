@@ -44,11 +44,16 @@ __all__ = [
     "resolve_signal",
     "ENTRY_POLICY_VERSION", "EXIT_POLICY_VERSION", "EXIT_POLICY_VERSIONS", "RETRYABLE",
     "RESOLVED", "OPEN", "TRIGGER_EXPIRED", "NO_FILL", "INVALIDATED", "DATA_INCOMPLETE",
+    "DEFAULT_MAX_HOLD_BARS",
 ]
 
 ENTRY_POLICY_VERSION = "v1"
 EXIT_POLICY_VERSION = "v1"           # default exit policy
 EXIT_POLICY_VERSIONS = frozenset({"v1", "v2"})  # the resolvable exit policies (T-020.11)
+
+# Time-invalidation horizon (1H bars) for a resolved trade's remainder — the single owner of
+# the forward-walk depth, so the replay CLI's `--bars` hint can source it instead of a literal.
+DEFAULT_MAX_HOLD_BARS = 240
 
 RESOLVED = "RESOLVED"
 OPEN = "OPEN"
@@ -210,7 +215,7 @@ def resolve_signal(
     slippage: float = 0.0005,
     entry_zone_buffer: float = 0.02,
     max_expiry: int = 24,  # mirrors execution conditional_entry_max_expiry
-    max_hold_bars: int = 240,
+    max_hold_bars: int = DEFAULT_MAX_HOLD_BARS,
 ) -> ShadowOutcome:
     """Walk one captured signal forward. `frame` is the venue's OHLCV (1H bars assumed —
     `expiry_candles` is in 1H units), index = candle-OPEN datetime (ccxt), cols Open/High/Low/Close."""
