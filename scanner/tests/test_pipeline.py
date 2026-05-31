@@ -484,6 +484,34 @@ class TestRunScanDispatcher:
         assert out == _empty_summary()
         s2.assert_not_called()
 
+    def test_shadow_capture_anchors_at_as_of(self):
+        """run_scan threads `as_of` as the shadow-capture anchor (T-020.15 / SPEC #53): under
+        `as_of` stage4_shadow is handed the replay timestamp T (not wall-clock `start`); without
+        it, the wall-clock anchor. Pins the `anchor = as_of or start` wiring + the stage4 handoff."""
+        sig = _make_signal(coin="BTC")
+        result = _make_scan_result(coin="BTC")  # decision == "CONFIRM" → is_confirm
+        cfg = ScannerConfig(setup_version="v2", shadow_mode=True)
+        T = datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc)
+        captured = {}
+
+        def fake_shadow(confirms, config, anchor_ts, verbose=True):
+            captured["anchor"] = anchor_ts
+            return len(confirms)
+
+        def _run(**kw):
+            captured.clear()
+            with patch("scanner.pipeline.stage1_screen", return_value=([sig], {})), \
+                 patch("scanner.pipeline.stage2_analyze", return_value=[result]), \
+                 patch("scanner.pipeline.validate_confirms", side_effect=lambda r, c: r), \
+                 patch("scanner.pipeline.stage3_alert", return_value=0), \
+                 patch("scanner.pipeline.stage4_shadow", side_effect=fake_shadow):
+                run_scan(config=cfg, verbose=False, skip_discord=True, **kw)
+
+        _run(as_of=T)
+        assert captured["anchor"] == T                       # replay: anchored at T
+        _run()
+        assert captured["anchor"] is not None and captured["anchor"] != T  # live: wall-clock start
+
     def test_full_path_call_order_and_summary_handoff(self):
         sig = _make_signal(coin="BTC")
         result = _make_scan_result(coin="BTC")  # decision == "CONFIRM"
