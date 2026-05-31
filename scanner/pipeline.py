@@ -161,13 +161,15 @@ def stage1_screen(
     `source` (T-020.17 / SPEC #54) is the replay datasource: its `universe` resolves the as-of
     pairs and its `fetch` is threaded into the v2 producer + BTC context. `None` ⇒ live (the
     volume-ranked `fetch_pairs_with_volume` universe + live `fetch_candles`). Replay is v2-only."""
-    # Replay is v2-only: the v1 producer (`_screen_v1`) fetches candles from live HL via
-    # `fetch_candles_batch`, so a `source` + v1 config would mix a replay universe/BTC-context with
-    # LIVE v1 candles — a silently incoherent scan. Reject it at the boundary (fail-closed).
-    if source is not None and config.setup_version != "v2":
+    # An OFFLINE replay source (binance-db) is v2-only: the v1 producer (`_screen_v1`) fetches
+    # candles from live HL via `fetch_candles_batch`, so an offline source + v1 config would mix a
+    # replay universe/BTC-context with LIVE v1 candles — a silently incoherent scan. Reject it at
+    # the boundary (fail-closed). `LIVE_HL` (offline=False) is the live path ⇒ v1 is fine.
+    offline = source is not None and source.offline
+    if offline and config.setup_version != "v2":
         raise ValueError(
-            f"replay source {source.name!r} requires setup_version='v2' (got {config.setup_version!r}) — "
-            "the v1 producer fetches live candles and would mix datasources"
+            f"offline replay source {source.name!r} requires setup_version='v2' (got "
+            f"{config.setup_version!r}) — the v1 producer fetches live candles and would mix datasources"
         )
     conn = get_connection()
 
@@ -180,7 +182,7 @@ def stage1_screen(
     # Fetch pairs
     if coin_filter:
         coin_upper = coin_filter.upper()
-        if source is not None:
+        if offline:
             # Offline replay: no live max_leverage lookup (the #53 metadata neglect stands).
             pairs = [{"coin": coin_upper, "max_leverage": None}]
         else:
@@ -190,7 +192,7 @@ def stage1_screen(
         if verbose:
             lev = pairs[0].get("max_leverage")
             print(f"Single coin mode: {coin_upper} on {meta['label']} (max leverage: {lev or '?'}x)")
-    elif source is not None:
+    elif offline:
         pairs = source.universe(as_of, config)
         if verbose:
             print(f"Found {len(pairs)} {source.name} pairs (as-of universe @ {as_of})")

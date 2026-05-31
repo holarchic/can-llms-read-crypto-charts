@@ -861,13 +861,43 @@ class TestReplaySourceThreading:
         assert {("BTC", "1d"), ("BTC", "15m")} <= {(c, i) for (c, i, _n, _a) in calls}  # spy got the refetch
 
     def test_source_rejected_on_v1_path(self):
-        """Replay is v2-only: a source + v1 config would mix a replay universe with LIVE v1 candles
+        """An OFFLINE source is v2-only: source + v1 would mix a replay universe with LIVE v1 candles
         (`_screen_v1` → `fetch_candles_batch`). Reject at the stage1 boundary (fail-closed)."""
         import pytest
-        src, _calls = _spy_source()
+        src, _calls = _spy_source()                          # offline=True (default)
         with patch("scanner.pipeline.get_connection", return_value=MagicMock()):
             with pytest.raises(ValueError, match="requires setup_version='v2'"):
                 stage1_screen(ScannerConfig(setup_version="v1"), verbose=False, as_of=_T_REPLAY, source=src)
+
+    def test_live_hl_source_uses_live_path_and_allows_v1(self):
+        """A non-offline source (LIVE_HL) is the live path: v1 is NOT rejected and the LIVE universe
+        (`fetch_pairs_with_volume`) is used, NOT `source.universe` — byte-identical to source=None."""
+        def _boom_universe(as_of, config=None):
+            raise AssertionError("offline universe used for a non-offline (live) source")
+        src = ReplaySource("spy-live", fetch=lambda *a, **k: None, universe=_boom_universe,
+                           now=lambda: _T_REPLAY, offline=False)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.fetch_pairs_with_volume", return_value=[]) as fpv, \
+             patch("scanner.pipeline.save_scan_universe"), patch("scanner.pipeline.save_signals"), \
+             patch("scanner.pipeline.fetch_candles"):
+            signals, _ = stage1_screen(ScannerConfig(setup_version="v1"), verbose=False,
+                                       as_of=_T_REPLAY, source=src)
+        assert signals == []           # no v2-guard raise (offline=False)
+        fpv.assert_called_once()        # LIVE universe used; the offline source.universe was NOT called
+
+    def test_live_hl_single_coin_uses_live_max_leverage(self):
+        """Non-offline single-coin still does the LIVE `get_max_leverage` lookup (offline skips it)."""
+        src = ReplaySource("spy-live", fetch=lambda *a, **k: None, universe=lambda *a, **k: [],
+                           now=lambda: _T_REPLAY, offline=False)
+        with patch("scanner.pipeline.get_connection", return_value=MagicMock()), \
+             patch("scanner.pipeline.get_strategy", return_value=None), \
+             patch("scanner.pipeline.get_max_leverage", return_value=25) as gml, \
+             patch("scanner.pipeline.save_scan_universe"), patch("scanner.pipeline.save_signals"), \
+             patch("scanner.pipeline.screen_v2", return_value=([], MagicMock())):
+            stage1_screen(ScannerConfig(setup_version="v2"), coin_filter="BTC", verbose=False,
+                          as_of=_T_REPLAY, source=src)
+        gml.assert_called_once()        # offline=False ⇒ live max_leverage lookup happens
 
     @staticmethod
     def _all(patchers):

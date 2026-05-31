@@ -64,12 +64,19 @@ _QUERY_PAD_BARS = 8
 class ReplaySource:
     """The (fetch, universe, now) triple a ``--source`` flag selects. ``fetch`` is
     ``fetch_candles``-shaped; ``universe(as_of, config)`` returns pair-dicts (≥ ``{"coin": …}``);
-    ``now()`` is the replay clock (DB-max for the static archive, wall-clock for live)."""
+    ``now()`` is the replay clock (DB-max for the static archive, wall-clock for live).
+
+    ``offline`` distinguishes a true offline/archive source (``binance-db``: as-of universe,
+    no live ``get_max_leverage``, v2-only) from ``LIVE_HL`` (which routes to the live HL fns and is
+    behaviourally identical to ``source=None``). The pipeline gates its replay-specific behaviour on
+    ``offline``, NOT on ``source is not None`` — so ``--source live-hl`` stays ``.16``-byte-identical.
+    Defaults ``True`` (the replay case); ``LIVE_HL`` is the one explicit exception."""
 
     name: str
     fetch: Callable
     universe: Callable
     now: Callable[[], datetime]
+    offline: bool = True
 
 
 def _iso(dt: datetime) -> str:
@@ -192,6 +199,7 @@ LIVE_HL = ReplaySource(
     fetch=fetch_candles,
     universe=lambda as_of, config=None: fetch_pairs_with_volume(config),
     now=lambda: datetime.now(timezone.utc),
+    offline=False,   # routes to the live HL fns ⇒ behaviourally identical to source=None
 )
 
 
@@ -211,6 +219,7 @@ def binance_source(db_path, min_notional: float = DEFAULT_MIN_NOTIONAL_USD) -> R
         fetch=make_binance_fetcher(db_path),
         universe=make_binance_universe(db_path, min_notional),
         now=lambda: binance_db_max_ts(db_path),
+        offline=True,   # archive source: as-of universe, no live max_leverage, v2-only
     )
 
 
