@@ -178,7 +178,11 @@ def make_binance_universe(db_path: Path, min_notional: float) -> Callable:
             "GROUP BY coin HAVING notional > ? ORDER BY notional DESC",
             [end_ts.isoformat(), start_ts.isoformat(), min_notional],
         )
-        return [{"coin": coin, "volume_24h": notional, "max_leverage": None} for coin, notional in rows]
+        pairs = [{"coin": coin, "volume_24h": notional, "max_leverage": None} for coin, notional in rows]
+        # Honour the live universe cap (`fetch_pairs_with_volume` returns `pairs[:max_pairs]`) so a
+        # replay anchor scans the SAME-size top-notional cohort as live, not the full $40M survivor set.
+        cap = config.max_pairs if config is not None else None
+        return pairs[:cap] if cap is not None else pairs
 
     return universe
 

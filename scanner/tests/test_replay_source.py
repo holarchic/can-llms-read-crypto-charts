@@ -137,6 +137,22 @@ def test_universe_notional_floor(tmp_path):
     assert pairs[0]["volume_24h"] > 1_000_000.0
 
 
+def test_universe_caps_at_max_pairs(tmp_path):
+    """The Binance universe honours `config.max_pairs` so a replay anchor scans the same-size
+    top-notional cohort as live (`fetch_pairs_with_volume` returns `pairs[:max_pairs]`)."""
+    from scanner.config import ScannerConfig
+    path = tmp_path / "cap.db"
+    # 5 coins all clearing a $1 floor, descending notional by close price.
+    _make_db(path, {f"C{k}": _ramp(float(100 - k), 96, vol=100.0) for k in range(5)})
+    universe = make_binance_universe(path, min_notional=1.0)
+    as_of = _T0 + pd.Timedelta(hours=24)
+    full = universe(as_of, config=ScannerConfig(max_pairs=99))
+    capped = universe(as_of, config=ScannerConfig(max_pairs=2))
+    assert len(full) == 5 and len(capped) == 2
+    assert [p["coin"] for p in capped] == ["C0", "C1"]   # top-2 by notional (C0 highest close)
+    assert len(universe(as_of, config=None)) == 5         # None ⇒ uncapped
+
+
 def test_universe_as_of_none_uses_db_max(tmp_path):
     path = tmp_path / "u2.db"
     _make_db(path, {"BIG": _ramp(1000.0, 96, vol=100.0)})
