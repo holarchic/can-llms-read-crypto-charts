@@ -28,8 +28,11 @@ DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 # `LLM_TRADER_DB` overrides the DB path so the T-020.15 replay harness can run against an
 # isolated `data/replay.db` (set in-process by the replay/resolve CLIs before scanner import) —
-# unset ⇒ the live `scanner.db`, so the bot/deploy/tests are byte-identical (SPEC #53).
-DB_PATH = Path(os.getenv("LLM_TRADER_DB", str(DATA_DIR / "scanner.db")))
+# unset ⇒ the live `scanner.db`, so the bot/deploy/tests are byte-identical (SPEC #53). Anchored
+# to PROJECT_ROOT so a RELATIVE override is CWD-stable across the (separate) capture/resolve
+# processes (`PROJECT_ROOT / abs` returns abs; `PROJECT_ROOT / rel` anchors it) — never per-CWD.
+_db_override = os.getenv("LLM_TRADER_DB")
+DB_PATH = PROJECT_ROOT / _db_override if _db_override else DATA_DIR / "scanner.db"
 
 # Exchange profiles — one entry per supported exchange
 EXCHANGE_META: dict[str, dict] = {
