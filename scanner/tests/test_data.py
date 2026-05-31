@@ -4,6 +4,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import ccxt
+import pandas as pd
 import pytest
 
 from scanner import data
@@ -131,6 +132,82 @@ class TestFetchCandlesValidation:
         df = self._fetch_with(rows)
         assert len(df) == 2
         assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
+class TestFetchCandlesAsOf:
+    """`fetch_candles(as_of=T)` clamps to a historical scan time (T-020.15, SPEC #53):
+    keep bars with open-time <= T, verify the bar *containing* T is present (interval-aware
+    freshness — NOT a median-width heuristic), return the last `count`. A stale tail raises."""
+
+    def setup_method(self):
+        data._exchanges.clear()
+        data._exchange_locks.clear()
+        data._exchange_failures.clear()
+
+    @staticmethod
+    def _rows(opens):
+        """OHLCV rows (valid prices) at the given open-time Timestamps."""
+        return [[int(o.timestamp() * 1000), 1.0, 2.0, 0.5, 1.5, 100.0] for o in opens]
+
+    def _run(self, rows, as_of, interval, count):
+        """Run fetch_candles against a mocked exchange returning ``rows`` for every call.
+        Stores the mock on ``self.mock`` so call args (since vs most-recent) are assertable."""
+        self.mock = MagicMock()
+        self.mock.fetch_ohlcv.return_value = rows
+        data._exchanges["hyperliquid"] = self.mock
+        data._exchange_locks["hyperliquid"] = threading.Lock()
+        with patch("scanner.data.get_exchange_meta", return_value={
+            "ccxt_class": "hyperliquid",
+            "symbol_template": "{coin}/USDC:USDC",
+        }):
+            with patch("scanner.data.time.sleep"):
+                return data.fetch_candles("BTC", interval, count, as_of=as_of)
+
+    def test_asof_clamps_and_keeps_bar_containing_T(self):
+        """Bars straddling+overshooting T: returns the last `count` with open <= T, incl. the
+        forming-at-T bar; the as-of path passes a `since` (historical window, not most-recent)."""
+        as_of = pd.Timestamp("2026-05-20 12:00:00", tz="UTC")
+        opens = pd.date_range("2026-05-20 09:00", "2026-05-20 14:00", freq="1h", tz="UTC")
+        df = self._run(self._rows(opens), as_of, "1h", 3)
+        assert len(df) == 3
+        assert df.index.max() == as_of  # 12:00 bar kept (forming-at-T; caller drops it)
+        assert data._advance_one_bar(df.index[-1], "1h") > as_of  # freshness holds
+        assert self.mock.fetch_ohlcv.call_args.kwargs.get("since") is not None  # as-of path
+
+    def test_asof_stale_tail_raises(self):
+        """A tail ending well before the bar containing T fails freshness → widen-retry → raise
+        (never a silent wrong-bar drop). fetch_ohlcv is called twice (initial + one widen)."""
+        as_of = pd.Timestamp("2026-05-20 12:00:00", tz="UTC")
+        opens = pd.date_range("2026-05-20 04:00", "2026-05-20 08:00", freq="1h", tz="UTC")
+        with pytest.raises(ValueError, match="stale"):
+            self._run(self._rows(opens), as_of, "1h", 3)
+        assert self.mock.fetch_ohlcv.call_count == 2
+
+    def test_asof_1M_month_boundary_stale_raises(self):
+        """The month-boundary hole a median-width check misses: early-March as_of with the latest
+        bar Feb-1 (March monthly bar MISSING). `_advance_one_bar(Feb-1)=Mar-1 <= Mar-3` ⇒ stale
+        (a `T - last < median width` test would have wrongly passed at ~30d)."""
+        as_of = pd.Timestamp("2026-03-03 00:00:00", tz="UTC")
+        opens = pd.date_range("2025-01-01", "2026-02-01", freq="MS", tz="UTC")  # ... Jan, Feb (no Mar)
+        with pytest.raises(ValueError, match="stale"):
+            self._run(self._rows(opens), as_of, "1M", 12)
+
+    def test_asof_1M_month_boundary_fresh_passes(self):
+        """Same early-March as_of but the March bar IS present (open Mar-1) ⇒ fresh; the bar
+        containing T is kept and `_advance_one_bar` steps a full calendar month to Apr-1."""
+        as_of = pd.Timestamp("2026-03-03 00:00:00", tz="UTC")
+        opens = pd.date_range("2025-01-01", "2026-03-01", freq="MS", tz="UTC")  # ... Feb, Mar
+        df = self._run(self._rows(opens), as_of, "1M", 12)
+        assert df.index.max() == pd.Timestamp("2026-03-01", tz="UTC")
+        assert data._advance_one_bar(df.index[-1], "1M") == pd.Timestamp("2026-04-01", tz="UTC")
+
+    def test_asof_none_is_most_recent_call(self):
+        """as_of=None ⇒ the live path: fetch_ohlcv(limit=count) with NO `since` (byte-identical)."""
+        rows = [[1000000, 1.0, 2.0, 0.5, 1.5, 100.0], [1000001, 1.5, 2.5, 1.0, 2.0, 200.0]]
+        df = self._run(rows, None, "4h", 2)
+        assert len(df) == 2
+        assert "since" not in self.mock.fetch_ohlcv.call_args.kwargs
+        assert self.mock.fetch_ohlcv.call_args.kwargs.get("limit") == 2
 
 
 class TestIsTransientCcxt:

@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import ccxt
 import numpy as np
@@ -204,33 +205,53 @@ def get_max_leverage(coin: str, exchange_id: str = "hyperliquid") -> int | None:
     return int(max_lev) if max_lev else None
 
 
-def fetch_candles(
-    coin: str,
-    interval: str,
-    count: int,
-    config: ScannerConfig | None = None,
-    exchange_id: str | None = None,
-) -> pd.DataFrame:
-    """Fetch OHLCV candles for a coin. Returns DataFrame with DatetimeIndex + OHLCV columns.
+# Per-ccxt-interval bar width — the MINIMUM width per interval, sizing the as-of `since`
+# lookback. Using the minimum (with a padded `limit`) makes the fetched span OVERSHOOT
+# `as_of`, so the bar containing T is present; the clamp+tail trims the surplus. `1M` uses
+# 28d (shortest month); `_advance_one_bar` takes the exact calendar step for the freshness check.
+_MIN_BAR_WIDTH: dict[str, pd.Timedelta] = {
+    "15m": pd.Timedelta(minutes=15),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+    "1d": pd.Timedelta(days=1),
+    "1w": pd.Timedelta(days=7),
+    "1M": pd.Timedelta(days=28),
+}
 
-    Column names are capitalized (Open, High, Low, Close, Volume) for mplfinance compatibility.
-    exchange_id overrides config.exchange when fetching from a non-primary exchange.
+# Bars padded onto the as-of window each side, so the overshoot clears boundary/irregular-width
+# slop before the clamp+tail.
+_AS_OF_PAD = 8
 
-    Raises on a structurally-invalid response — an empty frame, or a non-finite / non-positive
-    O/H/L/C price (`ValueError`; a non-numeric payload surfaces as `TypeError`). The exchange is
-    an untrusted boundary and a degenerate frame would degrade every downstream consumer silently.
+
+def _advance_one_bar(open_ts: pd.Timestamp, interval: str) -> pd.Timestamp:
+    """Open-time of the bar AFTER the one opening at `open_ts`, exact per ccxt interval.
+
+    `1M` advances one calendar month (HyperLiquid monthly bars are month-start aligned), so the
+    as-of freshness check stays correct across short months; fixed intervals advance by their
+    constant width. The check `_advance_one_bar(last_open) > as_of` proves the bar *containing*
+    `as_of` is present — a median-width heuristic is wrong at month boundaries.
     """
-    cfg = config or ScannerConfig()
-    eid = exchange_id or cfg.exchange
-    meta = get_exchange_meta(eid)
-    exchange = get_exchange(eid)
-    symbol = meta["symbol_template"].format(coin=coin)
+    if interval == "1M":
+        return open_ts + pd.offsets.MonthBegin(1)
+    return open_ts + _MIN_BAR_WIDTH[interval]
 
-    ex_lock = _exchange_locks.get(eid)
+
+def _fetch_ohlcv_raw(
+    exchange, symbol: str, interval: str, limit: int, ex_lock, cfg: ScannerConfig,
+    since: int | None = None,
+) -> pd.DataFrame:
+    """One ccxt OHLCV fetch (transient-retry + DataFrame build); no validation/clamp.
+
+    `since` (ms) selects a historical window starting there; omitted ⇒ most-recent `limit` bars
+    (the live path — `fetch_ohlcv(symbol, interval, limit=count)`, byte-identical to pre-as_of).
+    """
     for attempt in range(5):
         try:
             with ex_lock:
-                candles = exchange.fetch_ohlcv(symbol, interval, limit=count)
+                if since is None:
+                    candles = exchange.fetch_ohlcv(symbol, interval, limit=limit)
+                else:
+                    candles = exchange.fetch_ohlcv(symbol, interval, since=since, limit=limit)
             break
         except Exception as e:
             if attempt < 4 and _is_transient_ccxt(e):
@@ -242,13 +263,68 @@ def fetch_candles(
     df = pd.DataFrame(candles, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df.set_index("timestamp", inplace=True)
+    return df
+
+
+def fetch_candles(
+    coin: str,
+    interval: str,
+    count: int,
+    config: ScannerConfig | None = None,
+    exchange_id: str | None = None,
+    as_of: datetime | None = None,
+) -> pd.DataFrame:
+    """Fetch OHLCV candles for a coin. Returns DataFrame with DatetimeIndex + OHLCV columns.
+
+    Column names are capitalized (Open, High, Low, Close, Volume) for mplfinance compatibility.
+    exchange_id overrides config.exchange when fetching from a non-primary exchange.
+
+    `as_of` (T-020.15, SPEC #53) clamps to a historical scan time: fetch a window that OVERSHOOTS
+    `as_of` (min-width lookback + padded limit), keep bars with open-time `<= as_of`, verify the bar
+    *containing* `as_of` is present (`_advance_one_bar(last_open) > as_of` — else widen-retry once
+    then raise, so a stale tail never silently drops a genuinely-closed bar), and return the last
+    `count`. `None` ⇒ most-recent `count` bars (live path, byte-identical). The forming-bar drop
+    stays the caller's (`data_plane_v2._drop_forming_bar`).
+
+    Raises on a structurally-invalid response — an empty frame, or a non-finite / non-positive
+    O/H/L/C price (`ValueError`; a non-numeric payload surfaces as `TypeError`). The exchange is
+    an untrusted boundary and a degenerate frame would degrade every downstream consumer silently.
+    """
+    cfg = config or ScannerConfig()
+    eid = exchange_id or cfg.exchange
+    meta = get_exchange_meta(eid)
+    exchange = get_exchange(eid)
+    symbol = meta["symbol_template"].format(coin=coin)
+    ex_lock = _exchange_locks.get(eid)
+
+    if as_of is None:
+        df = _fetch_ohlcv_raw(exchange, symbol, interval, count, ex_lock, cfg)
+    else:
+        as_of_ts = pd.Timestamp(as_of)
+        if as_of_ts.tzinfo is None:
+            as_of_ts = as_of_ts.tz_localize("UTC")
+        fetch_limit = count + 2 * _AS_OF_PAD
+        since_ms = int((as_of_ts - _MIN_BAR_WIDTH[interval] * (count + _AS_OF_PAD)).timestamp() * 1000)
+        for _ in range(2):  # initial + one widen on a stale tail
+            raw = _fetch_ohlcv_raw(exchange, symbol, interval, fetch_limit, ex_lock, cfg, since=since_ms)
+            df = raw[raw.index <= as_of_ts]
+            if not df.empty and _advance_one_bar(df.index[-1], interval) > as_of_ts:
+                df = df.tail(count)
+                break
+            fetch_limit *= 4
+        else:
+            raise ValueError(
+                f"fetch_candles({coin}, {interval}, as_of={as_of_ts.isoformat()}): historical "
+                "window stale — latest bar does not reach the bar containing as_of after widen-retry "
+                "(venue history gap or unexposed boundary bar)"
+            )
 
     # The exchange is an untrusted boundary: a delisted symbol returns an empty frame and
     # feed/gap glitches surface as non-finite or non-positive prices. Such a frame would
     # propagate silently into the MA substrate, enriched charts, and the BTC-regime path, so
     # fail loud here (callers absorb the raise per their own policy — SPEC #34 caller matrix).
     # Length-sufficiency stays downstream (MIN_SUBSTRATE_BARS); volume is not gated (0 is
-    # legitimate on an illiquid bar); validation runs after the transient-retry loop.
+    # legitimate on an illiquid bar); validation runs after the fetch (+ as-of clamp).
     if df.empty:
         raise ValueError(f"fetch_candles({coin}, {interval}): empty OHLCV response")
     prices = df[["Open", "High", "Low", "Close"]].to_numpy()
