@@ -114,7 +114,7 @@ class ScannerConfig:
     # LLM
     model: str = "claude-opus-4-7"
     max_llm_calls_per_scan: int = 40
-    daily_cost_cap: float = 30.0
+    daily_cost_cap: float = field(default_factory=lambda: float(os.getenv("LLM_TRADER_DAILY_COST_CAP", "30.0")))
 
     # Resolution
     timeout_bars: int = 72  # 3 days of 1H candles
