@@ -15,7 +15,7 @@ path stays byte-identical.
 
 from dataclasses import dataclass
 
-from .config import SETUP_VERSION_REGISTRY, SetupVersion
+from .config import SETUP_VERSION_REGISTRY, SetupVersion, require_setupversion_keys
 from .llm import (
     SCANNER_MODE_SUFFIX,
     SCANNER_MODE_SUFFIX_V2,
@@ -43,22 +43,18 @@ _PROMPT_PROSE: dict[SetupVersion, _PromptProse] = {
     SetupVersion.V2: _PromptProse(SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
 }
 
-# Single-source-of-truth guard: every registered version has exactly one prose pair, and vice
-# versa. A version added to one map but not the other fails loudly at import — never silently the
-# wrong cohort at scan time. Two invariants (explicit `raise`, not `assert`, which `python -O`
-# strips, so they hold in every runtime):
-#   1. VALUE parity — same key SET (rendered `.value` so a future drift prints `['v1','v2']`).
-#   2. KEY TYPE — both maps keyed by `SetupVersion`, never raw `str`. Needed because `SetupVersion`
-#      is a str-subclass: a string key and an enum key are set-equal AND hash-equal, so check (1)
-#      alone would pass silently if either map regressed to raw strings.
+# Cross-map guard: every registered version has exactly one prose pair, and vice versa. A version
+# added to one map but not the other fails loudly at import — never silently the wrong cohort at scan
+# time. Explicit `raise`, not `assert` (`python -O` strips asserts), so it holds in every runtime.
+# Value parity (not type) is the cross-map concern; the rendered `.value` so a drift prints
+# `['v1','v2']`. `_PROMPT_PROSE`'s own key-TYPE is validated here; `SETUP_VERSION_REGISTRY` validates
+# its keys in `config` (each map owns its key-type invariant where it is defined).
 if set(_PROMPT_PROSE) != set(SETUP_VERSION_REGISTRY):
     raise RuntimeError(
         f"_PROMPT_PROSE versions {sorted(v.value for v in _PROMPT_PROSE)} out of sync with "
         f"SETUP_VERSION_REGISTRY {sorted(v.value for v in SETUP_VERSION_REGISTRY)}"
     )
-for _name, _m in (("_PROMPT_PROSE", _PROMPT_PROSE), ("SETUP_VERSION_REGISTRY", SETUP_VERSION_REGISTRY)):
-    if not all(isinstance(k, SetupVersion) for k in _m):
-        raise RuntimeError(f"{_name} keys must all be SetupVersion, not raw str")
+require_setupversion_keys("_PROMPT_PROSE", _PROMPT_PROSE)
 
 
 @dataclass(frozen=True)

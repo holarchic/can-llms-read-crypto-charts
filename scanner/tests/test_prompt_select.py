@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scanner.config import SETUP_VERSION_REGISTRY, STRATEGY_PATH, STRATEGY_PATH_V2, SetupVersion
+from scanner.config import (
+    SETUP_VERSION_REGISTRY,
+    STRATEGY_PATH,
+    STRATEGY_PATH_V2,
+    require_setupversion_keys,
+)
 from scanner.db import get_connection
 from scanner.llm import (
     SCANNER_MODE_SUFFIX,
@@ -35,14 +40,18 @@ def test_prompt_versions():
 
 
 def test_version_registries_keyed_by_setupversion():
-    """Both maps are keyed by the closed `SetupVersion` type, never raw `str` (T-027.2). The
-    import-time guard enforces this; the set-equality half alone is blind because a str key and a
-    `SetupVersion` key are set- AND hash-equal, so a string-keyed regression must be caught by type."""
-    assert all(isinstance(k, SetupVersion) for k in _PROMPT_PROSE)
-    assert all(isinstance(k, SetupVersion) for k in SETUP_VERSION_REGISTRY)
-    # the blind spot the type guard backstops: set-equality cannot tell str keys from enum keys
-    assert {"v1", "v2"} == set(SETUP_VERSION_REGISTRY)
-    assert not all(isinstance(k, SetupVersion) for k in {"v1": 0})  # a raw-str map would trip the guard
+    """Both live maps are keyed by the closed `SetupVersion` type, never raw `str` (T-027.2)."""
+    require_setupversion_keys("_PROMPT_PROSE", _PROMPT_PROSE)              # the real import-time guard
+    require_setupversion_keys("SETUP_VERSION_REGISTRY", SETUP_VERSION_REGISTRY)
+
+
+def test_require_setupversion_keys_trips_on_raw_str():
+    """The guard catches a raw-string-keyed regression that set-equality is blind to: a `str` key and
+    a `SetupVersion` key are set- AND hash-equal (`{"v1","v2"} == set(SETUP_VERSION_REGISTRY)`), so the
+    type check is the only thing that fires."""
+    assert {"v1", "v2"} == set(SETUP_VERSION_REGISTRY)                    # the blind spot it backstops
+    with pytest.raises(RuntimeError, match="must all be SetupVersion"):
+        require_setupversion_keys("bad_map", {"v1": 0, "v2": 0})
 
 
 def test_v1_system_text_is_systemprompt_plus_suffix():

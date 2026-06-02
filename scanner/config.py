@@ -52,6 +52,21 @@ SETUP_VERSION_REGISTRY: dict[SetupVersion, VersionArtifacts] = {
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 
 
+def require_setupversion_keys(name: str, mapping: dict) -> None:
+    """Raise unless every key in ``mapping`` is a `SetupVersion`, never a raw `str`.
+
+    A version map MUST be keyed by the closed type. This can't be a set-equality check: `SetupVersion`
+    is a str-subclass, so a `str` key and an enum key are set- AND hash-equal — only an explicit type
+    check catches a regression to raw strings. Each version map self-validates where it is defined."""
+    if not all(isinstance(k, SetupVersion) for k in mapping):
+        raise RuntimeError(f"{name} keys must all be SetupVersion, not raw str")
+
+
+# The registry self-validates its own key type here (config owns this invariant, not a downstream
+# importer) so `import scanner.config` alone fails loudly on a raw-string-keyed regression.
+require_setupversion_keys("SETUP_VERSION_REGISTRY", SETUP_VERSION_REGISTRY)
+
+
 def _parse_setup_version(raw: str | SetupVersion) -> SetupVersion:
     """Parse a raw flag value into a `SetupVersion`, preserving the existing helpful error.
 
@@ -186,8 +201,9 @@ class ScannerConfig:
                 f"Unknown exchange: '{self.exchange}'. "
                 f"Supported: {', '.join(EXCHANGE_META)}"
             )
-        # Parse the flag once here — coerces an explicit `str` arg (the production callers + tests)
-        # into the closed type, raising the historical "Unknown setup_version…" on a bad value.
+        # Coerce the flag to the closed type — handles an explicit `str` arg (the production callers
+        # + tests); the env-default path already parsed in the field factory, and the call is
+        # idempotent on an already-`SetupVersion`. Raises the historical "Unknown setup_version…".
         self.setup_version = _parse_setup_version(self.setup_version)
         if self.shadow_mode and self.setup_version != SetupVersion.V2:
             raise ValueError(
