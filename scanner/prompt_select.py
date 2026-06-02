@@ -24,13 +24,23 @@ from .llm import (
     load_strategy,
 )
 
-# setup_version → (system prompt, scanner-mode suffix). The per-version PROSE that can't live
-# in `config.SETUP_VERSION_REGISTRY` (which holds the persisted version + ruleset path) without a
+
+@dataclass(frozen=True)
+class _PromptProse:
+    """The per-version prose pair: the `system_prompt` template (with a `{ruleset}` slot the
+    selected ruleset fills) and the `scanner_suffix` appended after."""
+
+    system_prompt: str
+    scanner_suffix: str
+
+
+# setup_version → prose pair. The per-version PROSE that can't live in
+# `config.SETUP_VERSION_REGISTRY` (which holds the persisted version + ruleset path) without a
 # config→llm cycle. `config.SETUP_VERSION_REGISTRY` stays authoritative for "which versions exist";
 # this map is pinned to it by the assertion below so the two cannot drift.
-_PROMPT_PROSE: dict[str, tuple[str, str]] = {
-    "v1": (SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
-    "v2": (SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
+_PROMPT_PROSE: dict[str, _PromptProse] = {
+    "v1": _PromptProse(SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
+    "v2": _PromptProse(SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
 }
 
 # Single-source-of-truth guard: every registered version has exactly one prose pair, and vice
@@ -63,7 +73,7 @@ def select_prompt(setup_version: str) -> PromptSpec:
     appends the per-version scanner-mode suffix. An unknown version raises `KeyError`
     (fail-closed) — `config` already validates the flag, so a miss here is a programmer error,
     never silently the v1 cohort."""
-    prompt_version, ruleset_path = SETUP_VERSION_REGISTRY[setup_version]
-    system_prompt, scanner_suffix = _PROMPT_PROSE[setup_version]
-    system_text = system_prompt.format(ruleset=load_strategy(ruleset_path)) + scanner_suffix
-    return PromptSpec(prompt_version=prompt_version, system_text=system_text)
+    artifacts = SETUP_VERSION_REGISTRY[setup_version]
+    prose = _PROMPT_PROSE[setup_version]
+    system_text = prose.system_prompt.format(ruleset=load_strategy(artifacts.ruleset_path)) + prose.scanner_suffix
+    return PromptSpec(prompt_version=artifacts.prompt_version, system_text=system_text)
