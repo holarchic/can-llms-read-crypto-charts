@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scanner.config import STRATEGY_PATH, STRATEGY_PATH_V2
+from scanner.config import SETUP_VERSION_REGISTRY, STRATEGY_PATH, STRATEGY_PATH_V2, SetupVersion
 from scanner.db import get_connection
 from scanner.llm import (
     SCANNER_MODE_SUFFIX,
@@ -25,13 +25,24 @@ from scanner.models import (
     SpineContext,
     Structure,
 )
-from scanner.prompt_select import select_prompt
+from scanner.prompt_select import _PROMPT_PROSE, select_prompt
 from scanner.scan_store import save_result
 
 
 def test_prompt_versions():
     assert select_prompt("v1").prompt_version == "9.11"
     assert select_prompt("v2").prompt_version == "10.01"  # T-020.4 bump (veto collapse, SPEC #44)
+
+
+def test_version_registries_keyed_by_setupversion():
+    """Both maps are keyed by the closed `SetupVersion` type, never raw `str` (T-027.2). The
+    import-time guard enforces this; the set-equality half alone is blind because a str key and a
+    `SetupVersion` key are set- AND hash-equal, so a string-keyed regression must be caught by type."""
+    assert all(isinstance(k, SetupVersion) for k in _PROMPT_PROSE)
+    assert all(isinstance(k, SetupVersion) for k in SETUP_VERSION_REGISTRY)
+    # the blind spot the type guard backstops: set-equality cannot tell str keys from enum keys
+    assert {"v1", "v2"} == set(SETUP_VERSION_REGISTRY)
+    assert not all(isinstance(k, SetupVersion) for k in {"v1": 0})  # a raw-str map would trip the guard
 
 
 def test_v1_system_text_is_systemprompt_plus_suffix():

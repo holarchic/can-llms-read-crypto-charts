@@ -2,7 +2,7 @@
 
 import pytest
 
-from scanner.config import EXCHANGE_META, ScannerConfig
+from scanner.config import EXCHANGE_META, ScannerConfig, SetupVersion
 
 
 class TestScannerConfigValidation:
@@ -35,3 +35,14 @@ class TestScannerConfigValidation:
     def test_setup_version_from_env(self, monkeypatch):
         monkeypatch.setenv("SETUP_VERSION", "v2")
         assert ScannerConfig().setup_version == "v2"
+
+    def test_setup_version_parsed_to_enum_explicit_arg(self):
+        """An explicit str arg is coerced to the closed SetupVersion type at the boundary (T-027.2)."""
+        cfg = ScannerConfig(setup_version="v2")
+        assert isinstance(cfg.setup_version, SetupVersion)
+        assert cfg.setup_version is SetupVersion.V2
+
+    def test_setup_version_parsed_to_enum_env_default(self, monkeypatch):
+        """The env-default path also produces a SetupVersion, not a raw str (T-027.2)."""
+        monkeypatch.delenv("SETUP_VERSION", raising=False)
+        assert isinstance(ScannerConfig().setup_version, SetupVersion)

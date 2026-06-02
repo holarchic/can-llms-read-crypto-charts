@@ -169,7 +169,7 @@ def stage1_screen(
     if offline and config.setup_version != "v2":
         raise ValueError(
             f"offline replay source {source.name!r} requires setup_version='v2' (got "
-            f"{config.setup_version!r}) — the v1 producer fetches live candles and would mix datasources"
+            f"'{config.setup_version}') — the v1 producer fetches live candles and would mix datasources"
         )
     conn = get_connection()
 

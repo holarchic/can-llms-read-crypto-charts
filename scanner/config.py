@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,6 +12,22 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 PROJECT_ROOT = Path(__file__).parent.parent
 STRATEGY_PATH = PROJECT_ROOT / "strategy" / "unified-ta-ruleset.md"
 STRATEGY_PATH_V2 = PROJECT_ROOT / "strategy" / "unified-ta-ruleset-v2.md"
+
+
+class SetupVersion(str, Enum):
+    """The supported strategy-engine versions — the closed type for the `setup_version` flag.
+
+    A `str` subclass (NOT `enum.StrEnum`, which is 3.11+ and prod Python is unpinned — T-024) so
+    members stay drop-in for string keys/equality (`SetupVersion.V2 == "v2"`, hash-equal) while the
+    flag carries a real closed type. `__str__` renders the value so error/log strings show `v2`."""
+
+    V1 = "v1"
+    V2 = "v2"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True)
 class VersionArtifacts:
     """The static prompt artifacts for one SETUP_VERSION: the `prompt_version` persisted
@@ -28,11 +45,25 @@ class VersionArtifacts:
 # `scanner/llm.py` — cannot live here without a config→llm cycle; `prompt_select._PROMPT_PROSE`
 # holds those pairs and asserts at import that its key set equals this registry's, so the two
 # cannot drift (a version added here without a prose pair fails loudly at load, never at scan time).
-SETUP_VERSION_REGISTRY: dict[str, VersionArtifacts] = {
-    "v1": VersionArtifacts("9.11", STRATEGY_PATH),
-    "v2": VersionArtifacts("10.01", STRATEGY_PATH_V2),
+SETUP_VERSION_REGISTRY: dict[SetupVersion, VersionArtifacts] = {
+    SetupVersion.V1: VersionArtifacts("9.11", STRATEGY_PATH),
+    SetupVersion.V2: VersionArtifacts("10.01", STRATEGY_PATH_V2),
 }
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
+
+
+def _parse_setup_version(raw: str | SetupVersion) -> SetupVersion:
+    """Parse a raw flag value into a `SetupVersion`, preserving the existing helpful error.
+
+    The single parse boundary (env default + explicit constructor args); idempotent on an already-
+    `SetupVersion`. Wraps the bare enum `ValueError` so the message stays the historical
+    "Unknown setup_version… Supported: v1, v2"."""
+    try:
+        return SetupVersion(raw)
+    except ValueError:
+        raise ValueError(
+            f"Unknown setup_version: '{raw}'. Supported: {', '.join(SETUP_VERSIONS)}"
+        ) from None
 DATA_DIR = PROJECT_ROOT / "data"
 CHARTS_DIR = DATA_DIR / "charts"
 # `LLM_TRADER_DB` overrides the DB path so the T-020.15 replay harness can run against an
@@ -141,7 +172,9 @@ class ScannerConfig:
     # Setup detection version — "v1" (A–G screener, default) or "v2" (v10
     # framework). The cutover flag for T-019 / Decision #32; default v1 keeps the
     # live path byte-identical until the v2 dispatch (Chunk 7b) lands.
-    setup_version: str = field(default_factory=lambda: os.getenv("SETUP_VERSION", "v1"))
+    setup_version: SetupVersion = field(
+        default_factory=lambda: _parse_setup_version(os.getenv("SETUP_VERSION", "v1"))
+    )
 
     # Post-LLM structural-gate floor (Chunk 8a / SPEC #33) — v2 path only.
     v2_min_confluence: int = DEFAULT_V2_MIN_CONFLUENCE
@@ -153,11 +186,10 @@ class ScannerConfig:
                 f"Unknown exchange: '{self.exchange}'. "
                 f"Supported: {', '.join(EXCHANGE_META)}"
             )
-        if self.setup_version not in SETUP_VERSIONS:
-            raise ValueError(
-                f"Unknown setup_version: '{self.setup_version}'. Supported: {', '.join(SETUP_VERSIONS)}"
-            )
-        if self.shadow_mode and self.setup_version != "v2":
+        # Parse the flag once here — coerces an explicit `str` arg (the production callers + tests)
+        # into the closed type, raising the historical "Unknown setup_version…" on a bad value.
+        self.setup_version = _parse_setup_version(self.setup_version)
+        if self.shadow_mode and self.setup_version != SetupVersion.V2:
             raise ValueError(
                 f"shadow_mode requires setup_version='v2' (got '{self.setup_version}') — "
                 "shadow capture is the v2-only +R-gate path (SPEC #41)"

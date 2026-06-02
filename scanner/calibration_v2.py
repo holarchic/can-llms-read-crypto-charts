@@ -32,7 +32,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
-from .config import ScannerConfig
+from .config import ScannerConfig, SetupVersion
 from .models import (
     BoundarySignal,
     ConfluenceFactor,
@@ -174,7 +174,7 @@ def floor_sweep(
             )
     reports: list[FloorReport] = []
     for floor in floors:
-        cfg = replace(base_config, setup_version="v2", v2_min_confluence=floor)
+        cfg = replace(base_config, setup_version=SetupVersion.V2, v2_min_confluence=floor)
         results = [copy.deepcopy(lc.result) for lc in labeled]
         validate_confirms(results, cfg)
         oe_demoted = oe_total = legit_demoted = legit_total = 0

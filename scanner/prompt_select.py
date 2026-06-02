@@ -15,7 +15,7 @@ path stays byte-identical.
 
 from dataclasses import dataclass
 
-from .config import SETUP_VERSION_REGISTRY
+from .config import SETUP_VERSION_REGISTRY, SetupVersion
 from .llm import (
     SCANNER_MODE_SUFFIX,
     SCANNER_MODE_SUFFIX_V2,
@@ -38,20 +38,27 @@ class _PromptProse:
 # `config.SETUP_VERSION_REGISTRY` (which holds the persisted version + ruleset path) without a
 # config→llm cycle. `config.SETUP_VERSION_REGISTRY` stays authoritative for "which versions exist";
 # this map is pinned to it by the assertion below so the two cannot drift.
-_PROMPT_PROSE: dict[str, _PromptProse] = {
-    "v1": _PromptProse(SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
-    "v2": _PromptProse(SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
+_PROMPT_PROSE: dict[SetupVersion, _PromptProse] = {
+    SetupVersion.V1: _PromptProse(SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
+    SetupVersion.V2: _PromptProse(SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
 }
 
 # Single-source-of-truth guard: every registered version has exactly one prose pair, and vice
 # versa. A version added to one map but not the other fails loudly at import — never silently the
-# wrong cohort at scan time. An explicit raise (not `assert`, which `python -O` strips) so the
-# invariant holds in every runtime.
+# wrong cohort at scan time. Two invariants (explicit `raise`, not `assert`, which `python -O`
+# strips, so they hold in every runtime):
+#   1. VALUE parity — same key SET (rendered `.value` so a future drift prints `['v1','v2']`).
+#   2. KEY TYPE — both maps keyed by `SetupVersion`, never raw `str`. Needed because `SetupVersion`
+#      is a str-subclass: a string key and an enum key are set-equal AND hash-equal, so check (1)
+#      alone would pass silently if either map regressed to raw strings.
 if set(_PROMPT_PROSE) != set(SETUP_VERSION_REGISTRY):
     raise RuntimeError(
-        f"_PROMPT_PROSE versions {sorted(_PROMPT_PROSE)} out of sync with "
-        f"SETUP_VERSION_REGISTRY {sorted(SETUP_VERSION_REGISTRY)}"
+        f"_PROMPT_PROSE versions {sorted(v.value for v in _PROMPT_PROSE)} out of sync with "
+        f"SETUP_VERSION_REGISTRY {sorted(v.value for v in SETUP_VERSION_REGISTRY)}"
     )
+for _name, _m in (("_PROMPT_PROSE", _PROMPT_PROSE), ("SETUP_VERSION_REGISTRY", SETUP_VERSION_REGISTRY)):
+    if not all(isinstance(k, SetupVersion) for k in _m):
+        raise RuntimeError(f"{_name} keys must all be SetupVersion, not raw str")
 
 
 @dataclass(frozen=True)
@@ -64,7 +71,7 @@ class PromptSpec:
     system_text: str
 
 
-def select_prompt(setup_version: str) -> PromptSpec:
+def select_prompt(setup_version: SetupVersion) -> PromptSpec:
     """Resolve the prompt artifacts for ``setup_version`` — the persisted version + ruleset
     file from `config.SETUP_VERSION_REGISTRY`, the system-prompt/scanner-suffix pair from
     `_PROMPT_PROSE`.
