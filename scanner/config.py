@@ -1,6 +1,7 @@
 """Scanner configuration — env loading + constants."""
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -52,7 +53,7 @@ SETUP_VERSION_REGISTRY: dict[SetupVersion, VersionArtifacts] = {
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 
 
-def require_setupversion_keys(name: str, mapping: dict) -> None:
+def require_setupversion_keys(name: str, mapping: Mapping[object, object]) -> None:
     """Raise unless every key in ``mapping`` is a `SetupVersion`, never a raw `str`.
 
     A version map MUST be keyed by the closed type. This can't be a set-equality check: `SetupVersion`
