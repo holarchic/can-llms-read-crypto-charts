@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 
 from dotenv import load_dotenv
 
@@ -46,10 +47,12 @@ class VersionArtifacts:
 # `scanner/llm.py` — cannot live here without a config→llm cycle; `prompt_select._PROMPT_PROSE`
 # holds those pairs and asserts at import that its key set equals this registry's, so the two
 # cannot drift (a version added here without a prose pair fails loudly at load, never at scan time).
-SETUP_VERSION_REGISTRY: dict[SetupVersion, VersionArtifacts] = {
+# Read-only (`MappingProxyType`) so the authoritative registry can't be mutated after import — the
+# import-time guards prove the maps are well-formed at load, and freezing keeps them that way (T-027.1).
+SETUP_VERSION_REGISTRY: Mapping[SetupVersion, VersionArtifacts] = MappingProxyType({
     SetupVersion.V1: VersionArtifacts("9.11", STRATEGY_PATH),
     SetupVersion.V2: VersionArtifacts("10.01", STRATEGY_PATH_V2),
-}
+})
 SETUP_VERSIONS = tuple(SETUP_VERSION_REGISTRY)
 
 

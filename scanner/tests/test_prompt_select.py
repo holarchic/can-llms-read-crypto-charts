@@ -54,6 +54,15 @@ def test_require_setupversion_keys_trips_on_raw_str():
         require_setupversion_keys("bad_map", {"v1": 0, "v2": 0})
 
 
+def test_version_registries_are_read_only():
+    """Both maps are frozen (`MappingProxyType`) so they can't be mutated after the import-time guards
+    prove them well-formed (T-027.1)."""
+    with pytest.raises(TypeError):
+        SETUP_VERSION_REGISTRY[next(iter(SETUP_VERSION_REGISTRY))] = None  # type: ignore[index]
+    with pytest.raises(TypeError):
+        _PROMPT_PROSE[next(iter(_PROMPT_PROSE))] = None  # type: ignore[index]
+
+
 def test_v1_system_text_is_systemprompt_plus_suffix():
     """The selector assembles exactly SYSTEM_PROMPT.format(ruleset=v1) + SCANNER_MODE_SUFFIX
     — the suffix being the hash-verified verbatim relocation of the pre-7b.3 inline string,

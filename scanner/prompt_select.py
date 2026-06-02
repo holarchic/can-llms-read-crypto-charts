@@ -13,7 +13,9 @@ All three taxonomy-bearing surfaces are version-branched here: the system prompt
 path stays byte-identical.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from .config import SETUP_VERSION_REGISTRY, SetupVersion, require_setupversion_keys
 from .llm import (
@@ -38,10 +40,10 @@ class _PromptProse:
 # `config.SETUP_VERSION_REGISTRY` (which holds the persisted version + ruleset path) without a
 # config→llm cycle. `config.SETUP_VERSION_REGISTRY` stays authoritative for "which versions exist";
 # this map is pinned to it by the assertion below so the two cannot drift.
-_PROMPT_PROSE: dict[SetupVersion, _PromptProse] = {
+_PROMPT_PROSE: Mapping[SetupVersion, _PromptProse] = MappingProxyType({
     SetupVersion.V1: _PromptProse(SYSTEM_PROMPT, SCANNER_MODE_SUFFIX),
     SetupVersion.V2: _PromptProse(SYSTEM_PROMPT_V2, SCANNER_MODE_SUFFIX_V2),
-}
+})
 
 # Cross-map guard: every registered version has exactly one prose pair, and vice versa. A version
 # added to one map but not the other fails loudly at import — never silently the wrong cohort at scan
