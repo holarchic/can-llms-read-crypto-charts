@@ -8,7 +8,7 @@ import pytest
 
 import scanner.schema as schema
 from scanner.expectancy import bootstrap_ci, expectancy_report
-from scanner.models import ConfluenceFactor, MachineBlock, ShadowOutcome
+from scanner.models import ConfluenceFactor, MachineBlock, SetupTypeV2, ShadowOutcome
 from scanner.shadow.store import (
     load_unresolved_signals,
     resolved_r_values,
@@ -38,6 +38,7 @@ def _capture(conn, scan_id: str) -> int:
         "setup_quality": "textbook", "confidence": 7, "leverage": 5,
     })
     sig = SimpleNamespace(
+        setup_type=SetupTypeV2.TREND_CONTINUATION,
         confluence=frozenset({ConfluenceFactor.TREND_ALIGNED, ConfluenceFactor.RETEST}),
         setup_tf="4h",
     )

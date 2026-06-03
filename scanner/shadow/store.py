@@ -49,6 +49,10 @@ def save_shadow_signal(
     False if an existing `scan_id` was ignored (idempotent capture).
     """
     mb = result.machine_block
+    # `setup_type` comes from the SCREENER's `setup_signal` (the detector's authoritative
+    # classification), NOT `mb.setup_type` — the latter is the LLM's free-text self-report, which
+    # collapses to "trend_continuation" for ~93% of confirms and corrupted all per-setup shadow
+    # analytics. The LLM is a REJECT-only veto (SPEC #44), not the setup classifier.
     cur = conn.execute(
         "INSERT OR IGNORE INTO shadow_signals "
         "(scan_id, coin, exchange, anchor_ts, setup_type, setup_tf, direction, "
@@ -59,7 +63,7 @@ def save_shadow_signal(
             result.coin,
             exchange,
             anchor_ts.isoformat(),
-            mb.setup_type,
+            result.setup_signal.setup_type.value,
             result.setup_signal.setup_tf,
             mb.direction,
             result.prompt_version,
