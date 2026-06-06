@@ -13,6 +13,7 @@ a KNOWN text->return relationship, so the inference is trusted before any real S
                                                           both strip to ~0 after partialling momentum out
 The real Santiment readout (chunk .3) feeds `run_gate` real (O, C, valid, dvol, SV) arrays in place of these.
 """
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -68,7 +69,11 @@ def _text_factor(sv, d):
     """Abnormal attention at d: log1p(SV[d]) minus log1p(the coin's own trailing SV_BASE_WIN-day mean).
     Size-decoupled — the raw level just proxies market cap; the surprise vs the coin's baseline is the pulse.
     log1p so a real 0-mention day is a valid low value (0 != not-covered, which is NaN, filtered upstream)."""
-    base = np.nanmean(sv[d - SV_BASE_WIN:d], axis=0)
+    with warnings.catch_warnings():
+        # An all-NaN trailing window (an uncovered coin) -> NaN baseline; those coins fail eligibility and
+        # never reach the gate, so the "Mean of empty slice" warning here is benign.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        base = np.nanmean(sv[d - SV_BASE_WIN:d], axis=0)
     return np.log1p(sv[d]) - np.log1p(base)
 
 
