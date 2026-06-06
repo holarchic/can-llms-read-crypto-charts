@@ -13,6 +13,8 @@ a KNOWN text->return relationship, so the inference is trusted before any real S
                                                           both strip to ~0 after partialling momentum out
 The real Santiment readout (chunk .3) feeds `run_gate` real (O, C, valid, dvol, SV) arrays in place of these.
 """
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
 
@@ -29,6 +31,17 @@ L_BLOCK_WEEKS = 4
 B_BOOT = 3000
 RHO_REDUNDANT = 0.9    # |rho(T, M)| >= this => text is momentum in disguise, not an independent signal
 MIN_DATES = 30         # fewer scored rebalances than this => underpowered cohort => INCONCLUSIVE
+
+# Per-rebalance series schema — a fixed column set so a zero-date (thin) cohort still classifies INCONCLUSIVE
+# instead of KeyError-ing on an empty frame.
+_STAT_COLS = ["d", "n", "mic", "lead", "rho", "ic_T"]
+
+
+class CI(NamedTuple):
+    """A bootstrap CI on a mean. `lo`/`hi` are the 2.5/97.5 percentiles; the CI clears 0 iff `lo > 0`."""
+    lo: float
+    hi: float
+    mean: float
 
 
 def _rank(x):
@@ -95,7 +108,7 @@ def per_date_stats(o, c, v, dv, sv, cohort, t_mat=None):
             "rho": float(np.corrcoef(rt, rm)[0, 1]),           # redundancy of text with momentum
             "ic_T": float(np.corrcoef(rt, rf)[0, 1]),          # standalone text IC (clone-fixture readout)
         })
-    return pd.DataFrame(recs)
+    return pd.DataFrame(recs, columns=_STAT_COLS)
 
 
 def _block_idx(n, rng, length=L_BLOCK_WEEKS, b=B_BOOT):
@@ -107,15 +120,16 @@ def _block_idx(n, rng, length=L_BLOCK_WEEKS, b=B_BOOT):
     return idx.reshape(b, -1)[:, :n]
 
 
-def boot_ci(vals, rng, lo=2.5, hi=97.5):
+def boot_ci(vals, rng, qlo=2.5, qhi=97.5):
     """Two-sided weekly-block-bootstrap CI on the mean of a per-rebalance series. NaN dates are dropped, not
-    averaged through (`v is not None` would let a NaN poison the whole mean)."""
+    averaged through (`v is not None` would let a NaN poison the whole mean). Empty series -> all-NaN CI, which
+    a zero-date cohort carries straight to INCONCLUSIVE."""
     v = np.asarray(vals, float)
     v = v[~np.isnan(v)]
     if len(v) == 0:
-        return np.nan, np.nan, np.nan
+        return CI(np.nan, np.nan, np.nan)
     means = v[_block_idx(len(v), rng)].mean(axis=1)
-    return float(np.percentile(means, lo)), float(np.percentile(means, hi)), float(v.mean())
+    return CI(float(np.percentile(means, qlo)), float(np.percentile(means, qhi)), float(v.mean()))
 
 
 def classify(mic_ci, lead_ci, rho_med, n_dates):
@@ -123,11 +137,11 @@ def classify(mic_ci, lead_ci, rho_med, n_dates):
     lo > 0. A thin cohort is INCONCLUSIVE, never a hard FAIL."""
     if n_dates < MIN_DATES:
         return "INCONCLUSIVE"
-    if not mic_ci[0] > 0:
+    if not mic_ci.lo > 0:
         return "FAIL-REDUNDANT"                                # Test A fails: text adds nothing over price
     if abs(rho_med) >= RHO_REDUNDANT:
         return "FAIL-REDUNDANT"                                # text is momentum in disguise
-    if not lead_ci[0] > 0:
+    if not lead_ci.lo > 0:
         return "FAIL-NONLEADING"                               # adds marginal IC but does not LEAD at weekly
     return "PASS"
 
@@ -141,8 +155,8 @@ def run_gate(o, c, v, dv, sv, cohort, rng, label, t_mat=None):
     ic_med = float(np.nanmedian(df["ic_T"])) if len(df) else np.nan
     verdict = classify(mic_ci, lead_ci, rho_med, len(df))
     print(f"  {label:16} dates={len(df):>3}  "
-          f"mIC {mic_ci[2]:+.3f} [{mic_ci[0]:+.3f},{mic_ci[1]:+.3f}]  "
-          f"lead {lead_ci[2]:+.3f} [{lead_ci[0]:+.3f},{lead_ci[1]:+.3f}]  "
+          f"mIC {mic_ci.mean:+.3f} [{mic_ci.lo:+.3f},{mic_ci.hi:+.3f}]  "
+          f"lead {lead_ci.mean:+.3f} [{lead_ci.lo:+.3f},{lead_ci.hi:+.3f}]  "
           f"rho {rho_med:+.2f}  IC_T {ic_med:+.3f}  -> {verdict}")
     return {"label": label, "n_dates": len(df), "mic": mic_ci, "lead": lead_ci,
             "rho_med": rho_med, "ic_med": ic_med, "verdict": verdict}
@@ -153,8 +167,8 @@ def run_gate(o, c, v, dv, sv, cohort, rng, label, t_mat=None):
 def synth_panel(rng, target, n_days=540, n_coins=140, mom=0.0, strength=0.6):
     """Build (O, C, valid, dvol, SV) where the abnormal-attention factor T tracks a known target.
     target 'lead'  -> T tracks the FORWARD return  (text should pass both tests)
-    target 'clone' -> T tracks momentum M          (positive standalone IC, zero marginal after partialling M)
-    target 'none'  -> T is structureless noise     (caller may further shuffle for the null)
+    target 'none'  -> T is structureless noise     (the null base; caller shuffles, or the clone supplies its
+                                                     own factor via t_mat — see main())
     `mom`>0 ties returns to a persistent latent AR(1) factor so trailing return M carries real forward IC
     (needed for the clone's 'positive standalone IC') — a STATIONARY momentum source, not price-level feedback
     (which compounds into runaway trends and a degenerate fat-tailed M). Open[d] = Close[d-1], so
@@ -171,8 +185,6 @@ def synth_panel(rng, target, n_days=540, n_coins=140, mom=0.0, strength=0.6):
     for d in range(LOOKBACK, n_days - HOLD - 1):
         if target == "lead":
             base = c[d + HOLD] / c[d] - 1.0                    # forward return
-        elif target == "clone":
-            base = c[d] / c[d - LOOKBACK] - 1.0                # momentum
         else:
             continue
         z = (base - base.mean()) / (base.std() + 1e-9)
@@ -209,17 +221,23 @@ def main():
         sv[d] = rng.permutation(sv[d])
     res_null = run_gate(o, c, v, dv, sv, cohort, rng, "shuffled-null")
 
+    # thin-cohort: an all-ineligible panel scores 0 rebalances -> must classify INCONCLUSIVE, never crash.
+    o, c, v, dv, sv, cohort = synth_panel(rng, "none", mom=0.0)
+    v[:] = False
+    res_thin = run_gate(o, c, v, dv, sv, cohort, rng, "thin-cohort")
+
     print("\n--- anti-vacuity contract (the engine must measure what it claims) ---")
     checks = [
-        ("planted-lead  mIC clears 0",      res_lead["mic"][0] > 0),
-        ("planted-lead  lead clears 0",     res_lead["lead"][0] > 0),
+        ("planted-lead  mIC clears 0",      res_lead["mic"].lo > 0),
+        ("planted-lead  lead clears 0",     res_lead["lead"].lo > 0),
         ("planted-lead  verdict PASS",      res_lead["verdict"] == "PASS"),
-        ("shuffled-null mIC covers 0",      res_null["mic"][0] <= 0 <= res_null["mic"][1]),
-        ("shuffled-null lead covers 0",     res_null["lead"][0] <= 0 <= res_null["lead"][1]),
+        ("shuffled-null mIC covers 0",      res_null["mic"].lo <= 0 <= res_null["mic"].hi),
+        ("shuffled-null lead covers 0",     res_null["lead"].lo <= 0 <= res_null["lead"].hi),
         ("momentum-clone T tracks M (rho>.5)", res_clone["rho_med"] > 0.5),
         ("momentum-clone standalone IC>0",  res_clone["ic_med"] > 0),
-        ("momentum-clone marginal mIC~0",   res_clone["mic"][0] <= 0 <= res_clone["mic"][1]),
-        ("momentum-clone lead~0",           res_clone["lead"][0] <= 0 <= res_clone["lead"][1]),
+        ("momentum-clone marginal mIC~0",   res_clone["mic"].lo <= 0 <= res_clone["mic"].hi),
+        ("momentum-clone lead~0",           res_clone["lead"].lo <= 0 <= res_clone["lead"].hi),
+        ("thin-cohort -> INCONCLUSIVE",     res_thin["verdict"] == "INCONCLUSIVE"),
     ]
     ok = True
     for name, passed in checks:
