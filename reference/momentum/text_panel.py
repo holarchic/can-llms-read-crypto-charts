@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import time
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,16 @@ FETCH_FROM = "2025-06-06"          # free-tier history boundary (Stage-0 probe)
 FETCH_TO = "2026-06-06"            # san clamps the recent end at the ~30-day holdback
 THROTTLE_S = 2.0                   # each metric query costs several credits vs the 100/min free cap
 RETRY_429_S = 25                   # back-off on a per-minute rate-limit hit
+LAG_DAYS = 1                       # strict-PIT availability lag (see main): the day-D 1d bucket is not
+                                   # knowable at the O[d+1] entry, so the gate sees day-(d-1) attention
+
+
+class SlugMap(NamedTuple):
+    """The ticker->slug resolution: `mapped` {ticker: slug}, `ambiguous` {ticker: [candidate slugs]} excluded
+    fail-closed, `unmapped` tickers with no Santiment project."""
+    mapped: dict
+    ambiguous: dict
+    unmapped: list
 
 
 def _load(name):
@@ -49,7 +60,7 @@ def _slugify(name):
 def build_slug_map(tickers, proj):
     """ticker -> Santiment slug, FAIL-CLOSED on ambiguity. A ticker with >1 candidate slug maps only if exactly
     one candidate's slug equals slugify(its project name) (the canonical project); else it is excluded as
-    ambiguous and logged — never silently pick one. Returns (mapped, ambiguous, unmapped)."""
+    ambiguous and logged — never silently pick one."""
     by_ticker = {}
     for _, row in proj.iterrows():
         by_ticker.setdefault(str(row["ticker"]), []).append((row["slug"], row["name"]))
@@ -66,7 +77,7 @@ def build_slug_map(tickers, proj):
                 mapped[t] = canon[0]
             else:
                 ambiguous[t] = [s for s, _ in cands]
-    return mapped, ambiguous, unmapped
+    return SlugMap(mapped, ambiguous, unmapped)
 
 
 def _get_one(slug, tries=3):
@@ -125,28 +136,35 @@ def fixed_start_cohort(sv_arr):
     covered = np.isfinite(sv_arr)
     per_day = covered.sum(axis=1)
     starts = np.where(per_day >= tl.MIN_ELIG)[0]
-    if len(starts) == 0:
-        return np.zeros(sv_arr.shape[1], bool), None
+    if len(starts) == 0 or starts[0] + tl.SV_BASE_WIN > len(sv_arr):
+        return np.zeros(sv_arr.shape[1], bool), None       # no overlap long enough for a full formation window
     s = starts[0]
     cohort = covered[s:s + tl.SV_BASE_WIN].all(axis=0)
     return cohort, s
 
 
 def main():
+    if not san.ApiConfig.api_key:
+        raise SystemExit("SANTIMENT_API_KEY not set in .env — cannot fetch.")
     o, c, dvm, v = panel.load()
     proj = san.get("projects/all")
-    mapped, ambiguous, unmapped = build_slug_map(list(c.columns), proj)
-    print(f"=== slug map: {len(mapped)} mapped · {len(ambiguous)} ambiguous (excluded) · "
-          f"{len(unmapped)} unmapped (of {len(c.columns)} panel coins) ===")
-    if ambiguous:
-        print("  ambiguous (fail-closed):", ", ".join(f"{t}->{v}" for t, v in list(ambiguous.items())[:8]))
+    sm = build_slug_map(list(c.columns), proj)
+    print(f"=== slug map: {len(sm.mapped)} mapped · {len(sm.ambiguous)} ambiguous (excluded) · "
+          f"{len(sm.unmapped)} unmapped (of {len(c.columns)} panel coins) ===")
+    if sm.ambiguous:
+        print("  ambiguous (fail-closed):",
+              ", ".join(f"{t}->{slugs}" for t, slugs in list(sm.ambiguous.items())[:8]))
 
     # Incremental fetch: top up only the mapped coins not yet in the cache (so a 429-truncated run resumes
-    # without re-spending quota on the coins it already has).
+    # without re-spending quota on the coins it already has). A cache whose index no longer matches the price
+    # panel is stale (panel rebuilt) -> discard rather than misalign rows.
     cache_pq = os.path.join(CACHE, "sv.parquet")
     sv = pd.read_parquet(cache_pq) if os.path.exists(cache_pq) else pd.DataFrame(index=c.index)
+    if not sv.index.equals(c.index):
+        print("  cached SV index != current price panel — rebuilding cache")
+        sv = pd.DataFrame(index=c.index)
     have = {t for t in sv.columns if np.isfinite(sv[t].to_numpy(dtype=float)).any()}
-    todo = {t: s for t, s in mapped.items() if t not in have}
+    todo = {t: s for t, s in sm.mapped.items() if t not in have}
     if todo:
         print(f"fetching {len(todo)} missing series (have {len(have)} cached; throttle ~{THROTTLE_S}s/call)...")
         fetched = align(fetch_sv(todo), c)
@@ -158,7 +176,11 @@ def main():
         print(f"SV panel complete from cache {sv.shape}")
 
     sv_full = sv.reindex(columns=c.columns)
-    sv_arr = sv_full.to_numpy(dtype=float)
+    # Strict-PIT availability lag: Santiment's day-D 1d social bucket completes only at end of day D and
+    # publishes with latency, so it is not knowable at the modeled O[d+1] entry. Lag one day -> the decision at
+    # d sees day-(d-1) attention, comfortably available by O[d+1]. Conservative: staler text can only lag price
+    # MORE, never manufacture a lead.
+    sv_arr = sv_full.shift(LAG_DAYS).to_numpy(dtype=float)
     cov = np.isfinite(sv_arr)
     rows_covered = np.where(cov.any(axis=1))[0]
     span = f"{c.index[rows_covered[0]].date()}..{c.index[rows_covered[-1]].date()}" if len(rows_covered) else "none"
