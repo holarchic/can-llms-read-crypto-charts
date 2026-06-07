@@ -15,8 +15,9 @@ from .models import MachineBlock
 
 def load_strategy(path: Path) -> str:
     """Read a ruleset markdown file. The caller (`prompt_select`) resolves the
-    per-version path from the single prompt-artifact registry; this is the thin reader
-    (fail-fast on a missing file — both ruleset files are shipped)."""
+    per-version path from the single prompt-artifact registry; this is the thin reader.
+    Fail-fast on a missing file: the OSS scaffold ships no ruleset — plug in your own
+    (see README). Tests that need a ruleset skip when it is absent."""
     if not path.exists():
         print(f"Error: Strategy file not found at {path}", file=sys.stderr)
         sys.exit(1)

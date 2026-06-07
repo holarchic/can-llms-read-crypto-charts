@@ -3,7 +3,17 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scanner.analysis import _estimate_cost
+from scanner.config import STRATEGY_PATH, STRATEGY_PATH_V2
+
+# Prompt assembly reads the strategy ruleset, which the OSS scaffold does not ship
+# (plug in your own — see README); the SDK-contract tests skip when it is absent.
+requires_ruleset = pytest.mark.skipif(
+    not (STRATEGY_PATH.exists() and STRATEGY_PATH_V2.exists()),
+    reason="strategy ruleset not shipped in the OSS scaffold — plug in your own (see README)",
+)
 
 
 class TestEstimateCost:
@@ -57,6 +67,7 @@ class TestEstimateCost:
         assert cost == round(expected, 4)
 
 
+@requires_ruleset
 class TestAnthropicRetryConfig:
     """SPEC #37: SDK max_retries=5 captures short 529 blips via ~15s of
     exponential backoff before LLMOverloaded fires."""
@@ -104,6 +115,7 @@ class TestAnthropicRetryConfig:
         assert kwargs.get("max_retries") == 5
 
 
+@requires_ruleset
 class TestLLMOverloadedTranslation:
     """SPEC #37 + architecture-pass MED: 529 SDK errors get translated to a
     scanner-domain LLMOverloaded exception inside analyze_for_scanner, so

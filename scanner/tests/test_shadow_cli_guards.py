@@ -13,6 +13,12 @@ import pytest
 
 _RESOLVE = Path(__file__).resolve().parents[2] / "scripts" / "shadow-resolve.py"
 
+# scripts/shadow-resolve.py is not shipped in the OSS scaffold — skip its CLI contract tests.
+pytestmark = pytest.mark.skipif(
+    not _RESOLVE.exists(),
+    reason="scripts/shadow-resolve.py not shipped in the OSS scaffold",
+)
+
 
 @pytest.mark.parametrize("args, needle", [
     (["--source", "binance-db"], "requires --replay"),        # binance-db without --replay

@@ -661,11 +661,12 @@ class TestPartialExitHandling:
         assert new_sl is not None
         assert new_sl["exchange_order_id"] == "sl_exch2"
 
+    @patch("scanner.execution.exit_fills.get_open_positions", return_value=[])
     @patch("scanner.execution.monitor.time.sleep")
     @patch("scanner.execution.exit_fills.cancel_order", return_value=True)
     @patch("scanner.execution.monitor.get_auth_exchange")
     def test_tp1_sl_replacement_retries_on_failure(self, mock_auth, mock_cancel, mock_sleep,
-                                                    config, conn):
+                                                    mock_positions, config, conn):
         """SL replacement fails twice then succeeds on 3rd attempt → SL placed."""
         entry = _make_order(scan_id="s1", order_type="entry", status="FILLED", quantity=0.1)
         sl = _make_order(scan_id="s1", order_type="stop_loss", status="PLACED",

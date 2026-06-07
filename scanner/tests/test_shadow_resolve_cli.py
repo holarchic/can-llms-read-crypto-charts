@@ -12,7 +12,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "shadow-resolve.py"
+
+# scripts/shadow-resolve.py is not shipped in the OSS scaffold — skip its CLI render tests.
+pytestmark = pytest.mark.skipif(
+    not _SCRIPT.exists(),
+    reason="scripts/shadow-resolve.py not shipped in the OSS scaffold",
+)
 
 
 def _load():

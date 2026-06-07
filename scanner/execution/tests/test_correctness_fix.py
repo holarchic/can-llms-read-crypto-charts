@@ -527,14 +527,20 @@ def test_fix2_metrics_exclude_no_risk_and_diverge_from_frozen_old():
     assert m.profit_factor != old_pf
 
 
+_ELOG_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "execution-log-data.py"
+
+
 def _load_script():
-    p = Path(__file__).resolve().parents[3] / "scripts" / "execution-log-data.py"
-    spec = _ilu.spec_from_file_location("_elog", p)
+    spec = _ilu.spec_from_file_location("_elog", _ELOG_SCRIPT)
     mod = _ilu.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
+@pytest.mark.skipif(
+    not _ELOG_SCRIPT.exists(),
+    reason="scripts/execution-log-data.py not shipped in the OSS scaffold",
+)
 def test_fix2_script_summary_excludes_no_risk_and_guards_empty():
     elog = _load_script()
     trades = list(get_closed_trades(_fix2_corpus()))

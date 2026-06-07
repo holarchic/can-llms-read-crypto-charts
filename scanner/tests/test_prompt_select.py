@@ -33,7 +33,15 @@ from scanner.models import (
 from scanner.prompt_select import _PROMPT_PROSE, select_prompt
 from scanner.scan_store import save_result
 
+# The strategy ruleset is not shipped in the OSS scaffold (plug in your own — see README);
+# tests that assemble a real prompt skip when the ruleset files are absent.
+requires_ruleset = pytest.mark.skipif(
+    not (STRATEGY_PATH.exists() and STRATEGY_PATH_V2.exists()),
+    reason="strategy ruleset not shipped in the OSS scaffold — plug in your own (see README)",
+)
 
+
+@requires_ruleset
 def test_prompt_versions():
     assert select_prompt("v1").prompt_version == "9.11"
     assert select_prompt("v2").prompt_version == "10.01"  # T-020.4 bump (veto collapse, SPEC #44)
@@ -63,6 +71,7 @@ def test_version_registries_are_read_only():
         _PROMPT_PROSE[next(iter(_PROMPT_PROSE))] = None  # type: ignore[index]
 
 
+@requires_ruleset
 def test_v1_system_text_is_systemprompt_plus_suffix():
     """The selector assembles exactly SYSTEM_PROMPT.format(ruleset=v1) + SCANNER_MODE_SUFFIX
     — the suffix being the hash-verified verbatim relocation of the pre-7b.3 inline string,
@@ -73,6 +82,7 @@ def test_v1_system_text_is_systemprompt_plus_suffix():
     assert "## MACHINE BLOCK (CONFIRM only)" in spec.system_text
 
 
+@requires_ruleset
 def test_v2_injects_v2_ruleset_not_v1():
     v1, v2 = select_prompt("v1"), select_prompt("v2")
     assert v2.system_text != v1.system_text
@@ -80,6 +90,7 @@ def test_v2_injects_v2_ruleset_not_v1():
     assert "v10" in v2.system_text or "the framework" in v2.system_text
 
 
+@requires_ruleset
 def test_v2_system_text_is_v2prompt_plus_v2suffix():
     """The v2 selector assembles exactly SYSTEM_PROMPT_V2.format(ruleset=v2) +
     SCANNER_MODE_SUFFIX_V2 — all three taxonomy-bearing surfaces are the v2 prose (Chunk 8d)."""
@@ -89,6 +100,7 @@ def test_v2_system_text_is_v2prompt_plus_v2suffix():
     )
 
 
+@requires_ruleset
 def test_v2_three_surface_vocabulary_coherent():
     """All 6 v2 setups appear across the assembled v2 surfaces; no v1 A–G setup tokens leak in;
     deviation_reclaim appears as a setup, never as an entry_trigger enum value."""
@@ -106,6 +118,7 @@ def test_v2_three_surface_vocabulary_coherent():
     assert "veto" in text.lower()
 
 
+@requires_ruleset
 def test_v2_keeps_numeric_confidence_required():
     """Demoting confidence in the v2 prose must not let the LLM drop the still-required field:
     the visible format keeps **LLM Confidence:**, the machine-block surface keeps "confidence"."""
@@ -116,6 +129,7 @@ def test_v2_keeps_numeric_confidence_required():
     assert '"confidence"' in select_prompt("v2").system_text
 
 
+@requires_ruleset
 def test_v1_free_of_v2_vocabulary():
     """The v1 default path must stay clean of v2 vocabulary (byte separation undergirds the
     flag-reversible cutover). `deviation_reclaim` is the known cross-namespace collision — it
@@ -128,6 +142,7 @@ def test_v1_free_of_v2_vocabulary():
         assert tok not in text, tok
 
 
+@requires_ruleset
 def test_v2_example_machine_block_parses_and_validates():
     """The MACHINE_BLOCK example embedded in the v2 scanner suffix must be a valid block (so the
     LLM has a correct template) — v2 setup_type, and NO setup_quality (T-020.4 dropped it from the
@@ -141,6 +156,7 @@ def test_v2_example_machine_block_parses_and_validates():
     assert mb.setup_type == "trend_continuation"
 
 
+@requires_ruleset
 def test_load_strategy_paths():
     assert load_strategy(STRATEGY_PATH) == STRATEGY_PATH.read_text()
     assert load_strategy(STRATEGY_PATH_V2) == STRATEGY_PATH_V2.read_text()
