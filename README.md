@@ -2,6 +2,10 @@
 
 A scaffold for an **LLM-driven crypto perpetual-futures scanner** — clone it, plug in your own strategy, and use the built-in harness to test whether that strategy actually has edge. Plus an honest account of the strategy *we* tried, which doesn't.
 
+## Attribution
+
+For those who care about such things, the majority of the analysis and code in this repo was produced by Claude Opus 4.7 (Anthropic), with david guiding Claude, providing insights, direction and critical review throughout the process.
+
 ## What this is
 
 A working skeleton for an LLM-in-the-loop trading scanner:
