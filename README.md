@@ -1,4 +1,4 @@
-# llm-trader
+# can-llms-read-crypto-charts
 
 LLM crypto trading scanner and edge-testing harness. Every entry edge we tried, LLM chart reading included, tested null.
 
