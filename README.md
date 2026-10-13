@@ -6,10 +6,10 @@ LLM crypto trading scanner and edge-testing harness. Every entry edge we tried, 
 
 | Hypothesis | Verdict |
 |---|---|
-| An LLM reading charts finds setups | **Falsified** — deep historical replay: −0.25R net, negative in *every* half-year; the LLM's directional calls were anti-predictive and low-conviction. |
-| Horizontal support/resistance levels have edge | **Dead** — hold at chance once distance- and cluster-controlled (mechanical constructions *and* expert hand-drawn levels). |
-| Discrete momentum (breakout / pullback) | **Dead** standalone — momentum is a real *portfolio* factor (long-short Sharpe ≈ 0.86), but per-trade variance is too large to harvest one bet at a time. |
-| Social text leads price | **No** — social-attention volume *lags* price (marginal IC over momentum ≈ 0; lead-vs-confirm differential robustly negative). |
+| An LLM reading charts finds setups | **Falsified**. Deep historical replay: −0.25R net, negative in *every* half-year; the LLM's directional calls were anti-predictive and low-conviction. |
+| Horizontal support/resistance levels have edge | **Dead**. Hold at chance once distance- and cluster-controlled (mechanical constructions *and* expert hand-drawn levels). |
+| Discrete momentum (breakout / pullback) | **Dead** standalone. Momentum is a real *portfolio* factor (long-short Sharpe ≈ 0.86), but per-trade variance is too large to harvest one bet at a time. |
+| Social text leads price | **No**. Social-attention volume *lags* price (marginal IC over momentum ≈ 0; lead-vs-confirm differential robustly negative). |
 
 A rigorously controlled null (confounds named, harness self-validated) is harder to fake than a curve-fit equity curve, and more honest about how markets behave. The contribution is the method and the dead ends it found.
 
